@@ -225,3 +225,7 @@ data/
 # local cache
 cache/
 
+
+# doc backups
+docs/*.bak
+
