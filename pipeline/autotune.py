@@ -1,11 +1,167 @@
 ﻿from __future__ import annotations
 from pathlib import Path
+import argparse
 import json
+import os
 import random
+import re
+import subprocess
+import yaml
 from copy import deepcopy
 from pipeline._io import load_yaml, ensure_dir, new_run_id
 from pipeline.registry import load_registry, group_by_module, sample_params
 from pipeline.sim_metrics import gate as _gate, signature as _signature, simulate_metrics as _simulate_metrics
+
+def _write_yaml(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = yaml.safe_dump(payload, allow_unicode=False, sort_keys=False)
+    path.write_text(text, encoding="utf-8")
+
+def _parse_drives(drives: str) -> list[str]:
+    return [x.strip() for x in drives.split(",") if x.strip()]
+
+def _load_index_any(path: Path) -> dict | None:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+def _select_representative_drives(idx: dict, k: int) -> list[str]:
+    tiles = idx.get("tiles", []) or []
+    tiles = [t for t in tiles if t.get("lidar_count", 0) > 0]
+    if not tiles:
+        return []
+    tiles_sorted = sorted(
+        tiles,
+        key=lambda t: (float(t.get("image_coverage", 0.0)), int(t.get("lidar_count", 0))),
+    )
+    if k <= 1:
+        return [tiles_sorted[len(tiles_sorted) // 2].get("tile_id")]
+    picks = []
+    for i in range(k):
+        pos = round(i * (len(tiles_sorted) - 1) / (k - 1))
+        picks.append(tiles_sorted[pos].get("tile_id"))
+    # unique preserve order
+    seen = set()
+    out = []
+    for d in picks:
+        if d and d not in seen:
+            out.append(d)
+            seen.add(d)
+    return out
+
+def _extract_eval_run_dir(text: str, repo: Path) -> Path | None:
+    m = re.search(r"\[EVAL\]\s+DONE\s+->\s+(.+)", text)
+    if not m:
+        return None
+    raw = m.group(1).strip().strip("\"'")
+    p = Path(raw)
+    if not p.is_absolute():
+        p = repo / p
+    return p
+
+def _latest_eval_run(repo: Path) -> Path | None:
+    runs_dir = repo / "runs"
+    if not runs_dir.exists():
+        return None
+    eval_dirs = [p for p in runs_dir.iterdir() if p.is_dir() and p.name.startswith("eval_")]
+    if not eval_dirs:
+        return None
+    eval_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return eval_dirs[0]
+
+def _extract_json_section(text: str, section: str) -> dict | None:
+    pattern = rf"## {re.escape(section)}\\s+```json\\s+(.*?)\\s+```"
+    m = re.search(pattern, text, re.DOTALL)
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except json.JSONDecodeError:
+        return None
+
+def _read_run_card(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    metrics = _extract_json_section(text, "metrics") or {}
+    gate = None
+    gate_reason = None
+    for line in text.splitlines():
+        if line.startswith("- gate:"):
+            gate = line.split(":", 1)[1].strip()
+        elif line.startswith("- gate_reason:"):
+            gate_reason = line.split(":", 1)[1].strip()
+    return {"metrics": metrics, "gate": gate, "gate_reason": gate_reason}
+
+def _run_eval_cmd(
+    repo: Path,
+    config_path: Path,
+    max_frames: int,
+    data_root: str | None,
+    prior_root: str | None,
+    drives: list[str] | None,
+) -> Path:
+    cmd = [
+        "cmd.exe",
+        "/c",
+        str(repo / "scripts" / "eval.cmd"),
+        "--config",
+        str(config_path),
+    ]
+    if data_root:
+        cmd += ["--data-root", data_root]
+    if prior_root:
+        cmd += ["--prior-root", prior_root]
+    if max_frames and max_frames > 0:
+        cmd += ["--max-frames", str(max_frames)]
+    if drives:
+        cmd += ["--drives", ",".join(drives)]
+
+    proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True)
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    run_dir = _extract_eval_run_dir(output, repo)
+    if run_dir is None:
+        run_dir = _latest_eval_run(repo)
+    if proc.returncode != 0 or run_dir is None:
+        raise SystemExit(f"ERROR: eval.cmd failed (code={proc.returncode}). Output:\n{output}")
+    return run_dir
+
+def _score_one_config_real(
+    repo: Path,
+    cfg: dict,
+    arms: dict,
+    gates: dict,
+    run_dir: Path,
+    max_frames: int,
+    data_root: str | None,
+    prior_root: str | None,
+    drives: list[str] | None,
+    only_arms: list[str] | None = None,
+) -> tuple[bool, float, dict, Path]:
+    cfg_id = cfg.get("config_id", "CFG")
+    cfg_path = run_dir / "candidates" / f"{cfg_id}.yaml"
+    _write_yaml(cfg_path, cfg)
+    eval_run_dir = _run_eval_cmd(repo, cfg_path, max_frames, data_root, prior_root, drives)
+
+    total = 0.0
+    any_fail = False
+    per_arm = {}
+    arm_list = only_arms or list(arms.keys())
+    for arm_name in arm_list:
+        rc_path = eval_run_dir / f"RunCard_{arm_name}.md"
+        if not rc_path.exists():
+            any_fail = True
+            break
+        rc = _read_run_card(rc_path)
+        m = rc.get("metrics", {})
+        ok, _ = _gate(m, gates)
+        per_arm[arm_name] = {"ok": ok, "metrics": m, "run_dir": str(eval_run_dir)}
+        if not ok:
+            any_fail = True
+            break
+        total += m["C"] - 0.25 * m["B_roughness"] - 0.01 * m["A_dangling_per_km"] - 0.5 * m["conflict_rate"]
+    return (not any_fail), total, per_arm, eval_run_dir
 
 def _score_one_config(cfg: dict, arms: dict, gates: dict) -> tuple[bool, float, dict]:
     total = 0.0
@@ -25,6 +181,17 @@ def _score_one_config(cfg: dict, arms: dict, gates: dict) -> tuple[bool, float, 
     return (not any_fail), total, per_arm
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--mode", default="sim", choices=["sim", "real"], help="autotune mode")
+    ap.add_argument("--data-root", default="", help="KITTI-360 root (optional, default=POC_DATA_ROOT)")
+    ap.add_argument("--prior-root", default="", help="prior root (optional, default=POC_PRIOR_ROOT or data-root)")
+    ap.add_argument("--index", default="cache/kitti360_index.json", help="index cache path")
+    ap.add_argument("--drives", default="", help="comma separated drives subset (optional)")
+    ap.add_argument("--stageA-max-frames", type=int, default=0, help="override stage A max_frames")
+    ap.add_argument("--stageB-max-frames", type=int, default=0, help="override stage B max_frames")
+    ap.add_argument("--stageC-max-frames", type=int, default=0, help="override stage C max_frames")
+    args = ap.parse_args()
+
     repo = Path(__file__).resolve().parents[1]
     cfg_active = load_yaml(repo / "configs" / "active.yaml")
     arms = load_yaml(repo / "configs" / "arms.yaml").get("arms", {})
@@ -42,6 +209,30 @@ def main() -> int:
 
     run_id = new_run_id("autotune")
     run_dir = ensure_dir(repo / "runs" / run_id)
+
+    mode = str(args.mode).lower()
+    data_root = args.data_root or os.environ.get("POC_DATA_ROOT", "")
+    prior_root = args.prior_root or os.environ.get("POC_PRIOR_ROOT", "")
+    index_path = repo / args.index
+
+    stageA_max_frames = int(args.stageA_max_frames) if args.stageA_max_frames > 0 else int(search.get("real_stageA_max_frames", 500))
+    stageB_max_frames = int(args.stageB_max_frames) if args.stageB_max_frames > 0 else int(search.get("real_stageB_max_frames", 1000))
+    stageC_max_frames = int(args.stageC_max_frames) if args.stageC_max_frames > 0 else int(search.get("real_stageC_max_frames", 2000))
+    stageA_drive_count = int(search.get("real_stageA_drive_count", 3))
+    drives_arg = _parse_drives(args.drives) if args.drives else []
+
+    if mode == "real":
+        if not data_root:
+            raise SystemExit("ERROR: --data-root or POC_DATA_ROOT is required for real mode.")
+        idx = _load_index_any(index_path)
+        if not drives_arg:
+            if idx is None:
+                raise SystemExit("ERROR: index cache missing and --drives not provided for real mode.")
+            stageA_drives = _select_representative_drives(idx, stageA_drive_count)
+        else:
+            stageA_drives = drives_arg
+        if not stageA_drives:
+            raise SystemExit("ERROR: no drives selected for Stage A.")
 
     # -------- Stage A: per-module screening --------
     stageA = {}
@@ -67,7 +258,21 @@ def main() -> int:
             cand_modules[key] = {"impl_id": impl.get("impl_id"), "params": sample_params(impl, rng)}
             cand["modules"] = cand_modules
 
-            ok, score, _ = _score_one_config(cand, {"Arm0": arms["Arm0"]}, gates)  # Stage A 默认只跑 Arm0
+            if mode == "sim":
+                ok, score, _ = _score_one_config(cand, {"Arm0": arms["Arm0"]}, gates)  # Stage A 默认只跑 Arm0
+            else:
+                ok, score, _per_arm, _ = _score_one_config_real(
+                    repo=repo,
+                    cfg=cand,
+                    arms=arms,
+                    gates=gates,
+                    run_dir=run_dir,
+                    max_frames=stageA_max_frames,
+                    data_root=data_root,
+                    prior_root=prior_root or data_root,
+                    drives=stageA_drives,
+                    only_arms=["Arm0"],
+                )
             if ok:
                 scored.append((score, impl.get("impl_id"), cand_modules[key]["params"]))
         scored.sort(reverse=True, key=lambda x: x[0])
@@ -86,6 +291,9 @@ def main() -> int:
             space[mod_key] = [(0.0, base.get("impl_id"), base.get("params", {}))]
 
     trials = []
+    stageB_drives = drives_arg if drives_arg else (stageA_drives if mode == "real" else None)
+    stageC_drives = drives_arg if drives_arg else None
+
     for i in range(budget):
         cand = deepcopy(cfg_active)
         cand["config_id"] = f"{cfg_active.get('config_id')}_B_T{i:03d}"
@@ -106,15 +314,31 @@ def main() -> int:
             cand_modules[mod_key] = {"impl_id": impl_id, "params": params}
         cand["modules"] = cand_modules
 
-        ok, score, per_arm = _score_one_config(cand, arms, gates)
-        if ok:
-            trials.append({"score": score, "config": cand, "per_arm": per_arm})
+        if mode == "sim":
+            ok, score, per_arm = _score_one_config(cand, arms, gates)
+            if ok:
+                trials.append({"score": score, "config": cand, "per_arm": per_arm})
+        else:
+            ok, score, per_arm, eval_run_dir = _score_one_config_real(
+                repo=repo,
+                cfg=cand,
+                arms=arms,
+                gates=gates,
+                run_dir=run_dir,
+                max_frames=stageB_max_frames,
+                data_root=data_root,
+                prior_root=prior_root or data_root,
+                drives=stageB_drives,
+                only_arms=None,
+            )
+            if ok:
+                trials.append({"score": score, "config": cand, "per_arm": per_arm, "run_dir": str(eval_run_dir)})
 
     trials.sort(reverse=True, key=lambda x: x["score"])
     (run_dir / "trials_top.json").write_text(json.dumps(trials[:topn], ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Leaderboard
-    lines = ["# Leaderboard", "", f"- run_id: {run_id}", f"- budget_trials: {budget}", ""]
+    lines = ["# Leaderboard", "", f"- run_id: {run_id}", f"- budget_trials: {budget}", f"- mode: {mode}", ""]
     for rank, t in enumerate(trials[:10], 1):
         lines.append(f"{rank}. {t['config']['config_id']}  score={t['score']:.6f}")
     (run_dir / "leaderboard.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -122,6 +346,27 @@ def main() -> int:
     # -------- Stage C: freeze candidate --------
     if trials:
         winner = trials[0]["config"]
+        if mode == "real":
+            stageC_results = []
+            for t in trials[:topn]:
+                ok, score, per_arm, eval_run_dir = _score_one_config_real(
+                    repo=repo,
+                    cfg=t["config"],
+                    arms=arms,
+                    gates=gates,
+                    run_dir=run_dir,
+                    max_frames=stageC_max_frames,
+                    data_root=data_root,
+                    prior_root=prior_root or data_root,
+                    drives=stageC_drives,
+                    only_arms=None,
+                )
+                if ok:
+                    stageC_results.append({"score": score, "config": t["config"], "per_arm": per_arm, "run_dir": str(eval_run_dir)})
+            if stageC_results:
+                stageC_results.sort(reverse=True, key=lambda x: x["score"])
+                winner = stageC_results[0]["config"]
+
         (run_dir / "winner_active.yaml").write_text(json.dumps(winner, ensure_ascii=False, indent=2), encoding="utf-8")
         (run_dir / "winner_hint.md").write_text(
             f"# Winner\n\n- config_id: {winner.get('config_id')}\n- note: review winner_active.yaml then decide whether to apply to configs/active.yaml\n",

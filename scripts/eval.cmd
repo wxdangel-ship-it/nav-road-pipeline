@@ -11,6 +11,7 @@ set CFG=configs\active.yaml
 set DATA=%POC_DATA_ROOT%
 set PRIOR=%POC_PRIOR_ROOT%
 set MAXF=
+set DRIVES=
 
 :parse
 if "%~1"=="" goto run
@@ -18,6 +19,7 @@ if /I "%~1"=="--config" (set CFG=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--data-root" (set DATA=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--prior-root" (set PRIOR=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--max-frames" (set MAXF=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--drives" (set DRIVES=%~2 & shift & shift & goto parse)
 shift
 goto parse
 
@@ -27,18 +29,10 @@ if "%DATA%"=="" (
   exit /b 2
 )
 
-if "%MAXF%"=="" (
-  if "%PRIOR%"=="" (
-    .venv\Scripts\python.exe -m pipeline.eval_all --config "%CFG%" --data-root "%DATA%"
-  ) else (
-    .venv\Scripts\python.exe -m pipeline.eval_all --config "%CFG%" --data-root "%DATA%" --prior-root "%PRIOR%"
-  )
-) else (
-  if "%PRIOR%"=="" (
-    .venv\Scripts\python.exe -m pipeline.eval_all --config "%CFG%" --data-root "%DATA%" --max-frames %MAXF%
-  ) else (
-    .venv\Scripts\python.exe -m pipeline.eval_all --config "%CFG%" --data-root "%DATA%" --prior-root "%PRIOR%" --max-frames %MAXF%
-  )
-)
+set CMD=.venv\Scripts\python.exe -m pipeline.eval_all --config "%CFG%" --data-root "%DATA%"
+if not "%PRIOR%"=="" set CMD=%CMD% --prior-root "%PRIOR%"
+if not "%MAXF%"=="" set CMD=%CMD% --max-frames %MAXF%
+if not "%DRIVES%"=="" set CMD=%CMD% --drives "%DRIVES%"
+call %CMD%
 
 endlocal
