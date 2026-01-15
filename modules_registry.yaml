@@ -1,0 +1,130 @@
+﻿implementations:
+  - module: M0
+    impl_id: m0_none
+    impl_version: 1.0.0
+    description: "No priors"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema: []
+    requires: {priors_osm: false, priors_sat: false, trajectories: false, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [], outputs: []}
+    status: stable
+    added_date: "2026-01-15"
+
+  - module: M0
+    impl_id: m0_align2
+    impl_version: 0.1.0
+    description: "Alt prior alignment strategy (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: align_tol_m, type: float, default: 1.2, range: [0.2, 3.0], scale: linear, tunable: true}
+    requires: {priors_osm: true, priors_sat: true, trajectories: false, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [priors], outputs: [road_prior_mask]}
+    status: candidate
+    added_date: "2026-01-15"
+
+  - module: M2
+    impl_id: m2_stub
+    impl_version: 0.0.1
+    description: "Baseline drivable candidate (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: dummy_thr, type: float, default: 0.5, range: [0.1, 0.9], scale: linear, tunable: true}
+    requires: {priors_osm: false, priors_sat: false, trajectories: false, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [pc_tile], outputs: [drivable_candidate_mask]}
+    status: stable
+    added_date: "2026-01-15"
+
+  - module: M2
+    impl_id: m2_stub2
+    impl_version: 0.0.1
+    description: "Alt drivable candidate (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: dummy_thr, type: float, default: 0.45, range: [0.05, 0.95], scale: linear, tunable: true}
+      - {name: boost, type: float, default: 0.02, range: [0.0, 0.05], scale: linear, tunable: true}
+    requires: {priors_osm: false, priors_sat: false, trajectories: false, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [pc_tile], outputs: [drivable_candidate_mask]}
+    status: candidate
+    added_date: "2026-01-15"
+
+  - module: M4
+    impl_id: m4_stub
+    impl_version: 0.0.1
+    description: "Baseline dual centerline (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: split_eps_m, type: float, default: 12.0, range: [6.0, 25.0], scale: linear, tunable: true}
+    requires: {priors_osm: false, priors_sat: false, trajectories: true, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [trajectories], outputs: [centerlines]}
+    status: stable
+    added_date: "2026-01-15"
+
+  - module: M4
+    impl_id: m4_stub2
+    impl_version: 0.0.1
+    description: "Alt dual centerline (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: split_eps_m, type: float, default: 10.0, range: [4.0, 20.0], scale: linear, tunable: true}
+      - {name: dir_weight, type: float, default: 0.5, range: [0.1, 0.9], scale: linear, tunable: true}
+    requires: {priors_osm: false, priors_sat: false, trajectories: true, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [trajectories], outputs: [centerlines]}
+    status: candidate
+    added_date: "2026-01-15"
+
+  - module: M6a
+    impl_id: m6a_stub
+    impl_version: 0.0.1
+    description: "Baseline polygon smoothing (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: smooth_lambda, type: float, default: 0.7, range: [0.2, 1.5], scale: linear, tunable: true}
+    requires: {priors_osm: false, priors_sat: false, trajectories: false, images: false}
+    degrade_policy: {on_missing: disable}
+    io_contract: {inputs: [road_polygon], outputs: [road_polygon]}
+    status: stable
+    added_date: "2026-01-15"
+
+  - module: M6a
+    impl_id: m6a_stub2
+    impl_version: 0.0.1
+    description: "Alt polygon smoothing (stub)"
+    runtime_target: windows-native
+    device: cpu
+    min_gpu_mem_gb: 0
+    artifacts: {weights: null, license: "N/A"}
+    param_schema:
+      - {name: smooth_lambda, type: float, default: 0.9, range: [0.2, 2.0], scale: linear, tunable: true}
+      - {name: max_shift_m, type: float, default: 1.0, range: [0.2, 3.0], scale: linear, tunable: true}
+    requires: {priors_osm: true, priors_sat: true, trajectories: false, images: false}
+    degrade_policy: {on_missing: fallback, fallback_impl_id: m6a_stub}
+    io_contract: {inputs: [road_polygon, priors], outputs: [road_polygon]}
+    status: candidate
+    added_date: "2026-01-15"

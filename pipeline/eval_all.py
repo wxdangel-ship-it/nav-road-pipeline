@@ -1,6 +1,8 @@
 ﻿from __future__ import annotations
 from pathlib import Path
+import argparse
 import hashlib
+import json
 from pipeline._io import load_yaml, ensure_dir, new_run_id, RUNTIME_TARGET
 from pipeline._report import write_run_card, write_sync_pack
 
@@ -9,17 +11,33 @@ def _stable_rand01(s: str) -> float:
     x = int(h[:8], 16)
     return (x % 100000) / 100000.0
 
-def _simulate_metrics(config_id: str, arm: str, use_osm: bool, use_sat: bool) -> dict:
-    base = 0.85 + 0.05 * (_stable_rand01(config_id + arm) - 0.5)
+def _signature(config: dict, arm_name: str, use_osm: bool, use_sat: bool) -> str:
+    payload = {
+        "config_id": config.get("config_id"),
+        "modules": config.get("modules", {}),
+        "arm": arm_name,
+        "use_osm": use_osm,
+        "use_sat": use_sat,
+    }
+    s = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return s
+
+def _simulate_metrics(sig: str, use_osm: bool, use_sat: bool) -> dict:
+    # C 优先：受组合与先验影响
+    base = 0.84 + 0.06 * (_stable_rand01("C" + sig) - 0.5)
+
     bonus = 0.0
     if use_osm:
-        bonus += 0.01 + 0.01 * (_stable_rand01("osm" + config_id) - 0.5)
+        bonus += 0.008 + 0.010 * (_stable_rand01("OSM" + sig) - 0.5)
     if use_sat:
-        bonus += 0.01 + 0.01 * (_stable_rand01("sat" + config_id) - 0.5)
+        bonus += 0.008 + 0.010 * (_stable_rand01("SAT" + sig) - 0.5)
 
     C = min(0.99, base + bonus)
-    B = 0.25 + 0.10 * (_stable_rand01("B" + config_id + arm))
-    A = 2.0 + 4.0 * (_stable_rand01("A" + config_id + arm))
+
+    # B/A：受组合与先验冲突影响（冲突率越高，B/A 趋于变差）
+    conflict = 0.02 + 0.08 * _stable_rand01("CR" + sig)
+    B = 0.22 + 0.18 * _stable_rand01("B" + sig) + 0.10 * conflict
+    A = 1.8 + 5.0 * _stable_rand01("A" + sig) + 8.0 * conflict
 
     prior_used = "NONE"
     if use_osm and use_sat:
@@ -29,14 +47,17 @@ def _simulate_metrics(config_id: str, arm: str, use_osm: bool, use_sat: bool) ->
     elif use_sat:
         prior_used = "SAT"
 
+    prior_conf = 0.55 + 0.35 * _stable_rand01("PC" + sig)
+    align_res = 0.5 + 1.5 * _stable_rand01("AR" + sig)
+
     return {
         "C": round(C, 4),
         "B_roughness": round(B, 4),
         "A_dangling_per_km": round(A, 3),
         "prior_used": prior_used,
-        "prior_confidence_p50": round(0.7 + 0.2 * _stable_rand01("pc50" + config_id + arm), 3),
-        "alignment_residual_p50": round(0.8 + 0.8 * _stable_rand01("ar50" + config_id + arm), 3),
-        "conflict_rate": round(0.02 + 0.06 * _stable_rand01("cr" + config_id + arm), 3),
+        "prior_confidence_p50": round(prior_conf, 3),
+        "alignment_residual_p50": round(align_res, 3),
+        "conflict_rate": round(conflict, 3),
     }
 
 def _gate(metrics: dict, gates: dict) -> tuple[bool, str]:
@@ -50,31 +71,38 @@ def _gate(metrics: dict, gates: dict) -> tuple[bool, str]:
     return True, "PASS"
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="configs/active.yaml", help="config yaml path")
+    args = ap.parse_args()
+
     repo = Path(__file__).resolve().parents[1]
-    cfg = load_yaml(repo / "configs" / "active.yaml")
+    cfg = load_yaml(repo / args.config)
     arms = load_yaml(repo / "configs" / "arms.yaml").get("arms", {})
     gates = load_yaml(repo / "configs" / "gates.yaml")
 
     run_id = new_run_id("eval")
     run_dir = ensure_dir(repo / "runs" / run_id)
 
-    (run_dir / "StateSnapshot.md").write_text(
-        f"run_id={run_id}\nconfig_id={cfg.get('config_id')}\nruntime_target={RUNTIME_TARGET}\n",
-        encoding="utf-8"
-    )
-
-    config_id = str(cfg.get("config_id", "CFG_UNKNOWN"))
+    # StateSnapshot
+    snap = {
+        "run_id": run_id,
+        "runtime_target": RUNTIME_TARGET,
+        "config_id": cfg.get("config_id"),
+        "modules": cfg.get("modules", {}),
+    }
+    (run_dir / "StateSnapshot.md").write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
 
     for arm_name, a in arms.items():
         use_osm = bool(a.get("use_osm", False))
         use_sat = bool(a.get("use_sat", False))
-        m = _simulate_metrics(config_id, arm_name, use_osm, use_sat)
+        sig = _signature(cfg, arm_name, use_osm, use_sat)
+        m = _simulate_metrics(sig, use_osm, use_sat)
         ok, reason = _gate(m, gates)
 
         run_card = {
             "run_id": run_id,
             "arm": arm_name,
-            "config_id": config_id,
+            "config_id": cfg.get("config_id"),
             "runtime_target": RUNTIME_TARGET,
             "gate": "PASS" if ok else "FAIL",
             "gate_reason": reason,
@@ -83,9 +111,9 @@ def main() -> int:
         write_run_card(run_dir / f"RunCard_{arm_name}.md", run_card)
         write_sync_pack(
             run_dir / f"SyncPack_{arm_name}.md",
-            diff={"config_id": config_id, "arm": arm_name},
+            diff={"config_id": cfg.get("config_id"), "arm": arm_name, "config_path": args.config},
             evidence=run_card,
-            ask="Review results and propose next actions (<=3)."
+            ask="If FAIL, propose <=3 fixes. If PASS, suggest next autotune actions."
         )
 
     print(f"[EVAL] DONE -> {run_dir}")
