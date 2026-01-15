@@ -118,6 +118,7 @@ def _run_eval_cmd(
     max_frames: int,
     data_root: str | None,
     prior_root: str | None,
+    index_path: Path | None,
     drives: list[str] | None,
 ) -> Path:
     cmd = [
@@ -133,6 +134,8 @@ def _run_eval_cmd(
         cmd += ["--prior-root", prior_root]
     if max_frames and max_frames > 0:
         cmd += ["--max-frames", str(max_frames)]
+    if index_path:
+        cmd += ["--index", str(index_path)]
     if drives:
         cmd += ["--drives", ",".join(drives)]
 
@@ -145,6 +148,23 @@ def _run_eval_cmd(
         raise SystemExit(f"ERROR: eval.cmd failed (code={proc.returncode}). Output:\n{output}")
     return run_dir
 
+def _run_index_cmd(repo: Path, data_root: str, max_frames: int, out_path: Path) -> None:
+    cmd = [
+        "cmd.exe",
+        "/c",
+        str(repo / "scripts" / "index.cmd"),
+        "--data-root",
+        data_root,
+        "--max-frames",
+        str(max_frames),
+        "--out",
+        str(out_path),
+    ]
+    proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True)
+    if proc.returncode != 0:
+        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+        raise SystemExit(f"ERROR: index.cmd failed (code={proc.returncode}). Output:\n{output}")
+
 def _score_one_config_real(
     repo: Path,
     cfg: dict,
@@ -154,13 +174,14 @@ def _score_one_config_real(
     max_frames: int,
     data_root: str | None,
     prior_root: str | None,
+    index_path: Path | None,
     drives: list[str] | None,
     only_arms: list[str] | None = None,
 ) -> tuple[bool, float, dict, Path]:
     cfg_id = cfg.get("config_id", "CFG")
     cfg_path = run_dir / "candidates" / f"{cfg_id}.yaml"
     _write_yaml(cfg_path, cfg)
-    eval_run_dir = _run_eval_cmd(repo, cfg_path, max_frames, data_root, prior_root, drives)
+    eval_run_dir = _run_eval_cmd(repo, cfg_path, max_frames, data_root, prior_root, index_path, drives)
 
     total = 0.0
     any_fail = False
@@ -244,6 +265,10 @@ def main() -> int:
     if mode == "real":
         if not data_root:
             raise SystemExit("ERROR: --data-root or POC_DATA_ROOT is required for real mode.")
+        if str(args.index) == "cache/kitti360_index.json":
+            index_path = repo / f"cache/kitti360_index_{default_max_frames}.json"
+        if not index_path.exists():
+            _run_index_cmd(repo, data_root, default_max_frames, index_path)
         idx = _load_index_any(index_path)
         if not drives_arg:
             if idx is None:
@@ -290,6 +315,7 @@ def main() -> int:
                     max_frames=stageA_max_frames,
                     data_root=data_root,
                     prior_root=prior_root or data_root,
+                    index_path=index_path,
                     drives=stageA_drives,
                     only_arms=["Arm0"],
                 )
@@ -348,6 +374,7 @@ def main() -> int:
                 max_frames=stageB_max_frames,
                 data_root=data_root,
                 prior_root=prior_root or data_root,
+                index_path=index_path,
                 drives=stageB_drives,
                 only_arms=None,
             )
@@ -378,6 +405,7 @@ def main() -> int:
                     max_frames=stageC_max_frames,
                     data_root=data_root,
                     prior_root=prior_root or data_root,
+                    index_path=index_path,
                     drives=stageC_drives,
                     only_arms=None,
                 )

@@ -12,6 +12,7 @@ set DATA=%POC_DATA_ROOT%
 set PRIOR=%POC_PRIOR_ROOT%
 set MAXF=
 set DRIVES=
+set INDEX=
 
 :parse
 if "%~1"=="" goto run
@@ -20,6 +21,7 @@ if /I "%~1"=="--data-root" (set DATA=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--prior-root" (set PRIOR=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--max-frames" (set MAXF=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--drives" (set DRIVES=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--index" (set INDEX=%~2 & shift & shift & goto parse)
 shift
 goto parse
 
@@ -33,6 +35,7 @@ set CMD=.venv\Scripts\python.exe -m pipeline.eval_all --config "%CFG%" --data-ro
 if not "%PRIOR%"=="" set CMD=%CMD% --prior-root "%PRIOR%"
 if not "%MAXF%"=="" set CMD=%CMD% --max-frames %MAXF%
 if not "%DRIVES%"=="" set CMD=%CMD% --drives "%DRIVES%"
+if not "%INDEX%"=="" set CMD=%CMD% --index "%INDEX%"
 call %CMD%
 
 endlocal
