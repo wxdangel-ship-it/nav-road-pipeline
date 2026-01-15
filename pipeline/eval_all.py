@@ -102,24 +102,33 @@ def main() -> int:
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
-    cfg = load_yaml(repo / args.config)
+    def _clean_str(s: str) -> str:
+        return s.strip() if isinstance(s, str) else s
+
+    cfg_path = _clean_str(args.config)
+    data_root_arg = _clean_str(args.data_root)
+    prior_root_arg = _clean_str(args.prior_root) if args.prior_root else ""
+    drives_arg = _clean_str(args.drives)
+    index_arg = _clean_str(args.index)
+
+    cfg = load_yaml(repo / cfg_path)
     arms = load_yaml(repo / "configs" / "arms.yaml").get("arms", {})
     gates = load_yaml(repo / "configs" / "gates.yaml")
 
     run_id = new_run_id("eval")
     run_dir = ensure_dir(repo / "runs" / run_id)
 
-    data_root = Path(args.data_root)
-    prior_root = Path(args.prior_root) if args.prior_root else data_root
+    data_root = Path(data_root_arg)
+    prior_root = Path(prior_root_arg) if prior_root_arg else data_root
     if not data_root.exists():
         raise SystemExit(f"ERROR: data_root not exists: {data_root}")
 
-    drive_list = [x.strip() for x in args.drives.split(",") if x.strip()] if args.drives else None
+    drive_list = [x.strip() for x in drives_arg.split(",") if x.strip()] if drives_arg else None
     max_frames = args.max_frames if args.max_frames and args.max_frames > 0 else None
 
     # ----- index cache fast path -----
     index_used = False
-    index_path = repo / args.index
+    index_path = repo / index_arg
     idx = try_use_index(index_path, data_root, max_frames)
 
     if idx is not None:
@@ -155,12 +164,12 @@ def main() -> int:
         "run_id": run_id,
         "runtime_target": RUNTIME_TARGET,
         "config_id": cfg.get("config_id"),
-        "config_path": args.config,
+        "config_path": cfg_path,
         "data_root": str(data_root),
         "prior_root": str(prior_root),
         "drives": drive_list,
         "max_frames": max_frames,
-        "index_path": args.index,
+        "index_path": index_arg,
         "modules": cfg.get("modules", {}),
         "data_summary": ds_summary,
     }
@@ -186,6 +195,10 @@ def main() -> int:
             "data_summary": ds_summary,
         }
         write_run_card(run_dir / f"RunCard_{arm_name}.md", run_card)
+        (run_dir / f"RunCard_{arm_name}.json").write_text(
+            json.dumps(run_card, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         write_sync_pack(
             run_dir / f"SyncPack_{arm_name}.md",
             diff={"config_id": cfg.get("config_id"), "arm": arm_name, "config_path": args.config},

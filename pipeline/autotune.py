@@ -53,7 +53,7 @@ def _select_representative_drives(idx: dict, k: int) -> list[str]:
     return out
 
 def _extract_eval_run_dir(text: str, repo: Path) -> Path | None:
-    m = re.search(r"\[EVAL\]\s+DONE\s+->\s+(.+)", text)
+    m = re.search(r"\[EVAL\]\s+DONE\s+->\s+([^\r\n(]+)", text)
     if not m:
         return None
     raw = m.group(1).strip().strip("\"'")
@@ -73,8 +73,8 @@ def _latest_eval_run(repo: Path) -> Path | None:
     return eval_dirs[0]
 
 def _extract_json_section(text: str, section: str) -> dict | None:
-    pattern = rf"## {re.escape(section)}\\s+```json\\s+(.*?)\\s+```"
-    m = re.search(pattern, text, re.DOTALL)
+    pattern = rf"## {re.escape(section)}\s+```json\s+(.*?)\s+```"
+    m = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
     if not m:
         return None
     try:
@@ -82,9 +82,27 @@ def _extract_json_section(text: str, section: str) -> dict | None:
     except json.JSONDecodeError:
         return None
 
+def _extract_metrics_block(text: str) -> dict:
+    blocks = re.findall(r"```json\s+(.*?)\s+```", text, re.DOTALL)
+    for blk in blocks:
+        try:
+            data = json.loads(blk)
+        except json.JSONDecodeError:
+            continue
+        if all(k in data for k in ["C", "B_roughness", "A_dangling_per_km"]):
+            return data
+    return {}
+
 def _read_run_card(path: Path) -> dict:
+    json_path = path.with_suffix(".json")
+    if json_path.exists():
+        try:
+            return json.loads(json_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+
     text = path.read_text(encoding="utf-8")
-    metrics = _extract_json_section(text, "metrics") or {}
+    metrics = _extract_json_section(text, "metrics") or _extract_metrics_block(text)
     gate = None
     gate_reason = None
     for line in text.splitlines():
@@ -187,6 +205,7 @@ def main() -> int:
     ap.add_argument("--prior-root", default="", help="prior root (optional, default=POC_PRIOR_ROOT or data-root)")
     ap.add_argument("--index", default="cache/kitti360_index.json", help="index cache path")
     ap.add_argument("--drives", default="", help="comma separated drives subset (optional)")
+    ap.add_argument("--max-frames", type=int, default=2000, help="max frames for real-mode evals")
     ap.add_argument("--stageA-max-frames", type=int, default=0, help="override stage A max_frames")
     ap.add_argument("--stageB-max-frames", type=int, default=0, help="override stage B max_frames")
     ap.add_argument("--stageC-max-frames", type=int, default=0, help="override stage C max_frames")
@@ -215,9 +234,10 @@ def main() -> int:
     prior_root = args.prior_root or os.environ.get("POC_PRIOR_ROOT", "")
     index_path = repo / args.index
 
-    stageA_max_frames = int(args.stageA_max_frames) if args.stageA_max_frames > 0 else int(search.get("real_stageA_max_frames", 500))
-    stageB_max_frames = int(args.stageB_max_frames) if args.stageB_max_frames > 0 else int(search.get("real_stageB_max_frames", 1000))
-    stageC_max_frames = int(args.stageC_max_frames) if args.stageC_max_frames > 0 else int(search.get("real_stageC_max_frames", 2000))
+    default_max_frames = int(args.max_frames) if args.max_frames and args.max_frames > 0 else 2000
+    stageA_max_frames = int(args.stageA_max_frames) if args.stageA_max_frames > 0 else default_max_frames
+    stageB_max_frames = int(args.stageB_max_frames) if args.stageB_max_frames > 0 else default_max_frames
+    stageC_max_frames = int(args.stageC_max_frames) if args.stageC_max_frames > 0 else default_max_frames
     stageA_drive_count = int(search.get("real_stageA_drive_count", 3))
     drives_arg = _parse_drives(args.drives) if args.drives else []
 
