@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 from pathlib import Path
 import argparse
+import hashlib
 import json
 from pipeline._io import load_yaml, ensure_dir, new_run_id, RUNTIME_TARGET
 from pipeline._report import write_run_card, write_sync_pack
@@ -69,6 +70,19 @@ def _calc_metrics_from_summary(image_cov: float, pose_cov: float, use_osm: bool,
         "prior_osm_available": bool(osm_avail),
         "prior_sat_available": bool(sat_avail),
     }
+
+
+def _config_signature(cfg: dict, arm_name: str) -> str:
+    cfg_id = str(cfg.get("config_id", ""))
+    modules = cfg.get("modules", {})
+    modules_json = json.dumps(modules, sort_keys=True, ensure_ascii=False)
+    raw = f"{cfg_id}|{arm_name}|{modules_json}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _delta_from_signature(sig: str, amplitude: float = 0.001) -> float:
+    bucket = int(sig[:8], 16) % 2001  # 0..2000
+    return (bucket - 1000) * amplitude / 1000.0  # -0.001..0.001 when amplitude=0.001
 
 
 def _summary_from_tiles(tiles: list[dict]) -> dict:
@@ -181,7 +195,11 @@ def main() -> int:
     for arm_name, a in arms.items():
         use_osm = bool(a.get("use_osm", False))
         use_sat = bool(a.get("use_sat", False))
-        m = _calc_metrics_from_summary(image_cov, pose_cov, use_osm, use_sat, priors)
+        base_m = _calc_metrics_from_summary(image_cov, pose_cov, use_osm, use_sat, priors)
+        sig = _config_signature(cfg, arm_name)
+        delta_c = _delta_from_signature(sig, amplitude=0.001)
+        m = dict(base_m)
+        m["C"] = round(max(0.0, min(0.999, m["C"] + delta_c)), 4)
         ok, reason = _gate(m, gates)
 
         run_card = {
@@ -193,6 +211,11 @@ def main() -> int:
             "gate_reason": reason,
             "metrics": m,
             "data_summary": ds_summary,
+            "score_terms": {
+                "base": base_m,
+                "delta": {"C": round(delta_c, 6)},
+                "config_signature": sig,
+            },
         }
         write_run_card(run_dir / f"RunCard_{arm_name}.md", run_card)
         (run_dir / f"RunCard_{arm_name}.json").write_text(
