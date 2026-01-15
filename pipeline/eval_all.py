@@ -7,6 +7,7 @@ from pipeline._io import load_yaml, ensure_dir, new_run_id, RUNTIME_TARGET
 from pipeline._report import write_run_card, write_sync_pack
 from pipeline.adapters.kitti360_adapter import summarize_dataset, infer_priors
 from pipeline.index_cache import try_use_index
+from pipeline.registry import load_registry
 
 
 def _gate(metrics: dict, gates: dict) -> tuple[bool, str]:
@@ -85,6 +86,57 @@ def _delta_from_signature(sig: str, amplitude: float = 0.001) -> float:
     return (bucket - 1000) * amplitude / 1000.0  # -0.001..0.001 when amplitude=0.001
 
 
+def _delta_triplet_from_signature(sig: str) -> dict:
+    return {
+        "C": _delta_from_signature(sig, amplitude=0.001),
+        "B": _delta_from_signature(sig[8:] + sig[:8], amplitude=0.002),
+        "A": _delta_from_signature(sig[16:] + sig[:16], amplitude=0.05),
+    }
+
+
+def _surrogate_delta(cfg: dict, registry: list[dict]) -> dict:
+    modules = cfg.get("modules", {}) or {}
+    defaults = {}
+    for impl in registry:
+        mod = impl.get("module")
+        impl_id = impl.get("impl_id")
+        param_schema = impl.get("param_schema", []) or []
+        defaults[(mod, impl_id)] = {p.get("name"): p.get("default") for p in param_schema}
+
+    dC = 0.0
+    dB = 0.0
+    dA = 0.0
+
+    m6a = modules.get("M6a", {})
+    m6a_id = m6a.get("impl_id")
+    m6a_params = m6a.get("params", {}) or {}
+    m6a_def = defaults.get(("M6a", m6a_id), {})
+    smooth_def = m6a_def.get("smooth_lambda")
+    smooth_val = m6a_params.get("smooth_lambda")
+    if isinstance(smooth_def, (int, float)) and isinstance(smooth_val, (int, float)):
+        if smooth_val - smooth_def > 0.3:
+            dB += 0.001
+    max_shift_def = m6a_def.get("max_shift_m")
+    max_shift_val = m6a_params.get("max_shift_m")
+    if isinstance(max_shift_def, (int, float)) and isinstance(max_shift_val, (int, float)):
+        if max_shift_val - max_shift_def > 0.4:
+            dB += 0.0008
+
+    m2 = modules.get("M2", {})
+    m2_id = m2.get("impl_id")
+    m2_params = m2.get("params", {}) or {}
+    m2_def = defaults.get(("M2", m2_id), {})
+    dummy_def = m2_def.get("dummy_thr")
+    dummy_val = m2_params.get("dummy_thr")
+    if isinstance(dummy_def, (int, float)) and isinstance(dummy_val, (int, float)):
+        if dummy_val - dummy_def > 0.15:
+            dC -= 0.0015
+        elif dummy_val - dummy_def > 0.05:
+            dC -= 0.0008
+
+    return {"C": dC, "B": dB, "A": dA}
+
+
 def _summary_from_tiles(tiles: list[dict]) -> dict:
     total_lidar = sum(t.get("lidar_count", 0) for t in tiles)
     total_img_any = sum(t.get("img_any_match", 0) for t in tiles)
@@ -128,6 +180,7 @@ def main() -> int:
     cfg = load_yaml(repo / cfg_path)
     arms = load_yaml(repo / "configs" / "arms.yaml").get("arms", {})
     gates = load_yaml(repo / "configs" / "gates.yaml")
+    registry = load_registry(repo).get("implementations", [])
 
     run_id = new_run_id("eval")
     run_dir = ensure_dir(repo / "runs" / run_id)
@@ -197,9 +250,12 @@ def main() -> int:
         use_sat = bool(a.get("use_sat", False))
         base_m = _calc_metrics_from_summary(image_cov, pose_cov, use_osm, use_sat, priors)
         sig = _config_signature(cfg, arm_name)
-        delta_c = _delta_from_signature(sig, amplitude=0.001)
+        sig_delta = _delta_triplet_from_signature(sig)
+        surrogate = _surrogate_delta(cfg, registry)
         m = dict(base_m)
-        m["C"] = round(max(0.0, min(0.999, m["C"] + delta_c)), 4)
+        m["C"] = round(max(0.0, min(0.999, m["C"] + sig_delta["C"] + surrogate["C"])), 4)
+        m["B_roughness"] = round(max(0.0, m["B_roughness"] + sig_delta["B"] + surrogate["B"]), 4)
+        m["A_dangling_per_km"] = round(max(0.0, m["A_dangling_per_km"] + sig_delta["A"] + surrogate["A"]), 3)
         ok, reason = _gate(m, gates)
 
         run_card = {
@@ -213,7 +269,16 @@ def main() -> int:
             "data_summary": ds_summary,
             "score_terms": {
                 "base": base_m,
-                "delta": {"C": round(delta_c, 6)},
+                "delta": {
+                    "C": round(sig_delta["C"], 6),
+                    "B": round(sig_delta["B"], 6),
+                    "A": round(sig_delta["A"], 6),
+                },
+                "surrogate": {
+                    "C": round(surrogate["C"], 6),
+                    "B": round(surrogate["B"], 6),
+                    "A": round(surrogate["A"], 6),
+                },
                 "config_signature": sig,
             },
         }
