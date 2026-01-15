@@ -221,3 +221,7 @@ data/
 *.png
 *.mp4
 
+
+# local cache
+cache/
+
