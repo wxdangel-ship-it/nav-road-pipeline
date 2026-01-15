@@ -1,0 +1,84 @@
+﻿error_dict:
+  - code: E01
+    name: 漏检
+    desc: 道路面/骨架/路口面缺失，导致覆盖不足（C下降）
+    severity_default: S2
+    suspect_modules: [M2, M3, M4, M5]
+    verify_actions: [提高候选召回, 增加抽帧密度, 检查轨迹覆盖, 检查先验补漏开关]
+
+  - code: E02
+    name: 外溢
+    desc: 道路面扩展到非路面区域，或路口面过度膨胀（B变差）
+    severity_default: S2
+    suspect_modules: [M2, M3, M6a, M5, M6c]
+    verify_actions: [降低候选阈值外扩, 调整平滑强度与最大偏移, 检查先验冲突率]
+
+  - code: E03
+    name: 毛刺锯齿
+    desc: 面/线边界折点过密、曲率异常，缺乏人绘风格
+    severity_default: S1
+    suspect_modules: [M6a, M6b, M6c, M3]
+    verify_actions: [增加简化/正则, 限制最大偏移, 检查边界吸附策略]
+
+  - code: E04
+    name: 双向未拆分
+    desc: 应拆分的双向分隔道路未输出两条中心线
+    severity_default: S2
+    suspect_modules: [M4, M6b]
+    verify_actions: [检查轨迹方向聚类, 调整split参数, 检查先验分隔提示]
+
+  - code: E05
+    name: 中心线漂移
+    desc: 中心线偏离道路面中心或跑出道路面
+    severity_default: S2
+    suspect_modules: [M4, M6b, M6a]
+    verify_actions: [加强面内约束, 调整吸附/平滑, 检查道路面边界]
+
+  - code: E06
+    name: 路口面过大或过小
+    desc: 路口面范围不合理，影响连接与人绘效果
+    severity_default: S2
+    suspect_modules: [M5, M6c, M6a]
+    verify_actions: [调整路口候选规则, 增强规整与拼接, 使用先验轮廓提示]
+
+  - code: E07
+    name: 拼接不连续
+    desc: 相邻窗口/相邻tile结果不一致，出现断裂或跳变
+    severity_default: S2
+    suspect_modules: [M3, M4, M6a, M6b, M6c]
+    verify_actions: [检查overlap策略, 重叠区一致性约束, 缓存/索引一致性]
+
+  - code: E08
+    name: 拓扑悬挂或断裂
+    desc: 边端点悬挂、孤立边、断裂导致不可通行（投产重点）
+    severity_default: S3
+    suspect_modules: [M8, M9, M7]
+    verify_actions: [端点聚类容差, 路口切分规则, 自动修复参数调整]
+
+  - code: E09
+    name: 跨层误连
+    desc: 立交/跨越相交误判为连通
+    severity_default: S3
+    suspect_modules: [M8, M9]
+    verify_actions: [提高连接门槛, 引入高度/证据, 失败则上报TopoIssue]
+
+  - code: E10
+    name: 方向/单行错误
+    desc: 方向属性或连接关系与轨迹方向冲突
+    severity_default: S3
+    suspect_modules: [M8, M9, M4]
+    verify_actions: [检查方向聚类, 连接约束, 违规上报]
+
+  - code: E11
+    name: 先验误导
+    desc: OSM/航片先验导致几何漂移、外溢或拓扑退化
+    severity_default: S2
+    suspect_modules: [M0, M2, M6a, M6c, M8, M9]
+    verify_actions: [检查conflict_rate, 降权/禁用先验, 限制最大偏移, 对齐残差阈值]
+
+  - code: E12
+    name: 数据缺失或索引异常
+    desc: pose缺失/文件缺失/索引不匹配导致评测或产线异常
+    severity_default: S2
+    suspect_modules: [Adapter, M1]
+    verify_actions: [检查索引缓存, 目录扫描, 数据完整性标注, 降级策略]
