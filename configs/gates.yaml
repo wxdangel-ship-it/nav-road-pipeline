@@ -1,0 +1,9 @@
+﻿gate:
+  C_min: 0.80
+  B_max_roughness: 0.35
+  A_max_dangling_per_km: 5.0
+topo_gate:
+  enabled: false
+  topo_pass_rate_min: 0.85
+  topo_issue_rate_max: 2.0
+  topo_autofix_rate_min: 0.60

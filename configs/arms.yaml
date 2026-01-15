@@ -1,0 +1,13 @@
+﻿arms:
+  Arm0:
+    use_osm: false
+    use_sat: false
+  Arm1:
+    use_osm: true
+    use_sat: false
+  Arm2:
+    use_osm: false
+    use_sat: true
+  Arm3:
+    use_osm: true
+    use_sat: true

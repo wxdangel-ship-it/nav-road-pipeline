@@ -1,0 +1,16 @@
+﻿config_id: CFG_BASELINE_0001
+runtime_target: windows-native
+prior_data_id: NONE
+modules:
+  M0:  {impl_id: m0_none, params: {}}
+  M1:  {impl_id: m1_stub, params: {}}
+  M2:  {impl_id: m2_stub, params: {}}
+  M3:  {impl_id: m3_stub, params: {}}
+  M4:  {impl_id: m4_stub, params: {}}
+  M5:  {impl_id: m5_stub, params: {}}
+  M6a: {impl_id: m6a_stub, params: {}}
+  M6b: {impl_id: m6b_stub, params: {}}
+  M6c: {impl_id: m6c_stub, params: {}}
+  M7:  {impl_id: m7_stub, params: {}}
+  M8:  {impl_id: m8_stub, params: {}}
+  M9:  {impl_id: m9_stub, params: {}}

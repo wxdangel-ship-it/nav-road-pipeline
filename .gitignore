@@ -205,3 +205,19 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# runtime outputs
+runs/
+# local data (do not commit)
+data/
+# large artifacts
+*.las
+*.laz
+*.bin
+*.tif
+*.tiff
+*.jpg
+*.jpeg
+*.png
+*.mp4
+
