@@ -5,7 +5,7 @@ import random
 from copy import deepcopy
 from pipeline._io import load_yaml, ensure_dir, new_run_id
 from pipeline.registry import load_registry, group_by_module, sample_params
-from pipeline.eval_all import _gate, _signature, _simulate_metrics
+from pipeline.sim_metrics import gate as _gate, signature as _signature, simulate_metrics as _simulate_metrics
 
 def _score_one_config(cfg: dict, arms: dict, gates: dict) -> tuple[bool, float, dict]:
     total = 0.0
@@ -133,3 +133,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
