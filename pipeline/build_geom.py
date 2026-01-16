@@ -239,6 +239,40 @@ def _road_bbox_dims(road_poly) -> tuple[float, float, float]:
     return dx, dy, diag
 
 
+def _explode_polygons(geom) -> list:
+    if geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [geom]
+    if geom.geom_type == "MultiPolygon":
+        return list(geom.geoms)
+    return []
+
+
+def _postprocess_intersections(geom, road_poly, min_area: float, topk: int, simplify_m: float):
+    if geom is None or geom.is_empty:
+        return [], 0.0
+    unioned = unary_union(geom)
+    polys = _explode_polygons(unioned)
+    if not polys:
+        return [], 0.0
+    clipped = [p.intersection(road_poly) for p in polys]
+    clipped = [p for p in clipped if not p.is_empty]
+    if not clipped:
+        return [], 0.0
+    cleaned = []
+    for p in clipped:
+        g = p.simplify(simplify_m, preserve_topology=True).buffer(0)
+        if not g.is_empty:
+            cleaned.extend(_explode_polygons(g))
+    cleaned = [p for p in cleaned if p.area >= min_area]
+    cleaned.sort(key=lambda p: p.area, reverse=True)
+    if topk > 0:
+        cleaned = cleaned[:topk]
+    total_area = sum(p.area for p in cleaned)
+    return cleaned, total_area
+
+
 def _write_geojson(path: Path, features: list[dict]) -> None:
     fc = {"type": "FeatureCollection", "features": features}
     path.write_text(json.dumps(fc, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -248,6 +282,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="KITTI-360 drive name")
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames to read")
+    ap.add_argument("--inter-min-area", type=float, default=100.0, help="min intersection area to keep")
+    ap.add_argument("--inter-topk", type=int, default=10, help="keep top-k intersections by area")
+    ap.add_argument("--inter-simplify", type=float, default=0.8, help="intersection simplify meters")
     args = ap.parse_args()
 
     data_root = os.environ.get("POC_DATA_ROOT", "")
@@ -335,14 +372,21 @@ def main() -> int:
     ]
 
     inter_pts = _build_intersection_points(poses_xy, turn_thr_rad=0.9, close_thr_m=12.0, min_sep=25)
+    inter_polys = []
+    inter_area_total = 0.0
+    inter_min_area = float(args.inter_min_area)
+    inter_topk = int(args.inter_topk)
+    inter_simplify = float(args.inter_simplify)
     if inter_pts:
-        inter_union = unary_union([p.buffer(15.0) for p in inter_pts]).intersection(road_poly)
-        if inter_union.is_empty:
-            inter_features = []
-        else:
-            inter_features = [{"type": "Feature", "geometry": mapping(inter_union), "properties": {}}]
-    else:
-        inter_features = []
+        inter_union = unary_union([p.buffer(15.0) for p in inter_pts])
+        inter_polys, inter_area_total = _postprocess_intersections(
+            inter_union,
+            road_poly,
+            min_area=inter_min_area,
+            topk=inter_topk,
+            simplify_m=inter_simplify,
+        )
+    inter_features = [{"type": "Feature", "geometry": mapping(p), "properties": {}} for p in inter_polys]
 
     _write_geojson(out_dir / "centerlines.geojson", center_features)
     _write_geojson(out_dir / "road_polygon.geojson", [{"type": "Feature", "geometry": mapping(road_poly), "properties": {}}])
@@ -355,8 +399,16 @@ def main() -> int:
     for i, ln in enumerate(line_lengths, 1):
         print(f"[QC] centerline_{i} length={ln:.2f}m")
     print(f"[QC] centerline_total length={total_len:.2f}m")
+    top5 = sorted([p.area for p in inter_polys], reverse=True)[:5]
+    print(f"[QC] intersections_count={len(inter_polys)}")
+    print(f"[QC] intersections_area_total={inter_area_total:.2f}m2")
+    print(f"[QC] intersections_top5_area={','.join(f'{a:.2f}' for a in top5)}")
     if total_len < 200.0 or (road_diag > 0 and total_len < 0.2 * road_diag):
         raise SystemExit("ERROR: centerlines too short; check offset/clip/trajectory coverage.")
+    if len(inter_polys) > max(20, inter_topk):
+        raise SystemExit("ERROR: intersections unstable; check candidates/postprocess thresholds.")
+    if inter_area_total < max(100.0, inter_min_area):
+        raise SystemExit("ERROR: intersections unstable; check candidates/postprocess thresholds.")
 
     snap = {
         "run_id": run_id,
