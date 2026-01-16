@@ -1,4 +1,4 @@
-﻿from pathlib import Path
+from pathlib import Path
 
 # 典型隐藏/双向控制字符（含 BOM、方向控制、LRM/RLM 等）
 BAD = {

@@ -1,4 +1,4 @@
-﻿# AGENTS.md — Codex/Agent Guardrails (Windows-native)
+# AGENTS.md — Codex/Agent Guardrails (Windows-native)
 
 本项目运行时目标：windows-native（全 Windows）。任何实现必须遵守以下规则。
 

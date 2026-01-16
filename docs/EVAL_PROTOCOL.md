@@ -1,4 +1,4 @@
-﻿# EVAL_PROTOCOL（RunCard / SyncPack / Gate / 产物协议）
+# EVAL_PROTOCOL（RunCard / SyncPack / Gate / 产物协议）
 
 ## 1. 目标
 评测必须：

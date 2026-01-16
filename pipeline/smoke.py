@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from pathlib import Path
 from pipeline._io import load_yaml, ensure_dir, new_run_id, write_text, RUNTIME_TARGET
 

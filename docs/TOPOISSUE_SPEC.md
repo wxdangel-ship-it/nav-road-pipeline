@@ -1,4 +1,4 @@
-﻿# TOPOISSUE_SPEC（TopoIssue 上报规范：投产必备）
+# TOPOISSUE_SPEC（TopoIssue 上报规范：投产必备）
 
 ## 1. 目标
 当 M9（Validate & Auto-Repair）无法自动修复拓扑问题时，必须输出 TopoIssue：

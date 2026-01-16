@@ -1,4 +1,4 @@
-﻿error_dict:
+error_dict:
   - code: E01
     name: 漏检
     desc: 道路面/骨架/路口面缺失，导致覆盖不足（C下降）

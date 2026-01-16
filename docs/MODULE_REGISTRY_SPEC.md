@@ -1,4 +1,4 @@
-﻿# MODULE_REGISTRY_SPEC（modules_registry.yaml 规范）
+# MODULE_REGISTRY_SPEC（modules_registry.yaml 规范）
 
 ## 1. 目标
 为 M0–M9 每个模块登记多种实现（算法/模型/规则），以支持：

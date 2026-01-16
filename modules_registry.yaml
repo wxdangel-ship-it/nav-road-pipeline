@@ -1,4 +1,4 @@
-﻿implementations:
+implementations:
   - module: M0
     impl_id: m0_none
     impl_version: 1.0.0
