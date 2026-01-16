@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 import hashlib
 import json
 from typing import Dict, Any, Tuple

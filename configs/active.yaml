@@ -1,4 +1,4 @@
-﻿config_id: CFG_BASELINE_0001
+config_id: CFG_BASELINE_0001
 runtime_target: windows-native
 prior_data_id: NONE
 modules:

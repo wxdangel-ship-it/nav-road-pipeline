@@ -27,6 +27,7 @@ if "%DATA%"=="" (
   echo ERROR: POC_DATA_ROOT not set.
   exit /b 2
 )
+if "%OUT%"=="" set OUT=cache\kitti360_index.json
 
 .venv\Scripts\python.exe -m pipeline.build_index --data-root "%DATA%" --out "%OUT%" --max-frames %MAXF%
 endlocal

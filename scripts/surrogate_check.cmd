@@ -6,5 +6,5 @@ if not exist .venv\Scripts\python.exe (
   call .\scripts\setup.cmd
 )
 
-.venv\Scripts\python.exe -m pipeline.autotune %*
+.venv\Scripts\python.exe -m pipeline.surrogate_check %*
 endlocal
