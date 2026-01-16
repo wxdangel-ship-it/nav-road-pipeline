@@ -278,6 +278,8 @@ def main() -> int:
     ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="single drive for geom eval")
     ap.add_argument("--windows", type=int, default=0, help="geom windows count (optional)")
     ap.add_argument("--window-stride", type=int, default=0, help="geom window stride (optional)")
+    ap.add_argument("--budget-trials", type=int, default=0, help="override stageB budget trials")
+    ap.add_argument("--stagec-max-frames", type=int, default=2000, help="stage C max frames")
     ap.add_argument("--stageA-max-frames", type=int, default=0, help="override stage A max_frames")
     ap.add_argument("--stageB-max-frames", type=int, default=0, help="override stage B max_frames")
     ap.add_argument("--stageC-max-frames", type=int, default=0, help="override stage C max_frames")
@@ -307,17 +309,21 @@ def main() -> int:
     index_path = repo / args.index
 
     default_max_frames = int(args.max_frames) if args.max_frames and args.max_frames > 0 else 2000
-    stageA_max_frames = int(args.stageA_max_frames) if args.stageA_max_frames > 0 else default_max_frames
-    stageB_max_frames = int(args.stageB_max_frames) if args.stageB_max_frames > 0 else default_max_frames
-    stageC_max_frames = int(args.stageC_max_frames) if args.stageC_max_frames > 0 else default_max_frames
     stageA_drive_count = int(search.get("real_stageA_drive_count", 3))
     drives_arg = _parse_drives(args.drives) if args.drives else []
     eval_mode = str(args.eval_mode).lower()
     geom_drive = str(args.drive) if args.drive else "2013_05_28_drive_0000_sync"
-    eval_windows = int(args.windows) if args.windows and args.windows > 0 else (1 if eval_mode == "geom" else 0)
+    default_windows = int(search.get("geom_windows", 3))
+    eval_windows = int(args.windows) if args.windows and args.windows > 0 else (default_windows if eval_mode == "geom" else 0)
     eval_stride = int(args.window_stride) if args.window_stride and args.window_stride > 0 else 0
-    if eval_mode == "geom" and budget > 5:
-        budget = 5
+    if args.budget_trials and args.budget_trials > 0:
+        budget = int(args.budget_trials)
+
+    if eval_mode == "geom" and args.max_frames == 2000:
+        default_max_frames = 500
+    stageA_max_frames = int(args.stageA_max_frames) if args.stageA_max_frames > 0 else default_max_frames
+    stageB_max_frames = int(args.stageB_max_frames) if args.stageB_max_frames > 0 else default_max_frames
+    stageC_max_frames = int(args.stageC_max_frames) if args.stageC_max_frames > 0 else int(args.stagec_max_frames)
 
     if mode == "real":
         if not data_root:
@@ -326,6 +332,10 @@ def main() -> int:
             index_path = repo / f"cache/kitti360_index_{default_max_frames}.json"
         if not index_path.exists():
             _run_index_cmd(repo, data_root, default_max_frames, index_path)
+        if stageC_max_frames >= 2000:
+            strict_index = repo / "cache" / "kitti360_index_2000.json"
+            if not strict_index.exists():
+                _run_index_cmd(repo, data_root, 2000, strict_index)
         idx = _load_index_any(index_path)
         if not drives_arg and eval_mode != "geom":
             if idx is None:
@@ -447,20 +457,26 @@ def main() -> int:
             if ok:
                 trials.append({"score": score, "config": cand, "per_arm": per_arm, "run_dir": str(eval_run_dir)})
 
-    trials.sort(reverse=True, key=lambda x: (x["score"],) + _tie_break_key(x))
+    if eval_mode == "geom":
+        trials.sort(reverse=True, key=lambda x: (round(x["score"], 6),) + _tie_break_key(x))
+    else:
+        trials.sort(reverse=True, key=lambda x: x["score"])
     (run_dir / "trials_top.json").write_text(json.dumps(trials[:topn], ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Leaderboard
+    # Leaderboard (Stage B fast)
     lines = ["# Leaderboard", "", f"- run_id: {run_id}", f"- budget_trials: {budget}", f"- mode: {mode}", ""]
     for rank, t in enumerate(trials[:10], 1):
         lines.append(f"{rank}. {t['config']['config_id']}  score={t['score']:.6f}")
-    (run_dir / "leaderboard.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (run_dir / "leaderboard_fast.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     # -------- Stage C: freeze candidate --------
     if trials:
-        winner = trials[0]["config"]
+        winner_fast = trials[0]["config"]
+        (run_dir / "winner_active_fast.yaml").write_text(json.dumps(winner_fast, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        winner_strict = winner_fast
+        stageC_results = []
         if mode == "real":
-            stageC_results = []
             for t in trials[:topn]:
                 ok, score, per_arm, eval_run_dir = _score_one_config_real(
                     repo=repo,
@@ -482,14 +498,27 @@ def main() -> int:
                 if ok:
                     stageC_results.append({"score": score, "config": t["config"], "per_arm": per_arm, "run_dir": str(eval_run_dir)})
             if stageC_results:
-                stageC_results.sort(reverse=True, key=lambda x: (x["score"],) + _tie_break_key(x))
-                winner = stageC_results[0]["config"]
+                stageC_results.sort(reverse=True, key=lambda x: (round(x["score"], 6),) + _tie_break_key(x))
+                winner_strict = stageC_results[0]["config"]
 
-        (run_dir / "winner_active.yaml").write_text(json.dumps(winner, ensure_ascii=False, indent=2), encoding="utf-8")
-        (run_dir / "winner_hint.md").write_text(
-            f"# Winner\n\n- config_id: {winner.get('config_id')}\n- note: review winner_active.yaml then decide whether to apply to configs/active.yaml\n",
-            encoding="utf-8"
-        )
+        if stageC_results:
+            lines = ["# Leaderboard (Strict)", "", f"- run_id: {run_id}", f"- max_frames: {stageC_max_frames}", f"- mode: {mode}", ""]
+            for rank, t in enumerate(stageC_results[:10], 1):
+                lines.append(f"{rank}. {t['config']['config_id']}  score={t['score']:.6f}")
+            (run_dir / "leaderboard_strict.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        (run_dir / "winner_active_strict.yaml").write_text(json.dumps(winner_strict, ensure_ascii=False, indent=2), encoding="utf-8")
+        (run_dir / "winner_active.yaml").write_text(json.dumps(winner_strict, ensure_ascii=False, indent=2), encoding="utf-8")
+        hint = [
+            "# Winner Hint",
+            "",
+            f"- fast: {winner_fast.get('config_id')}",
+            f"- strict: {winner_strict.get('config_id')}",
+            "- note: fast uses Stage B (short frames), strict uses Stage C (2000 frames).",
+            "- recommendation: prefer strict winner if it differs.",
+            "",
+        ]
+        (run_dir / "winner_hint.md").write_text("\n".join(hint), encoding="utf-8")
 
     print(f"[AUTOTUNE] DONE -> {run_dir}")
     return 0

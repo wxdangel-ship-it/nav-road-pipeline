@@ -312,10 +312,12 @@ def main() -> int:
         geom_args = _geom_params_from_config(cfg)
         total_frames = max_frames or 2000
         win_count = max(1, int(args.windows))
-        stride = int(args.window_stride) if int(args.window_stride) > 0 else max(1, total_frames // (win_count + 1))
+        stride = int(args.window_stride) if int(args.window_stride) > 0 else max(700, total_frames // (win_count + 1))
         qc_windows = []
         for i in range(win_count):
             frame_start = i * stride
+            if frame_start >= total_frames:
+                break
             geom_args_win = dict(geom_args)
             geom_args_win["--frame-start"] = frame_start
             geom_args_win["--frame-count"] = stride
@@ -334,7 +336,7 @@ def main() -> int:
             "geom_run": str(geom_run),
             "index_used": None,
             "index_path": None,
-            "windows": win_count,
+            "windows": len(qc_windows),
             "window_stride": stride,
         }
         priors = {"osm_layers": None, "sat_tiles": None}
@@ -460,6 +462,7 @@ def main() -> int:
             },
             "qc": qc,
             "qc_windows": qc_windows if eval_mode == "geom" else None,
+            "qc_agg": qc if eval_mode == "geom" else None,
         }
         write_run_card(run_dir / f"RunCard_{arm_name}.md", run_card)
         (run_dir / f"RunCard_{arm_name}.json").write_text(
