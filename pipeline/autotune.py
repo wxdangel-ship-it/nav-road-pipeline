@@ -120,6 +120,8 @@ def _run_eval_cmd(
     prior_root: str | None,
     index_path: Path | None,
     drives: list[str] | None,
+    eval_mode: str,
+    drive: str | None,
 ) -> Path:
     cmd = [
         "cmd.exe",
@@ -138,6 +140,10 @@ def _run_eval_cmd(
         cmd += ["--index", str(index_path)]
     if drives:
         cmd += ["--drives", ",".join(drives)]
+    if eval_mode:
+        cmd += ["--eval-mode", eval_mode]
+    if drive:
+        cmd += ["--drive", drive]
 
     proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True)
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -176,12 +182,14 @@ def _score_one_config_real(
     prior_root: str | None,
     index_path: Path | None,
     drives: list[str] | None,
+    eval_mode: str,
+    drive: str | None,
     only_arms: list[str] | None = None,
 ) -> tuple[bool, float, dict, Path]:
     cfg_id = cfg.get("config_id", "CFG")
     cfg_path = run_dir / "candidates" / f"{cfg_id}.yaml"
     _write_yaml(cfg_path, cfg)
-    eval_run_dir = _run_eval_cmd(repo, cfg_path, max_frames, data_root, prior_root, index_path, drives)
+    eval_run_dir = _run_eval_cmd(repo, cfg_path, max_frames, data_root, prior_root, index_path, drives, eval_mode, drive)
 
     total = 0.0
     any_fail = False
@@ -227,6 +235,8 @@ def main() -> int:
     ap.add_argument("--index", default="cache/kitti360_index.json", help="index cache path")
     ap.add_argument("--drives", default="", help="comma separated drives subset (optional)")
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames for real-mode evals")
+    ap.add_argument("--eval-mode", default="summary", choices=["summary", "geom"], help="eval mode for real")
+    ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="single drive for geom eval")
     ap.add_argument("--stageA-max-frames", type=int, default=0, help="override stage A max_frames")
     ap.add_argument("--stageB-max-frames", type=int, default=0, help="override stage B max_frames")
     ap.add_argument("--stageC-max-frames", type=int, default=0, help="override stage C max_frames")
@@ -261,6 +271,8 @@ def main() -> int:
     stageC_max_frames = int(args.stageC_max_frames) if args.stageC_max_frames > 0 else default_max_frames
     stageA_drive_count = int(search.get("real_stageA_drive_count", 3))
     drives_arg = _parse_drives(args.drives) if args.drives else []
+    eval_mode = str(args.eval_mode).lower()
+    geom_drive = str(args.drive) if args.drive else "2013_05_28_drive_0000_sync"
 
     if mode == "real":
         if not data_root:
@@ -270,14 +282,15 @@ def main() -> int:
         if not index_path.exists():
             _run_index_cmd(repo, data_root, default_max_frames, index_path)
         idx = _load_index_any(index_path)
-        if not drives_arg:
+        if not drives_arg and eval_mode != "geom":
             if idx is None:
                 raise SystemExit("ERROR: index cache missing and --drives not provided for real mode.")
             stageA_drives = _select_representative_drives(idx, stageA_drive_count)
         else:
             stageA_drives = drives_arg
         if not stageA_drives:
-            raise SystemExit("ERROR: no drives selected for Stage A.")
+            if eval_mode != "geom":
+                raise SystemExit("ERROR: no drives selected for Stage A.")
 
     # -------- Stage A: per-module screening --------
     stageA = {}
@@ -316,7 +329,9 @@ def main() -> int:
                     data_root=data_root,
                     prior_root=prior_root or data_root,
                     index_path=index_path,
-                    drives=stageA_drives,
+                    drives=stageA_drives if eval_mode != "geom" else None,
+                    eval_mode=eval_mode,
+                    drive=geom_drive if eval_mode == "geom" else None,
                     only_arms=["Arm0"],
                 )
             if ok:
@@ -375,7 +390,9 @@ def main() -> int:
                 data_root=data_root,
                 prior_root=prior_root or data_root,
                 index_path=index_path,
-                drives=stageB_drives,
+                drives=stageB_drives if eval_mode != "geom" else None,
+                eval_mode=eval_mode,
+                drive=geom_drive if eval_mode == "geom" else None,
                 only_arms=None,
             )
             if ok:
@@ -406,7 +423,9 @@ def main() -> int:
                     data_root=data_root,
                     prior_root=prior_root or data_root,
                     index_path=index_path,
-                    drives=stageC_drives,
+                    drives=stageC_drives if eval_mode != "geom" else None,
+                    eval_mode=eval_mode,
+                    drive=geom_drive if eval_mode == "geom" else None,
                     only_arms=None,
                 )
                 if ok:

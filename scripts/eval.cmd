@@ -13,6 +13,8 @@ set PRIOR=%POC_PRIOR_ROOT%
 set MAXF=
 set DRIVES=
 set INDEX=
+set EVALMODE=
+set DRIVE=
 
 :parse
 if "%~1"=="" goto run
@@ -22,6 +24,8 @@ if /I "%~1"=="--prior-root" (set PRIOR=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--max-frames" (set MAXF=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--drives" (set DRIVES=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--index" (set INDEX=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--eval-mode" (set EVALMODE=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--drive" (set DRIVE=%~2 & shift & shift & goto parse)
 shift
 goto parse
 
@@ -36,6 +40,8 @@ if not "%PRIOR%"=="" set CMD=%CMD% --prior-root "%PRIOR%"
 if not "%MAXF%"=="" set CMD=%CMD% --max-frames %MAXF%
 if not "%DRIVES%"=="" set CMD=%CMD% --drives "%DRIVES%"
 if not "%INDEX%"=="" set CMD=%CMD% --index "%INDEX%"
+if not "%EVALMODE%"=="" set CMD=%CMD% --eval-mode "%EVALMODE%"
+if not "%DRIVE%"=="" set CMD=%CMD% --drive "%DRIVE%"
 call %CMD%
 
 endlocal

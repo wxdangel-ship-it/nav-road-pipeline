@@ -398,6 +398,10 @@ def main() -> int:
     ap.add_argument("--width-sample-step", type=float, default=3.0, help="sampling step along centerline (m)")
     ap.add_argument("--width-peak-ratio", type=float, default=1.6, help="width peak ratio vs local median")
     ap.add_argument("--width-buffer-mult", type=float, default=0.8, help="buffer radius multiplier for width peaks")
+    ap.add_argument("--grid-resolution", type=float, default=0.5, help="BEV grid resolution (m)")
+    ap.add_argument("--density-thr", type=int, default=3, help="grid density threshold")
+    ap.add_argument("--corridor-m", type=float, default=15.0, help="trajectory corridor width (m)")
+    ap.add_argument("--simplify-m", type=float, default=1.2, help="geometry simplify meters")
     args = ap.parse_args()
 
     data_root = os.environ.get("POC_DATA_ROOT", "")
@@ -424,10 +428,10 @@ def main() -> int:
     poses_xy = poses_xy[:n]
     yaws = yaws[:n]
 
-    resolution = 0.5
-    density_thr = 3
-    corridor_m = 15.0
-    simplify_m = 1.2
+    resolution = float(args.grid_resolution)
+    density_thr = int(args.density_thr)
+    corridor_m = float(args.corridor_m)
+    simplify_m = float(args.simplify_m)
 
     origin = (float(poses_xy[0, 0]), float(poses_xy[0, 1]))
     grid: dict[tuple[int, int], int] = {}
@@ -554,6 +558,11 @@ def main() -> int:
     road_dx, road_dy, road_diag = _road_bbox_dims(road_poly)
     line_lengths = [float(line.length) for line in center_lines]
     total_len = float(sum(line_lengths))
+    inter_len = 0.0
+    for line in center_lines:
+        if line.length > 0:
+            inter_len += float(line.intersection(road_poly).length)
+    center_in_poly_ratio = (inter_len / total_len) if total_len > 0 else 0.0
     print(f"[QC] road bbox dx={road_dx:.2f}m dy={road_dy:.2f}m diag={road_diag:.2f}m")
     for i, ln in enumerate(line_lengths, 1):
         print(f"[QC] centerline_{i} length={ln:.2f}m")
@@ -565,6 +574,7 @@ def main() -> int:
     print(f"[QC] intersections_count={len(inter_polys)}")
     print(f"[QC] intersections_area_total={inter_area_total:.2f}m2")
     print(f"[QC] intersections_top5_area={','.join(f'{a:.2f}' for a in top5)}")
+    print(f"[QC] centerlines_in_polygon_ratio={center_in_poly_ratio:.3f}")
     if total_len < 200.0 or (road_diag > 0 and total_len < 0.2 * road_diag):
         raise SystemExit("ERROR: centerlines too short; check offset/clip/trajectory coverage.")
     if len(inter_polys) > max(20, inter_topk):
@@ -590,6 +600,32 @@ def main() -> int:
         },
     }
     (out_dir / "StateSnapshot.md").write_text(json.dumps(snap, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    qc = {
+        "road_bbox_dx_m": round(road_dx, 3),
+        "road_bbox_dy_m": round(road_dy, 3),
+        "road_bbox_diag_m": round(road_diag, 3),
+        "road_component_count_before": int(road_before),
+        "road_component_count_after": int(road_after),
+        "centerline_1_length_m": round(line_lengths[0], 3) if len(line_lengths) > 0 else 0.0,
+        "centerline_2_length_m": round(line_lengths[1], 3) if len(line_lengths) > 1 else 0.0,
+        "centerline_total_length_m": round(total_len, 3),
+        "centerlines_in_polygon_ratio": round(center_in_poly_ratio, 4),
+        "intersections_count": int(len(inter_polys)),
+        "intersections_area_total_m2": round(inter_area_total, 3),
+        "intersections_top5_area_m2": [round(a, 3) for a in top5],
+        "width_median_m": round(width_median, 3),
+        "width_p95_m": round(width_p95, 3),
+        "peak_point_count": int(peak_point_count),
+        "cluster_count": int(cluster_count),
+        "inter_component_count_before": int(inter_before if inter_pts else 0),
+        "inter_component_count_after": int(inter_after if inter_pts else 0),
+        "grid_resolution_m": round(resolution, 3),
+        "density_threshold": int(density_thr),
+        "corridor_m": round(corridor_m, 3),
+        "simplify_m": round(simplify_m, 3),
+    }
+    (out_dir / "qc.json").write_text(json.dumps(qc, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"[GEOM] DONE -> {out_dir}")
     print("outputs:")

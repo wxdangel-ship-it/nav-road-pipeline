@@ -3,6 +3,9 @@ from pathlib import Path
 import argparse
 import hashlib
 import json
+import math
+import re
+import subprocess
 from pipeline._io import load_yaml, ensure_dir, new_run_id, RUNTIME_TARGET
 from pipeline._report import write_run_card, write_sync_pack
 from pipeline.adapters.kitti360_adapter import summarize_dataset, infer_priors
@@ -157,14 +160,87 @@ def _summary_from_tiles(tiles: list[dict]) -> dict:
     }
 
 
+def _extract_geom_run_dir(text: str, repo: Path) -> Path | None:
+    m = re.search(r"\[GEOM\]\s+DONE\s+->\s+([^\r\n(]+)", text)
+    if not m:
+        return None
+    raw = m.group(1).strip().strip("\"'")
+    p = Path(raw)
+    if not p.is_absolute():
+        p = repo / p
+    return p
+
+
+def _latest_geom_run(repo: Path) -> Path | None:
+    runs_dir = repo / "runs"
+    if not runs_dir.exists():
+        return None
+    geom_dirs = [p for p in runs_dir.iterdir() if p.is_dir() and p.name.startswith("geom_")]
+    if not geom_dirs:
+        return None
+    geom_dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return geom_dirs[0] / "outputs"
+
+
+def _run_geom_cmd(repo: Path, drive: str, max_frames: int, geom_args: dict | None) -> Path:
+    cmd = [
+        "cmd.exe",
+        "/c",
+        str(repo / "scripts" / "build_geom.cmd"),
+        "--drive",
+        drive,
+    ]
+    if max_frames and max_frames > 0:
+        cmd += ["--max-frames", str(max_frames)]
+    if geom_args:
+        for k, v in geom_args.items():
+            cmd += [str(k), str(v)]
+    proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True)
+    output = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    run_dir = _extract_geom_run_dir(output, repo)
+    if run_dir is None:
+        run_dir = _latest_geom_run(repo)
+    if proc.returncode != 0 or run_dir is None:
+        raise SystemExit(f"ERROR: build_geom.cmd failed (code={proc.returncode}). Output:\n{output}")
+    return run_dir
+
+
+def _geom_params_from_config(cfg: dict) -> dict:
+    modules = cfg.get("modules", {}) or {}
+    m2 = modules.get("M2", {})
+    m6a = modules.get("M6a", {})
+
+    dummy_thr = float(m2.get("params", {}).get("dummy_thr", 0.5))
+    smooth_lambda = float(m6a.get("params", {}).get("smooth_lambda", 0.7))
+    max_shift = float(m6a.get("params", {}).get("max_shift_m", 1.0))
+
+    density_thr = 2 if dummy_thr < 0.4 else 3
+    corridor_m = max(15.0, min(16.0, 15.0 + (max_shift - 1.0) * 0.5))
+    simplify_m = 1.2
+    grid_resolution = 0.5
+    peak_ratio = max(1.45, min(1.65, 1.55 + (dummy_thr - 0.5) * 0.2))
+    width_mult = max(0.6, min(1.0, 0.8 + (max_shift - 1.0) * 0.1))
+
+    return {
+        "--density-thr": density_thr,
+        "--corridor-m": round(corridor_m, 3),
+        "--simplify-m": round(simplify_m, 3),
+        "--grid-resolution": grid_resolution,
+        "--width-peak-ratio": round(peak_ratio, 3),
+        "--width-buffer-mult": round(width_mult, 3),
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/active.yaml", help="config yaml path")
     ap.add_argument("--data-root", required=True, help="KITTI-360 root, e.g. E:\\\\KITTI360\\\\KITTI-360")
     ap.add_argument("--prior-root", default="", help="prior root (optional, default=data-root)")
     ap.add_argument("--drives", default="", help="comma separated drive list (optional)")
+    ap.add_argument("--drive", default="", help="single drive (geom eval)")
     ap.add_argument("--max-frames", type=int, default=0, help="limit frames per drive for speed (0=all)")
     ap.add_argument("--index", default="cache/kitti360_index.json", help="index cache path (default cache/kitti360_index.json)")
+    ap.add_argument("--eval-mode", default="summary", help="evaluation mode (summary|geom)")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -175,6 +251,7 @@ def main() -> int:
     data_root_arg = _clean_str(args.data_root)
     prior_root_arg = _clean_str(args.prior_root) if args.prior_root else ""
     drives_arg = _clean_str(args.drives)
+    drive_arg = _clean_str(args.drive)
     index_arg = _clean_str(args.index)
 
     cfg = load_yaml(repo / cfg_path)
@@ -192,39 +269,59 @@ def main() -> int:
 
     drive_list = [x.strip() for x in drives_arg.split(",") if x.strip()] if drives_arg else None
     max_frames = args.max_frames if args.max_frames and args.max_frames > 0 else None
-
-    # ----- index cache fast path -----
-    index_used = False
-    index_path = repo / index_arg
-    idx = try_use_index(index_path, data_root, max_frames)
-
-    if idx is not None:
-        tiles_all = idx.get("tiles", []) or []
-        if drive_list:
-            tiles = [t for t in tiles_all if t.get("tile_id") in set(drive_list)]
-        else:
-            tiles = tiles_all
-        ds_summary = _summary_from_tiles(tiles)
-        index_used = True
-    else:
-        # fallback: scan filesystem
-        ds = summarize_dataset(data_root, drives=drive_list, max_frames=max_frames)
+    eval_mode = str(_clean_str(args.eval_mode)).lower()
+    if eval_mode not in ["summary", "geom"]:
+        raise SystemExit(f"ERROR: invalid --eval-mode: {eval_mode}")
+    qc = None
+    if eval_mode == "geom":
+        geom_drive = drive_arg or (drive_list[0] if drive_list else "2013_05_28_drive_0000_sync")
+        geom_args = _geom_params_from_config(cfg)
+        geom_run = _run_geom_cmd(repo, geom_drive, max_frames or 0, geom_args)
+        qc_path = geom_run / "qc.json"
+        if not qc_path.exists():
+            raise SystemExit("ERROR: qc.json not found after build_geom.")
+        qc = json.loads(qc_path.read_text(encoding="utf-8"))
         ds_summary = {
-            "drive_count": ds.get("drive_count"),
-            "total_lidar": ds.get("total_lidar"),
-            "total_img_any": ds.get("total_img_any"),
-            "total_pose": ds.get("total_pose"),
-            "image_coverage": ds.get("image_coverage"),
-            "pose_coverage": ds.get("pose_coverage"),
-            "missing_pose_drives": ds.get("missing_pose_drives"),
+            "drive_count": 1,
+            "drives": [geom_drive],
+            "geom_run": str(geom_run),
+            "index_used": None,
+            "index_path": None,
         }
+        priors = {"osm_layers": None, "sat_tiles": None}
+    else:
+        # ----- index cache fast path -----
+        index_used = False
+        index_path = repo / index_arg
+        idx = try_use_index(index_path, data_root, max_frames)
 
-    priors = infer_priors(data_root, prior_root=prior_root)
+        if idx is not None:
+            tiles_all = idx.get("tiles", []) or []
+            if drive_list:
+                tiles = [t for t in tiles_all if t.get("tile_id") in set(drive_list)]
+            else:
+                tiles = tiles_all
+            ds_summary = _summary_from_tiles(tiles)
+            index_used = True
+        else:
+            # fallback: scan filesystem
+            ds = summarize_dataset(data_root, drives=drive_list, max_frames=max_frames)
+            ds_summary = {
+                "drive_count": ds.get("drive_count"),
+                "total_lidar": ds.get("total_lidar"),
+                "total_img_any": ds.get("total_img_any"),
+                "total_pose": ds.get("total_pose"),
+                "image_coverage": ds.get("image_coverage"),
+                "pose_coverage": ds.get("pose_coverage"),
+                "missing_pose_drives": ds.get("missing_pose_drives"),
+            }
 
-    ds_summary["index_used"] = index_used
-    ds_summary["index_path"] = str(index_path) if index_used else None
-    ds_summary["osm_layers"] = str(priors.get("osm_layers")) if priors.get("osm_layers") else None
-    ds_summary["sat_tiles"] = str(priors.get("sat_tiles")) if priors.get("sat_tiles") else None
+        priors = infer_priors(data_root, prior_root=prior_root)
+
+        ds_summary["index_used"] = index_used
+        ds_summary["index_path"] = str(index_path) if index_used else None
+        ds_summary["osm_layers"] = str(priors.get("osm_layers")) if priors.get("osm_layers") else None
+        ds_summary["sat_tiles"] = str(priors.get("sat_tiles")) if priors.get("sat_tiles") else None
 
     # StateSnapshot
     snap = {
@@ -248,14 +345,44 @@ def main() -> int:
     for arm_name, a in arms.items():
         use_osm = bool(a.get("use_osm", False))
         use_sat = bool(a.get("use_sat", False))
-        base_m = _calc_metrics_from_summary(image_cov, pose_cov, use_osm, use_sat, priors)
-        sig = _config_signature(cfg, arm_name)
-        sig_delta = _delta_triplet_from_signature(sig)
-        surrogate = _surrogate_delta(cfg, registry)
-        m = dict(base_m)
-        m["C"] = round(max(0.0, min(0.999, m["C"] + sig_delta["C"] + surrogate["C"])), 4)
-        m["B_roughness"] = round(max(0.0, m["B_roughness"] + sig_delta["B"] + surrogate["B"]), 4)
-        m["A_dangling_per_km"] = round(max(0.0, m["A_dangling_per_km"] + sig_delta["A"] + surrogate["A"]), 3)
+        if eval_mode == "geom":
+            center_len = float(qc.get("centerline_total_length_m", 0.0))
+            diag = float(qc.get("road_bbox_diag_m", 1.0))
+            ratio = float(qc.get("centerlines_in_polygon_ratio", 0.0))
+            c_len = min(1.0, center_len / max(1.0, diag * 2.0))
+            C = max(0.0, min(0.999, 0.6 * c_len + 0.4 * ratio))
+            frag = float(qc.get("road_component_count_before", 1))
+            inter_cnt = float(qc.get("intersections_count", 0))
+            inter_area = float(qc.get("intersections_area_total_m2", 0.0))
+            area_ratio = inter_area / max(1.0, diag * diag)
+            B = min(1.0, 0.2 + 0.0018 * frag + 0.01 * inter_cnt + 0.2 * max(0.0, 0.02 - area_ratio))
+            A = max(0.0, 5.0 * (1.0 - ratio))
+            base_m = {
+                "C": round(C, 4),
+                "B_roughness": round(B, 4),
+                "A_dangling_per_km": round(A, 3),
+                "prior_used": "NONE",
+                "prior_confidence_p50": 0.0,
+                "alignment_residual_p50": 999.0,
+                "conflict_rate": 0.0,
+                "image_coverage": 0.0,
+                "pose_coverage": 0.0,
+                "prior_osm_available": False,
+                "prior_sat_available": False,
+            }
+            m = dict(base_m)
+            sig = _config_signature(cfg, arm_name)
+            sig_delta = {"C": 0.0, "B": 0.0, "A": 0.0}
+            surrogate = {"C": 0.0, "B": 0.0, "A": 0.0}
+        else:
+            base_m = _calc_metrics_from_summary(image_cov, pose_cov, use_osm, use_sat, priors)
+            sig = _config_signature(cfg, arm_name)
+            sig_delta = _delta_triplet_from_signature(sig)
+            surrogate = _surrogate_delta(cfg, registry)
+            m = dict(base_m)
+            m["C"] = round(max(0.0, min(0.999, m["C"] + sig_delta["C"] + surrogate["C"])), 4)
+            m["B_roughness"] = round(max(0.0, m["B_roughness"] + sig_delta["B"] + surrogate["B"]), 4)
+            m["A_dangling_per_km"] = round(max(0.0, m["A_dangling_per_km"] + sig_delta["A"] + surrogate["A"]), 3)
         ok, reason = _gate(m, gates)
 
         run_card = {
@@ -281,6 +408,7 @@ def main() -> int:
                 },
                 "config_signature": sig,
             },
+            "qc": qc,
         }
         write_run_card(run_dir / f"RunCard_{arm_name}.md", run_card)
         (run_dir / f"RunCard_{arm_name}.json").write_text(
@@ -289,12 +417,15 @@ def main() -> int:
         )
         write_sync_pack(
             run_dir / f"SyncPack_{arm_name}.md",
-            diff={"config_id": cfg.get("config_id"), "arm": arm_name, "config_path": args.config},
+            diff={"config_id": cfg.get("config_id"), "arm": arm_name, "config_path": args.config, "eval_mode": eval_mode},
             evidence=run_card,
             ask="If FAIL, propose <=3 fixes. If PASS, suggest next autotune actions."
         )
 
-    print(f"[EVAL] DONE -> {run_dir} (index_used={index_used})")
+    if eval_mode == "geom":
+        print(f"[EVAL] DONE -> {run_dir} (geom_mode=True)")
+    else:
+        print(f"[EVAL] DONE -> {run_dir} (index_used={index_used})")
     return 0
 
 
