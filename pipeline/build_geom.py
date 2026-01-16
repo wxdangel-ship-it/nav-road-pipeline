@@ -282,6 +282,104 @@ def _clean_polygons(geom, min_area: float, topk: int):
     return polys
 
 
+def _sample_line_points(line: LineString, step_m: float) -> list[tuple[float, float]]:
+    if line.length == 0:
+        return []
+    n = max(2, int(math.ceil(line.length / step_m)) + 1)
+    return [line.interpolate(float(i) / (n - 1), normalized=True).coords[0] for i in range(n)]
+
+
+def _smooth_median(values: list[float], win: int = 5) -> list[float]:
+    if not values:
+        return values
+    out = []
+    half = win // 2
+    for i in range(len(values)):
+        s = max(0, i - half)
+        e = min(len(values), i + half + 1)
+        v = sorted(values[s:e])
+        out.append(v[len(v) // 2])
+    return out
+
+
+def _ray_intersections(road_poly, origin: tuple[float, float], direction: tuple[float, float], max_dist: float = 60.0) -> float | None:
+    ox, oy = origin
+    dx, dy = direction
+    end = (ox + dx * max_dist, oy + dy * max_dist)
+    ray = LineString([origin, end])
+    inter = ray.intersection(road_poly)
+    if inter.is_empty:
+        return None
+    if inter.geom_type == "LineString":
+        return inter.length
+    if inter.geom_type == "MultiLineString":
+        return max(g.length for g in inter.geoms) if inter.geoms else None
+    if inter.geom_type == "GeometryCollection":
+        lines = [g for g in inter.geoms if g.geom_type == "LineString"]
+        if not lines:
+            return None
+        return max(g.length for g in lines)
+    return None
+
+
+def _width_profile(line: LineString, road_poly, step_m: float) -> tuple[list[tuple[float, float]], list[float]]:
+    pts = _sample_line_points(line, step_m)
+    if len(pts) < 2:
+        return pts, []
+    widths: list[float] = []
+    coords = np.asarray(pts)
+    for i in range(len(coords)):
+        if i == 0:
+            dx, dy = coords[1] - coords[0]
+        elif i == len(coords) - 1:
+            dx, dy = coords[-1] - coords[-2]
+        else:
+            dx, dy = coords[i + 1] - coords[i - 1]
+        length = math.hypot(dx, dy)
+        if length == 0:
+            widths.append(0.0)
+            continue
+        nx, ny = -dy / length, dx / length
+        w1 = _ray_intersections(road_poly, (coords[i, 0], coords[i, 1]), (nx, ny))
+        w2 = _ray_intersections(road_poly, (coords[i, 0], coords[i, 1]), (-nx, -ny))
+        if w1 is None or w2 is None:
+            widths.append(0.0)
+        else:
+            widths.append(float(w1 + w2))
+    return pts, widths
+
+
+def _cluster_peaks(points: list[tuple[float, float]], mask: list[bool], merge_dist: float = 20.0) -> list[tuple[float, float]]:
+    clusters = []
+    current: list[tuple[float, float]] = []
+    last = None
+    for pt, is_peak in zip(points, mask):
+        if not is_peak:
+            if current:
+                clusters.append(current)
+                current = []
+            last = None
+            continue
+        if last is None:
+            current.append(pt)
+            last = pt
+        else:
+            if math.hypot(pt[0] - last[0], pt[1] - last[1]) <= merge_dist:
+                current.append(pt)
+            else:
+                clusters.append(current)
+                current = [pt]
+            last = pt
+    if current:
+        clusters.append(current)
+    centers = []
+    for c in clusters:
+        xs = [p[0] for p in c]
+        ys = [p[1] for p in c]
+        centers.append((sum(xs) / len(xs), sum(ys) / len(ys)))
+    return centers
+
+
 def _write_geojson(path: Path, features: list[dict]) -> None:
     fc = {"type": "FeatureCollection", "features": features}
     path.write_text(json.dumps(fc, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -296,6 +394,10 @@ def main() -> int:
     ap.add_argument("--inter-min-area", type=float, default=100.0, help="min intersection area to keep")
     ap.add_argument("--inter-topk", type=int, default=10, help="keep top-k intersections by area")
     ap.add_argument("--inter-simplify", type=float, default=0.8, help="intersection simplify meters")
+    ap.add_argument("--inter-mode", choices=["widen", "turn"], default="widen", help="intersection candidate mode")
+    ap.add_argument("--width-sample-step", type=float, default=3.0, help="sampling step along centerline (m)")
+    ap.add_argument("--width-peak-ratio", type=float, default=1.6, help="width peak ratio vs local median")
+    ap.add_argument("--width-buffer-mult", type=float, default=0.8, help="buffer radius multiplier for width peaks")
     args = ap.parse_args()
 
     data_root = os.environ.get("POC_DATA_ROOT", "")
@@ -389,14 +491,41 @@ def main() -> int:
         {"type": "Feature", "geometry": mapping(center_lines[1]), "properties": {"name": "right"}},
     ]
 
-    inter_pts = _build_intersection_points(poses_xy, turn_thr_rad=0.9, close_thr_m=12.0, min_sep=25)
+    inter_mode = str(args.inter_mode).lower()
+    inter_pts: list[Point] = []
+    width_median = 0.0
+    width_p95 = 0.0
+    peak_point_count = 0
+    cluster_count = 0
+    if inter_mode == "widen":
+        sample_step = float(args.width_sample_step)
+        pts, widths = _width_profile(traj_line, road_poly, sample_step)
+        if widths:
+            med = float(np.median(widths))
+            width_median = med
+            width_p95 = float(np.percentile(widths, 95))
+            smoothed = _smooth_median(widths, win=5)
+            peaks = [w > (med * float(args.width_peak_ratio)) for w in smoothed]
+            peak_point_count = sum(1 for p in peaks if p)
+            centers = _cluster_peaks(pts, peaks, merge_dist=20.0)
+            cluster_count = len(centers)
+            inter_pts = [Point(c) for c in centers]
+    else:
+        inter_pts = _build_intersection_points(poses_xy, turn_thr_rad=0.9, close_thr_m=12.0, min_sep=25)
     inter_polys = []
     inter_area_total = 0.0
     inter_min_area = float(args.inter_min_area)
     inter_topk = int(args.inter_topk)
     inter_simplify = float(args.inter_simplify)
     if inter_pts:
-        inter_union = unary_union([p.buffer(15.0) for p in inter_pts])
+        if inter_mode == "widen":
+            buffers = []
+            for p in inter_pts:
+                radius = max(8.0, width_median * float(args.width_buffer_mult))
+                buffers.append(p.buffer(radius))
+            inter_union = unary_union(buffers)
+        else:
+            inter_union = unary_union([p.buffer(15.0) for p in inter_pts])
         inter_polys, inter_area_total = _postprocess_intersections(
             inter_union,
             road_poly,
@@ -431,6 +560,7 @@ def main() -> int:
     print(f"[QC] centerline_total length={total_len:.2f}m")
     print(f"[QC] road_component_count_before={road_before} after={road_after}")
     print(f"[QC] inter_component_count_before={inter_before if inter_pts else 0} after={inter_after if inter_pts else 0}")
+    print(f"[QC] width_median={width_median:.2f} width_p95={width_p95:.2f} peak_point_count={peak_point_count} cluster_count={cluster_count}")
     top5 = sorted([p.area for p in inter_polys], reverse=True)[:5]
     print(f"[QC] intersections_count={len(inter_polys)}")
     print(f"[QC] intersections_area_total={inter_area_total:.2f}m2")
