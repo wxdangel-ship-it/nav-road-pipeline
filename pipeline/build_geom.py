@@ -389,6 +389,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="KITTI-360 drive name")
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames to read")
+    ap.add_argument("--frame-start", type=int, default=0, help="start frame index")
+    ap.add_argument("--frame-count", type=int, default=0, help="number of frames (0=use max-frames)")
     ap.add_argument("--road-min-area", type=float, default=50.0, help="min road polygon area to keep")
     ap.add_argument("--road-topk", type=int, default=1, help="keep top-k road components by area")
     ap.add_argument("--inter-min-area", type=float, default=100.0, help="min intersection area to keep")
@@ -403,6 +405,7 @@ def main() -> int:
     ap.add_argument("--corridor-m", type=float, default=15.0, help="trajectory corridor width (m)")
     ap.add_argument("--simplify-m", type=float, default=1.2, help="geometry simplify meters")
     ap.add_argument("--centerline-offset-m", type=float, default=3.5, help="centerline offset (m)")
+    ap.add_argument("--allow-empty-intersections", type=int, default=0, help="allow empty intersections without failing")
     args = ap.parse_args()
 
     data_root = os.environ.get("POC_DATA_ROOT", "")
@@ -416,18 +419,23 @@ def main() -> int:
 
     oxts_dir = _find_oxts_dir(data_root, args.drive)
     velodyne_dir = _find_velodyne_dir(data_root, args.drive)
-    oxts_pts = _read_latlon(oxts_dir, args.max_frames)
+    frame_start = max(0, int(args.frame_start))
+    frame_count = int(args.frame_count) if args.frame_count and args.frame_count > 0 else int(args.max_frames)
+    if frame_count <= 0:
+        frame_count = 2000
+
+    oxts_pts = _read_latlon(oxts_dir, max_frames=0)
     poses_xy, yaws = _project_to_utm32(oxts_pts)
 
     bin_files = sorted(velodyne_dir.glob("*.bin"))
-    if args.max_frames and args.max_frames > 0:
-        bin_files = bin_files[: args.max_frames]
+    if frame_count and frame_count > 0:
+        bin_files = bin_files[frame_start: frame_start + frame_count]
     n = min(len(bin_files), poses_xy.shape[0])
     if n < 2:
         raise SystemExit("ERROR: insufficient velodyne frames.")
     bin_files = bin_files[:n]
-    poses_xy = poses_xy[:n]
-    yaws = yaws[:n]
+    poses_xy = poses_xy[frame_start: frame_start + n]
+    yaws = yaws[frame_start: frame_start + n]
 
     resolution = float(args.grid_resolution)
     density_thr = int(args.density_thr)
@@ -581,13 +589,16 @@ def main() -> int:
         raise SystemExit("ERROR: centerlines too short; check offset/clip/trajectory coverage.")
     if len(inter_polys) > max(20, inter_topk):
         raise SystemExit("ERROR: intersections unstable; check candidates/postprocess thresholds.")
-    if inter_area_total < max(100.0, inter_min_area):
-        raise SystemExit("ERROR: intersections unstable; check candidates/postprocess thresholds.")
+    if not bool(args.allow_empty_intersections):
+        if inter_area_total < max(100.0, inter_min_area):
+            raise SystemExit("ERROR: intersections unstable; check candidates/postprocess thresholds.")
 
     snap = {
         "run_id": run_id,
         "drive": args.drive,
         "max_frames": args.max_frames,
+        "frame_start": frame_start,
+        "frame_count": frame_count,
         "crs_epsg": 32632,
         "data_root": str(data_root),
         "oxts_dir": str(oxts_dir),
@@ -607,6 +618,8 @@ def main() -> int:
         "road_bbox_dx_m": round(road_dx, 3),
         "road_bbox_dy_m": round(road_dy, 3),
         "road_bbox_diag_m": round(road_diag, 3),
+        "frame_start": int(frame_start),
+        "frame_count": int(frame_count),
         "road_component_count_before": int(road_before),
         "road_component_count_after": int(road_after),
         "centerline_1_length_m": round(line_lengths[0], 3) if len(line_lengths) > 0 else 0.0,

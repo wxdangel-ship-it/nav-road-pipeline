@@ -160,6 +160,32 @@ def _summary_from_tiles(tiles: list[dict]) -> dict:
     }
 
 
+def _agg_qc(qc_list: list[dict]) -> dict:
+    if not qc_list:
+        return {}
+    def _avg(key: str) -> float:
+        vals = [float(q.get(key, 0.0)) for q in qc_list]
+        return sum(vals) / max(1, len(vals))
+    def _min(key: str) -> float:
+        return min(float(q.get(key, 0.0)) for q in qc_list)
+    def _max(key: str) -> float:
+        return max(float(q.get(key, 0.0)) for q in qc_list)
+
+    agg = {
+        "road_bbox_diag_m": round(_avg("road_bbox_diag_m"), 3),
+        "road_component_count_before": int(_max("road_component_count_before")),
+        "centerline_total_length_m": round(_avg("centerline_total_length_m"), 3),
+        "centerlines_in_polygon_ratio": round(_min("centerlines_in_polygon_ratio"), 4),
+        "intersections_count": int(round(_avg("intersections_count"))),
+        "intersections_area_total_m2": round(_avg("intersections_area_total_m2"), 3),
+        "width_median_m": round(_avg("width_median_m"), 3),
+        "width_p95_m": round(_avg("width_p95_m"), 3),
+        "peak_point_count": int(round(_avg("peak_point_count"))),
+        "cluster_count": int(round(_avg("cluster_count"))),
+    }
+    return agg
+
+
 def _extract_geom_run_dir(text: str, repo: Path) -> Path | None:
     m = re.search(r"\[GEOM\]\s+DONE\s+->\s+([^\r\n(]+)", text)
     if not m:
@@ -232,6 +258,7 @@ def _geom_params_from_config(cfg: dict) -> dict:
         "--centerline-offset-m": round(center_offset_m, 3),
         "--width-peak-ratio": round(peak_ratio, 3),
         "--width-buffer-mult": round(width_mult, 3),
+        "--allow-empty-intersections": 1,
     }
 
 
@@ -245,6 +272,8 @@ def main() -> int:
     ap.add_argument("--max-frames", type=int, default=0, help="limit frames per drive for speed (0=all)")
     ap.add_argument("--index", default="cache/kitti360_index.json", help="index cache path (default cache/kitti360_index.json)")
     ap.add_argument("--eval-mode", default="summary", help="evaluation mode (summary|geom)")
+    ap.add_argument("--windows", type=int, default=3, help="geom windows count")
+    ap.add_argument("--window-stride", type=int, default=0, help="geom window stride frames")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -277,21 +306,36 @@ def main() -> int:
     if eval_mode not in ["summary", "geom"]:
         raise SystemExit(f"ERROR: invalid --eval-mode: {eval_mode}")
     qc = None
+    qc_windows = None
     if eval_mode == "geom":
         geom_drive = drive_arg or (drive_list[0] if drive_list else "2013_05_28_drive_0000_sync")
         geom_args = _geom_params_from_config(cfg)
-        geom_run = _run_geom_cmd(repo, geom_drive, max_frames or 0, geom_args)
-        qc_path = geom_run / "qc.json"
-        if not qc_path.exists():
-            raise SystemExit("ERROR: qc.json not found after build_geom.")
-        qc = json.loads(qc_path.read_text(encoding="utf-8"))
+        total_frames = max_frames or 2000
+        win_count = max(1, int(args.windows))
+        stride = int(args.window_stride) if int(args.window_stride) > 0 else max(1, total_frames // (win_count + 1))
+        qc_windows = []
+        for i in range(win_count):
+            frame_start = i * stride
+            geom_args_win = dict(geom_args)
+            geom_args_win["--frame-start"] = frame_start
+            geom_args_win["--frame-count"] = stride
+            geom_run = _run_geom_cmd(repo, geom_drive, total_frames, geom_args_win)
+            qc_path = geom_run / "qc.json"
+            if not qc_path.exists():
+                raise SystemExit("ERROR: qc.json not found after build_geom.")
+            qc_windows.append(json.loads(qc_path.read_text(encoding="utf-8")))
+
         qc_knobs = {k.lstrip("-"): v for k, v in geom_args.items()}
+        qc_agg = _agg_qc(qc_windows)
+        qc = qc_agg
         ds_summary = {
             "drive_count": 1,
             "drives": [geom_drive],
             "geom_run": str(geom_run),
             "index_used": None,
             "index_path": None,
+            "windows": win_count,
+            "window_stride": stride,
         }
         priors = {"osm_layers": None, "sat_tiles": None}
     else:
@@ -415,6 +459,7 @@ def main() -> int:
                 "config_signature": sig,
             },
             "qc": qc,
+            "qc_windows": qc_windows if eval_mode == "geom" else None,
         }
         write_run_card(run_dir / f"RunCard_{arm_name}.md", run_card)
         (run_dir / f"RunCard_{arm_name}.json").write_text(

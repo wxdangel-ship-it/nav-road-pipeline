@@ -122,6 +122,8 @@ def _run_eval_cmd(
     drives: list[str] | None,
     eval_mode: str,
     drive: str | None,
+    windows: int | None,
+    window_stride: int | None,
 ) -> Path:
     cmd = [
         "cmd.exe",
@@ -144,6 +146,10 @@ def _run_eval_cmd(
         cmd += ["--eval-mode", eval_mode]
     if drive:
         cmd += ["--drive", drive]
+    if windows and windows > 0:
+        cmd += ["--windows", str(windows)]
+    if window_stride and window_stride > 0:
+        cmd += ["--window-stride", str(window_stride)]
 
     proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True)
     output = (proc.stdout or "") + "\n" + (proc.stderr or "")
@@ -184,12 +190,26 @@ def _score_one_config_real(
     drives: list[str] | None,
     eval_mode: str,
     drive: str | None,
+    windows: int | None,
+    window_stride: int | None,
     only_arms: list[str] | None = None,
 ) -> tuple[bool, float, dict, Path]:
     cfg_id = cfg.get("config_id", "CFG")
     cfg_path = run_dir / "candidates" / f"{cfg_id}.yaml"
     _write_yaml(cfg_path, cfg)
-    eval_run_dir = _run_eval_cmd(repo, cfg_path, max_frames, data_root, prior_root, index_path, drives, eval_mode, drive)
+    eval_run_dir = _run_eval_cmd(
+        repo,
+        cfg_path,
+        max_frames,
+        data_root,
+        prior_root,
+        index_path,
+        drives,
+        eval_mode,
+        drive,
+        windows,
+        window_stride,
+    )
 
     total = 0.0
     any_fail = False
@@ -203,7 +223,7 @@ def _score_one_config_real(
         rc = _read_run_card(rc_path)
         m = rc.get("metrics", {})
         ok, _ = _gate(m, gates)
-        per_arm[arm_name] = {"ok": ok, "metrics": m, "run_dir": str(eval_run_dir)}
+        per_arm[arm_name] = {"ok": ok, "metrics": m, "qc": rc.get("qc"), "run_dir": str(eval_run_dir)}
         if not ok:
             any_fail = True
             break
@@ -227,6 +247,25 @@ def _score_one_config(cfg: dict, arms: dict, gates: dict) -> tuple[bool, float, 
         total += m["C"] - 0.25 * m["B_roughness"] - 0.01 * m["A_dangling_per_km"] - 0.5 * m["conflict_rate"]
     return (not any_fail), total, per_arm
 
+
+def _tie_break_key(trial: dict) -> tuple:
+    per_arm = trial.get("per_arm", {})
+    arm0 = per_arm.get("Arm0", {}) or {}
+    qc = arm0.get("qc", {}) or {}
+    road_comp = float(qc.get("road_component_count_before", 1e9))
+    ratio = float(qc.get("centerlines_in_polygon_ratio", 0.0))
+    center_len = float(qc.get("centerline_total_length_m", 0.0))
+    diag = float(qc.get("road_bbox_diag_m", 1.0))
+    len_ratio = center_len / max(1.0, diag)
+    inter_cnt = float(qc.get("intersections_count", 0.0))
+    if inter_cnt < 1:
+        inter_pen = 10.0
+    elif inter_cnt > 10:
+        inter_pen = inter_cnt - 10.0
+    else:
+        inter_pen = 0.0
+    return (-road_comp, ratio, len_ratio, -inter_pen)
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", default="sim", choices=["sim", "real"], help="autotune mode")
@@ -237,6 +276,8 @@ def main() -> int:
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames for real-mode evals")
     ap.add_argument("--eval-mode", default="summary", choices=["summary", "geom"], help="eval mode for real")
     ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="single drive for geom eval")
+    ap.add_argument("--windows", type=int, default=0, help="geom windows count (optional)")
+    ap.add_argument("--window-stride", type=int, default=0, help="geom window stride (optional)")
     ap.add_argument("--stageA-max-frames", type=int, default=0, help="override stage A max_frames")
     ap.add_argument("--stageB-max-frames", type=int, default=0, help="override stage B max_frames")
     ap.add_argument("--stageC-max-frames", type=int, default=0, help="override stage C max_frames")
@@ -273,6 +314,10 @@ def main() -> int:
     drives_arg = _parse_drives(args.drives) if args.drives else []
     eval_mode = str(args.eval_mode).lower()
     geom_drive = str(args.drive) if args.drive else "2013_05_28_drive_0000_sync"
+    eval_windows = int(args.windows) if args.windows and args.windows > 0 else (1 if eval_mode == "geom" else 0)
+    eval_stride = int(args.window_stride) if args.window_stride and args.window_stride > 0 else 0
+    if eval_mode == "geom" and budget > 5:
+        budget = 5
 
     if mode == "real":
         if not data_root:
@@ -332,6 +377,8 @@ def main() -> int:
                     drives=stageA_drives if eval_mode != "geom" else None,
                     eval_mode=eval_mode,
                     drive=geom_drive if eval_mode == "geom" else None,
+                    windows=eval_windows if eval_mode == "geom" else None,
+                    window_stride=eval_stride if eval_mode == "geom" else None,
                     only_arms=["Arm0"],
                 )
             if ok:
@@ -393,12 +440,14 @@ def main() -> int:
                 drives=stageB_drives if eval_mode != "geom" else None,
                 eval_mode=eval_mode,
                 drive=geom_drive if eval_mode == "geom" else None,
+                windows=eval_windows if eval_mode == "geom" else None,
+                window_stride=eval_stride if eval_mode == "geom" else None,
                 only_arms=None,
             )
             if ok:
                 trials.append({"score": score, "config": cand, "per_arm": per_arm, "run_dir": str(eval_run_dir)})
 
-    trials.sort(reverse=True, key=lambda x: x["score"])
+    trials.sort(reverse=True, key=lambda x: (x["score"],) + _tie_break_key(x))
     (run_dir / "trials_top.json").write_text(json.dumps(trials[:topn], ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Leaderboard
@@ -426,12 +475,14 @@ def main() -> int:
                     drives=stageC_drives if eval_mode != "geom" else None,
                     eval_mode=eval_mode,
                     drive=geom_drive if eval_mode == "geom" else None,
+                    windows=eval_windows if eval_mode == "geom" else None,
+                    window_stride=eval_stride if eval_mode == "geom" else None,
                     only_arms=None,
                 )
                 if ok:
                     stageC_results.append({"score": score, "config": t["config"], "per_arm": per_arm, "run_dir": str(eval_run_dir)})
             if stageC_results:
-                stageC_results.sort(reverse=True, key=lambda x: x["score"])
+                stageC_results.sort(reverse=True, key=lambda x: (x["score"],) + _tie_break_key(x))
                 winner = stageC_results[0]["config"]
 
         (run_dir / "winner_active.yaml").write_text(json.dumps(winner, ensure_ascii=False, indent=2), encoding="utf-8")
