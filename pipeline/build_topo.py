@@ -8,8 +8,8 @@ import subprocess
 from typing import Iterable
 
 import yaml
-from shapely.geometry import shape, mapping, LineString, Point
-from shapely.ops import unary_union
+from shapely.geometry import shape, mapping, LineString, Point, Polygon, MultiPolygon
+from shapely.ops import unary_union, split
 
 from pipeline._io import ensure_dir, new_run_id, load_yaml
 
@@ -103,6 +103,62 @@ def _flatten_lines(geoms: Iterable) -> list[LineString]:
     return out
 
 
+def _flatten_polygons(geoms: Iterable) -> list[Polygon]:
+    out = []
+    for g in geoms:
+        if g.geom_type == "Polygon":
+            out.append(g)
+        elif g.geom_type == "MultiPolygon":
+            out.extend(list(g.geoms))
+    return out
+
+
+def _split_lines_by_polygons(lines: list[LineString], inter_union) -> list[LineString]:
+    if not inter_union or inter_union.is_empty:
+        return lines
+    segments: list[LineString] = []
+    for line in lines:
+        try:
+            result = split(line, inter_union)
+            segments.extend(_flatten_lines(result.geoms))
+        except Exception:
+            segments.append(line)
+    return segments
+
+
+def _find_intersection_idx(pt: Point, inter_polys: list[Polygon]) -> int:
+    for i, poly in enumerate(inter_polys):
+        if pt.within(poly) or pt.touches(poly):
+            return i
+    return -1
+
+
+def _component_sizes(node_count: int, edges: list[dict]) -> list[int]:
+    adj = {i: set() for i in range(node_count)}
+    for e in edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        adj[n0].add(n1)
+        adj[n1].add(n0)
+    visited = set()
+    sizes = []
+    for i in range(node_count):
+        if i in visited:
+            continue
+        stack = [i]
+        visited.add(i)
+        count = 0
+        while stack:
+            cur = stack.pop()
+            count += 1
+            for nb in adj[cur]:
+                if nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+        sizes.append(count)
+    return sizes
+
+
 def _write_geojson(path: Path, features: list[dict]) -> None:
     fc = {"type": "FeatureCollection", "features": features}
     path.write_text(json.dumps(fc, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -123,17 +179,27 @@ def main() -> int:
 
     geom_dir = _run_geom_cmd(repo, args.drive, args.max_frames)
     centerlines = _flatten_lines(_read_geojson(geom_dir / "centerlines.geojson"))
-    intersections = _read_geojson(geom_dir / "intersections.geojson")
+    intersections = _flatten_polygons(_read_geojson(geom_dir / "intersections.geojson"))
     inter_union = unary_union(intersections) if intersections else None
 
-    endpoints = []
-    for line in centerlines:
-        coords = list(line.coords)
-        endpoints.append(Point(coords[0]))
-        endpoints.append(Point(coords[-1]))
+    split_centerlines = _split_lines_by_polygons(centerlines, inter_union)
+    junction_nodes = [Point(p.centroid.x, p.centroid.y) for p in intersections]
 
-    centers, assignment, dists = _cluster_points(endpoints, args.snap_tol_m)
-    node_degree = {i: 0 for i in range(len(centers))}
+    endpoints = []
+    endpoint_inter_idx = []
+    for line in split_centerlines:
+        coords = list(line.coords)
+        p0 = Point(coords[0])
+        p1 = Point(coords[-1])
+        endpoints.append(p0)
+        endpoints.append(p1)
+        endpoint_inter_idx.append(_find_intersection_idx(p0, intersections))
+        endpoint_inter_idx.append(_find_intersection_idx(p1, intersections))
+
+    cluster_points = [p for i, p in enumerate(endpoints) if endpoint_inter_idx[i] < 0]
+    centers, assignment, dists = _cluster_points(cluster_points, args.snap_tol_m)
+    node_points = list(centers) + list(junction_nodes)
+    node_degree = {i: 0 for i in range(len(node_points))}
 
     edges = []
     issues = []
@@ -141,19 +207,32 @@ def main() -> int:
     dangling_count = 0
     issue_idx = 0
 
-    for i, line in enumerate(centerlines):
+    assign_idx = 0
+    for i, line in enumerate(split_centerlines):
         coords = list(line.coords)
         p0 = Point(coords[0])
         p1 = Point(coords[-1])
-        a0 = assignment[2 * i]
-        a1 = assignment[2 * i + 1]
-        dist0 = dists[2 * i]
-        dist1 = dists[2 * i + 1]
+        inter0 = endpoint_inter_idx[2 * i]
+        inter1 = endpoint_inter_idx[2 * i + 1]
+        if inter0 >= 0:
+            a0 = len(centers) + inter0
+            dist0 = p0.distance(junction_nodes[inter0])
+        else:
+            a0 = assignment[assign_idx]
+            dist0 = dists[assign_idx]
+            assign_idx += 1
+        if inter1 >= 0:
+            a1 = len(centers) + inter1
+            dist1 = p1.distance(junction_nodes[inter1])
+        else:
+            a1 = assignment[assign_idx]
+            dist1 = dists[assign_idx]
+            assign_idx += 1
         edge_id = f"edge_{i:05d}"
         length_m = float(line.length)
         in_inter = False
         if inter_union and not inter_union.is_empty:
-            in_inter = bool(p0.within(inter_union) or p1.within(inter_union))
+            in_inter = bool(line.intersects(inter_union))
 
         node_degree[a0] += 1
         node_degree[a1] += 1
@@ -170,7 +249,7 @@ def main() -> int:
             }
         )
 
-        if dist0 > args.snap_tol_m or dist1 > args.snap_tol_m:
+        if (inter0 < 0 and dist0 > args.snap_tol_m) or (inter1 < 0 and dist1 > args.snap_tol_m):
             issue_idx += 1
             issues.append(
                 {
@@ -225,14 +304,53 @@ def main() -> int:
         else:
             kept_edges.append(e)
 
+    # Recompute degree after removal
+    node_degree = {i: 0 for i in range(len(node_points))}
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        node_degree[n0] += 1
+        node_degree[n1] += 1
+
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        if (node_degree[n0] == 1 or node_degree[n1] == 1) and e["length_m"] >= args.spur_len_m:
+            issue_idx += 1
+            issues.append(
+                {
+                    "issue_id": f"{run_id}_{issue_idx:04d}",
+                    "tile_id": args.drive,
+                    "involved_edges": [e["edge_id"]],
+                    "involved_nodes": [e["from_node"], e["to_node"]],
+                    "rule_failed": "DanglingEnd",
+                    "severity": "S2",
+                    "description": "Long dangling edge retained.",
+                    "recommend_actions": ["merge_endpoints"],
+                    "evidence_summary": {
+                        "traj_support": "unknown",
+                        "lidar_support": "unknown",
+                        "image_support": "unknown",
+                        "prior_conflict": "none",
+                        "alignment_residual": None,
+                    },
+                    "error_code": "E08",
+                }
+            )
+
     # Output nodes/edges
     node_features = []
-    for i, p in enumerate(centers):
+    for i, p in enumerate(node_points):
+        node_type = "junction" if i >= len(centers) else "endpoint"
         node_features.append(
             {
                 "type": "Feature",
                 "geometry": mapping(p),
-                "properties": {"node_id": f"node_{i:05d}", "degree": int(node_degree[i])},
+                "properties": {
+                    "node_id": f"node_{i:05d}",
+                    "degree": int(node_degree[i]),
+                    "node_type": node_type,
+                },
             }
         )
     edge_features = []
@@ -259,12 +377,20 @@ def main() -> int:
         for item in issues:
             f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
+    degree_hist = {}
+    for d in node_degree.values():
+        degree_hist[str(d)] = degree_hist.get(str(d), 0) + 1
+    dangling_nodes = [f"node_{i:05d}" for i, d in node_degree.items() if d == 1]
+    component_sizes = _component_sizes(len(node_points), kept_edges)
     summary = {
         "run_id": run_id,
         "node_count": len(node_features),
         "edge_count": len(edge_features),
         "dangling_removed": removed_edges,
         "dangling_total": dangling_count,
+        "dangling_nodes": dangling_nodes,
+        "degree_histogram": degree_hist,
+        "components": {"count": len(component_sizes), "sizes": component_sizes},
         "issues_count": len(issues),
     }
     (out_dir / "TopoSummary.md").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
