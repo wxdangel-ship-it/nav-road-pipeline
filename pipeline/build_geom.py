@@ -9,7 +9,7 @@ from typing import Iterable
 
 import numpy as np
 from shapely.geometry import LineString, Point, box, mapping
-from shapely.ops import unary_union
+from shapely.ops import unary_union, linemerge
 from shapely.prepared import prep
 from pyproj import Transformer
 
@@ -116,16 +116,65 @@ def _merge_counts(acc: dict[tuple[int, int], int], add: dict[tuple[int, int], in
         acc[k] = acc.get(k, 0) + v
 
 
+def _merge_lines(geom) -> LineString | None:
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "LineString":
+        return geom
+    if geom.geom_type == "MultiLineString":
+        merged = linemerge(geom)
+        if merged.geom_type == "LineString":
+            return merged
+        if merged.geom_type == "MultiLineString":
+            lines = list(merged.geoms)
+            if not lines:
+                return None
+            return max(lines, key=lambda g: g.length)
+    return None
+
+
+def _offset_polyline_coords(coords: np.ndarray, offset: float) -> LineString | None:
+    if coords.shape[0] < 2:
+        return None
+    normals = np.zeros_like(coords)
+    for i in range(coords.shape[0] - 1):
+        dx = coords[i + 1, 0] - coords[i, 0]
+        dy = coords[i + 1, 1] - coords[i, 1]
+        length = math.hypot(dx, dy)
+        if length == 0:
+            nx, ny = 0.0, 0.0
+        else:
+            nx, ny = -dy / length, dx / length
+        normals[i] = (nx, ny)
+    normals[-1] = normals[-2]
+    avg = normals.copy()
+    for i in range(1, coords.shape[0] - 1):
+        nx = normals[i - 1, 0] + normals[i, 0]
+        ny = normals[i - 1, 1] + normals[i, 1]
+        length = math.hypot(nx, ny)
+        if length != 0:
+            avg[i] = (nx / length, ny / length)
+    shifted = coords + avg * offset
+    return LineString(shifted.tolist())
+
+
 def _build_centerlines(line: LineString, road_poly) -> list[LineString]:
-    for offset in (3.5, 2.0, 1.5):
-        left = line.parallel_offset(offset, "left", join_style=2)
-        right = line.parallel_offset(offset, "right", join_style=2)
-        left_clip = left.intersection(road_poly)
-        right_clip = right.intersection(road_poly)
-        left_line = _longest_line(left_clip) if not left_clip.is_empty else None
-        right_line = _longest_line(right_clip) if not right_clip.is_empty else None
-        if left_line is not None and right_line is not None:
-            return [left_line, right_line]
+    line_len = float(line.length)
+    base = line.simplify(0.5)
+    coords = np.asarray(base.coords)
+    for offset in (3.5, 2.5, 1.5, 0.8):
+        left = _offset_polyline_coords(coords, offset)
+        right = _offset_polyline_coords(coords, -offset)
+        if left is None or right is None:
+            continue
+        if road_poly.contains(left) and road_poly.contains(right):
+            return [left, right]
+        left_clip = _merge_lines(left.intersection(road_poly))
+        right_clip = _merge_lines(right.intersection(road_poly))
+        if left_clip is None or right_clip is None:
+            continue
+        if left_clip.length >= 0.7 * line_len and right_clip.length >= 0.7 * line_len:
+            return [left_clip, right_clip]
     return [line, line]
 
 
@@ -180,6 +229,14 @@ def _build_intersection_points(
             if math.hypot(x2 - x1, y2 - y1) < close_thr_m:
                 points.append(Point((x1 + x2) * 0.5, (y1 + y2) * 0.5))
     return points
+
+
+def _road_bbox_dims(road_poly) -> tuple[float, float, float]:
+    minx, miny, maxx, maxy = road_poly.bounds
+    dx = maxx - minx
+    dy = maxy - miny
+    diag = math.hypot(dx, dy)
+    return dx, dy, diag
 
 
 def _write_geojson(path: Path, features: list[dict]) -> None:
@@ -264,9 +321,12 @@ def main() -> int:
         ))
 
     if cells:
-        road_poly = unary_union(cells).simplify(simplify_m, preserve_topology=True)
+        road_poly = unary_union(cells)
     else:
-        road_poly = corridor.simplify(simplify_m, preserve_topology=True)
+        road_poly = corridor
+
+    road_poly = unary_union([road_poly, traj_line.buffer(6.0, cap_style=2, join_style=2)])
+    road_poly = road_poly.simplify(simplify_m, preserve_topology=True)
 
     center_lines = _build_centerlines(traj_line, road_poly)
     center_features = [
@@ -287,6 +347,16 @@ def main() -> int:
     _write_geojson(out_dir / "centerlines.geojson", center_features)
     _write_geojson(out_dir / "road_polygon.geojson", [{"type": "Feature", "geometry": mapping(road_poly), "properties": {}}])
     _write_geojson(out_dir / "intersections.geojson", inter_features)
+
+    road_dx, road_dy, road_diag = _road_bbox_dims(road_poly)
+    line_lengths = [float(line.length) for line in center_lines]
+    total_len = float(sum(line_lengths))
+    print(f"[QC] road bbox dx={road_dx:.2f}m dy={road_dy:.2f}m diag={road_diag:.2f}m")
+    for i, ln in enumerate(line_lengths, 1):
+        print(f"[QC] centerline_{i} length={ln:.2f}m")
+    print(f"[QC] centerline_total length={total_len:.2f}m")
+    if total_len < 200.0 or (road_diag > 0 and total_len < 0.2 * road_diag):
+        raise SystemExit("ERROR: centerlines too short; check offset/clip/trajectory coverage.")
 
     snap = {
         "run_id": run_id,
