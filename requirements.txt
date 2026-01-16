@@ -1,2 +1,5 @@
 pyyaml
+numpy==1.26.4
+shapely==2.0.3
+pyproj==3.6.1
 

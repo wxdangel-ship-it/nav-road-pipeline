@@ -5,7 +5,13 @@ import json
 import math
 import os
 import re
-from copy import deepcopy
+from typing import Iterable
+
+import numpy as np
+from shapely.geometry import LineString, Point, box, mapping
+from shapely.ops import unary_union
+from shapely.prepared import prep
+from pyproj import Transformer
 
 from pipeline._io import ensure_dir, new_run_id
 
@@ -31,163 +37,149 @@ def _read_latlon(oxts_dir: Path, max_frames: int) -> list[tuple[float, float]]:
         files = files[: max_frames]
     if not files:
         raise SystemExit(f"ERROR: no oxts txt files found in {oxts_dir}")
-    pts = []
+    pts: list[tuple[float, float]] = []
     for fp in files:
         text = fp.read_text(encoding="utf-8").strip()
         if not text:
             continue
         parts = re.split(r"\s+", text)
-        if len(parts) < 2:
+        if len(parts) < 6:
             continue
         try:
             lat = float(parts[0])
             lon = float(parts[1])
+            yaw = float(parts[5])
         except ValueError:
             continue
-        pts.append((lat, lon))
+        pts.append((lat, lon, yaw))
     if len(pts) < 2:
         raise SystemExit("ERROR: insufficient oxts points.")
     return pts
 
 
-def _wgs84_to_utm32n(lat: float, lon: float) -> tuple[float, float]:
-    a = 6378137.0
-    f = 1.0 / 298.257223563
-    k0 = 0.9996
-    e2 = f * (2.0 - f)
-    ep2 = e2 / (1.0 - e2)
-
-    lat_rad = math.radians(lat)
-    lon_rad = math.radians(lon)
-    lon0 = math.radians(9.0)  # UTM zone 32 central meridian
-
-    n = a / math.sqrt(1.0 - e2 * math.sin(lat_rad) ** 2)
-    t = math.tan(lat_rad) ** 2
-    c = ep2 * math.cos(lat_rad) ** 2
-    a_ = (lon_rad - lon0) * math.cos(lat_rad)
-
-    m = (
-        a
-        * (
-            (1 - e2 / 4 - 3 * e2 ** 2 / 64 - 5 * e2 ** 3 / 256) * lat_rad
-            - (3 * e2 / 8 + 3 * e2 ** 2 / 32 + 45 * e2 ** 3 / 1024) * math.sin(2 * lat_rad)
-            + (15 * e2 ** 2 / 256 + 45 * e2 ** 3 / 1024) * math.sin(4 * lat_rad)
-            - (35 * e2 ** 3 / 3072) * math.sin(6 * lat_rad)
-        )
-    )
-
-    x = k0 * n * (
-        a_
-        + (1 - t + c) * a_ ** 3 / 6
-        + (5 - 18 * t + t ** 2 + 72 * c - 58 * ep2) * a_ ** 5 / 120
-    ) + 500000.0
-    y = k0 * (
-        m
-        + n
-        * math.tan(lat_rad)
-        * (
-            a_ ** 2 / 2
-            + (5 - t + 9 * c + 4 * c ** 2) * a_ ** 4 / 24
-            + (61 - 58 * t + t ** 2 + 600 * c - 330 * ep2) * a_ ** 6 / 720
-        )
-    )
-    return x, y
+def _project_to_utm32(points: list[tuple[float, float, float]]) -> tuple[np.ndarray, np.ndarray]:
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    lats = np.array([p[0] for p in points], dtype=float)
+    lons = np.array([p[1] for p in points], dtype=float)
+    yaws = np.array([p[2] for p in points], dtype=float)
+    xs, ys = transformer.transform(lons, lats)
+    return np.vstack([xs, ys]).T, yaws
 
 
-def _project_to_utm32(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    return [_wgs84_to_utm32n(lat, lon) for lat, lon in points]
+def _find_velodyne_dir(data_root: Path, drive: str) -> Path:
+    candidates = [
+        data_root / "data_3d_raw" / drive / "velodyne_points" / "data",
+        data_root / "data_3d_raw" / drive / "velodyne_points" / "data" / "1",
+        data_root / drive / "velodyne_points" / "data",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    raise SystemExit(f"ERROR: velodyne data not found for drive: {drive}")
 
 
-def _offset_polyline(points: list[tuple[float, float]], offset: float) -> list[tuple[float, float]]:
-    n = len(points)
-    if n < 2:
-        return points
-    normals = []
-    for i in range(n - 1):
-        x1, y1 = points[i]
-        x2, y2 = points[i + 1]
-        dx = x2 - x1
-        dy = y2 - y1
-        length = math.hypot(dx, dy)
-        if length == 0:
-            normals.append((0.0, 0.0))
-        else:
-            normals.append((-dy / length, dx / length))
-    out = []
-    for i in range(n):
-        if i == 0:
-            nx, ny = normals[0]
-        elif i == n - 1:
-            nx, ny = normals[-1]
-        else:
-            n1 = normals[i - 1]
-            n2 = normals[i]
-            nx = n1[0] + n2[0]
-            ny = n1[1] + n2[1]
-            length = math.hypot(nx, ny)
-            if length != 0:
-                nx /= length
-                ny /= length
-        x, y = points[i]
-        out.append((x + nx * offset, y + ny * offset))
+def _read_velodyne_points(fp: Path) -> np.ndarray:
+    raw = np.fromfile(str(fp), dtype=np.float32)
+    if raw.size % 4 != 0:
+        raw = raw[: raw.size - (raw.size % 4)]
+    return raw.reshape(-1, 4)
+
+
+def _ground_mask(z: np.ndarray, z_band: float = 0.6) -> np.ndarray:
+    if z.size == 0:
+        return z.astype(bool)
+    med = float(np.median(z))
+    return np.abs(z - med) <= z_band
+
+
+def _grid_counts(
+    xs: np.ndarray,
+    ys: np.ndarray,
+    origin: tuple[float, float],
+    resolution: float,
+) -> dict[tuple[int, int], int]:
+    dx = xs - origin[0]
+    dy = ys - origin[1]
+    ix = np.floor(dx / resolution).astype(np.int64)
+    iy = np.floor(dy / resolution).astype(np.int64)
+    keys = np.stack([ix, iy], axis=1)
+    uniq, counts = np.unique(keys, axis=0, return_counts=True)
+    out: dict[tuple[int, int], int] = {}
+    for k, c in zip(uniq, counts):
+        key = (int(k[0]), int(k[1]))
+        out[key] = out.get(key, 0) + int(c)
     return out
 
 
-def _rdp(points: list[tuple[float, float]], eps: float) -> list[tuple[float, float]]:
-    if len(points) < 3:
+def _merge_counts(acc: dict[tuple[int, int], int], add: dict[tuple[int, int], int]) -> None:
+    for k, v in add.items():
+        acc[k] = acc.get(k, 0) + v
+
+
+def _build_centerlines(line: LineString, road_poly) -> list[LineString]:
+    for offset in (3.5, 2.0, 1.5):
+        left = line.parallel_offset(offset, "left", join_style=2)
+        right = line.parallel_offset(offset, "right", join_style=2)
+        left_clip = left.intersection(road_poly)
+        right_clip = right.intersection(road_poly)
+        left_line = _longest_line(left_clip) if not left_clip.is_empty else None
+        right_line = _longest_line(right_clip) if not right_clip.is_empty else None
+        if left_line is not None and right_line is not None:
+            return [left_line, right_line]
+    return [line, line]
+
+
+def _longest_line(geom) -> LineString | None:
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "LineString":
+        return geom
+    if geom.geom_type == "MultiLineString":
+        lines = list(geom.geoms)
+        if not lines:
+            return None
+        return max(lines, key=lambda g: g.length)
+    return None
+
+
+def _heading_angles(coords: np.ndarray) -> np.ndarray:
+    dxy = np.diff(coords, axis=0)
+    return np.arctan2(dxy[:, 1], dxy[:, 0])
+
+
+def _angle_diff(a1: float, a2: float) -> float:
+    d = a2 - a1
+    while d > math.pi:
+        d -= 2 * math.pi
+    while d < -math.pi:
+        d += 2 * math.pi
+    return abs(d)
+
+
+def _build_intersection_points(
+    coords: np.ndarray,
+    turn_thr_rad: float = 0.9,
+    close_thr_m: float = 12.0,
+    min_sep: int = 25,
+) -> list[Point]:
+    points: list[Point] = []
+    if coords.shape[0] < 3:
         return points
-    x1, y1 = points[0]
-    x2, y2 = points[-1]
-    dx = x2 - x1
-    dy = y2 - y1
-    denom = math.hypot(dx, dy)
-    max_dist = -1.0
-    idx = -1
-    for i in range(1, len(points) - 1):
-        px, py = points[i]
-        if denom == 0:
-            dist = math.hypot(px - x1, py - y1)
-        else:
-            dist = abs(dy * px - dx * py + x2 * y1 - y2 * x1) / denom
-        if dist > max_dist:
-            max_dist = dist
-            idx = i
-    if max_dist > eps and idx != -1:
-        left = _rdp(points[: idx + 1], eps)
-        right = _rdp(points[idx:], eps)
-        return left[:-1] + right
-    return [points[0], points[-1]]
+    angles = _heading_angles(coords)
+    for i in range(1, len(angles)):
+        if _angle_diff(angles[i - 1], angles[i]) > turn_thr_rad:
+            x, y = coords[i]
+            points.append(Point(x, y))
 
-
-def _build_intersections(
-    points: list[tuple[float, float]],
-    threshold_m: float = 12.0,
-    min_sep: int = 20,
-) -> list[tuple[float, float]]:
-    n = len(points)
-    if n < min_sep + 2:
-        return []
-    step = max(1, n // 400)
-    sampled = points[::step]
-    centers = []
+    step = max(1, coords.shape[0] // 400)
+    sampled = coords[::step]
     for i in range(len(sampled)):
         x1, y1 = sampled[i]
         for j in range(i + min_sep, len(sampled)):
             x2, y2 = sampled[j]
-            d = math.hypot(x2 - x1, y2 - y1)
-            if d < threshold_m:
-                centers.append(((x1 + x2) * 0.5, (y1 + y2) * 0.5))
-    return centers
-
-
-def _circle_polygon(center: tuple[float, float], radius: float, steps: int = 16) -> list[tuple[float, float]]:
-    cx, cy = center
-    pts = []
-    for i in range(steps):
-        ang = 2.0 * math.pi * i / steps
-        pts.append((cx + math.cos(ang) * radius, cy + math.sin(ang) * radius))
-    pts.append(pts[0])
-    return pts
+            if math.hypot(x2 - x1, y2 - y1) < close_thr_m:
+                points.append(Point((x1 + x2) * 0.5, (y1 + y2) * 0.5))
+    return points
 
 
 def _write_geojson(path: Path, features: list[dict]) -> None:
@@ -211,38 +203,89 @@ def main() -> int:
     out_dir = ensure_dir(run_dir / "outputs")
 
     oxts_dir = _find_oxts_dir(data_root, args.drive)
-    ll = _read_latlon(oxts_dir, args.max_frames)
-    xy = _project_to_utm32(ll)
+    velodyne_dir = _find_velodyne_dir(data_root, args.drive)
+    oxts_pts = _read_latlon(oxts_dir, args.max_frames)
+    poses_xy, yaws = _project_to_utm32(oxts_pts)
 
-    center_offset_m = 3.5
-    road_buffer_m = 10.0
-    simplify_m = 1.0
+    bin_files = sorted(velodyne_dir.glob("*.bin"))
+    if args.max_frames and args.max_frames > 0:
+        bin_files = bin_files[: args.max_frames]
+    n = min(len(bin_files), poses_xy.shape[0])
+    if n < 2:
+        raise SystemExit("ERROR: insufficient velodyne frames.")
+    bin_files = bin_files[:n]
+    poses_xy = poses_xy[:n]
+    yaws = yaws[:n]
 
-    left = _offset_polyline(xy, center_offset_m)
-    right = _offset_polyline(xy, -center_offset_m)
-    left = _rdp(left, simplify_m)
-    right = _rdp(right, simplify_m)
+    resolution = 0.5
+    density_thr = 3
+    corridor_m = 15.0
+    simplify_m = 1.2
 
-    road_left = _offset_polyline(xy, road_buffer_m)
-    road_right = _offset_polyline(xy, -road_buffer_m)
-    road_poly = road_left + list(reversed(road_right))
-    if road_poly[0] != road_poly[-1]:
-        road_poly.append(road_poly[0])
-    road_poly = _rdp(road_poly, simplify_m)
+    origin = (float(poses_xy[0, 0]), float(poses_xy[0, 1]))
+    grid: dict[tuple[int, int], int] = {}
 
-    inter_centers = _build_intersections(xy, threshold_m=12.0, min_sep=20)
-    inter_features = []
-    for c in inter_centers:
-        ring = _circle_polygon(c, 8.0, steps=16)
-        inter_features.append({"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [ring]}, "properties": {}})
+    for i in range(n):
+        pts = _read_velodyne_points(bin_files[i])
+        if pts.size == 0:
+            continue
+        z = pts[:, 2]
+        mask = _ground_mask(z, z_band=0.6)
+        if not np.any(mask):
+            continue
+        pts = pts[mask]
+        x = pts[:, 0]
+        y = pts[:, 1]
+        yaw = float(yaws[i])
+        c = math.cos(yaw)
+        s = math.sin(yaw)
+        xw = c * x - s * y + poses_xy[i, 0]
+        yw = s * x + c * y + poses_xy[i, 1]
+        counts = _grid_counts(xw, yw, origin, resolution)
+        _merge_counts(grid, counts)
 
+    traj_line = LineString(poses_xy.tolist())
+    corridor = traj_line.buffer(corridor_m, cap_style=2, join_style=2)
+    corridor_prep = prep(corridor)
+
+    cells = []
+    for (ix, iy), count in grid.items():
+        if count < density_thr:
+            continue
+        cx = origin[0] + (ix + 0.5) * resolution
+        cy = origin[1] + (iy + 0.5) * resolution
+        if not corridor_prep.contains(Point(cx, cy)):
+            continue
+        cells.append(box(
+            origin[0] + ix * resolution,
+            origin[1] + iy * resolution,
+            origin[0] + (ix + 1) * resolution,
+            origin[1] + (iy + 1) * resolution,
+        ))
+
+    if cells:
+        road_poly = unary_union(cells).simplify(simplify_m, preserve_topology=True)
+    else:
+        road_poly = corridor.simplify(simplify_m, preserve_topology=True)
+
+    center_lines = _build_centerlines(traj_line, road_poly)
     center_features = [
-        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": left}, "properties": {"name": "left"}},
-        {"type": "Feature", "geometry": {"type": "LineString", "coordinates": right}, "properties": {"name": "right"}},
+        {"type": "Feature", "geometry": mapping(center_lines[0]), "properties": {"name": "left"}},
+        {"type": "Feature", "geometry": mapping(center_lines[1]), "properties": {"name": "right"}},
     ]
 
+    inter_pts = _build_intersection_points(poses_xy, turn_thr_rad=0.9, close_thr_m=12.0, min_sep=25)
+    if inter_pts:
+        inter_union = unary_union([p.buffer(15.0) for p in inter_pts]).intersection(road_poly)
+        if inter_union.is_empty:
+            inter_features = []
+        else:
+            inter_features = [{"type": "Feature", "geometry": mapping(inter_union), "properties": {}}]
+    else:
+        inter_features = []
+
     _write_geojson(out_dir / "centerlines.geojson", center_features)
-    _write_geojson(out_dir / "road_polygon.geojson", [{"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [road_poly]}, "properties": {}}])
+    _write_geojson(out_dir / "road_polygon.geojson", [{"type": "Feature", "geometry": mapping(road_poly), "properties": {}}])
     _write_geojson(out_dir / "intersections.geojson", inter_features)
 
     snap = {
@@ -252,6 +295,10 @@ def main() -> int:
         "crs_epsg": 32632,
         "data_root": str(data_root),
         "oxts_dir": str(oxts_dir),
+        "velodyne_dir": str(velodyne_dir),
+        "grid_resolution_m": resolution,
+        "density_threshold": density_thr,
+        "corridor_m": corridor_m,
         "outputs": {
             "road_polygon": "road_polygon.geojson",
             "centerlines": "centerlines.geojson",
