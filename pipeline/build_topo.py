@@ -169,8 +169,9 @@ def main() -> int:
     ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="drive name")
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames for geom input")
     ap.add_argument("--snap-tol-m", type=float, default=1.5, help="node snap tolerance (m)")
+    ap.add_argument("--snap-tol-outside-m", type=float, default=1.0, help="node snap tolerance outside intersections (m)")
     ap.add_argument("--spur-len-m", type=float, default=8.0, help="spur length threshold (m)")
-    ap.add_argument("--merge-tol-m", type=float, default=2.0, help="dangling merge tolerance (m)")
+    ap.add_argument("--merge-tol-m", type=float, default=3.5, help="dangling merge tolerance (m)")
     ap.add_argument("--max-degree-warn", type=int, default=12, help="degree warning threshold")
     args = ap.parse_args()
 
@@ -198,9 +199,26 @@ def main() -> int:
         endpoint_inter_idx.append(_find_intersection_idx(p0, intersections))
         endpoint_inter_idx.append(_find_intersection_idx(p1, intersections))
 
-    cluster_points = [p for i, p in enumerate(endpoints) if endpoint_inter_idx[i] < 0]
-    centers, assignment, dists = _cluster_points(cluster_points, args.snap_tol_m)
+    grouped_indices: dict[int, list[int]] = {}
+    for i, inter_idx in enumerate(endpoint_inter_idx):
+        grouped_indices.setdefault(inter_idx, []).append(i)
+    centers: list[Point] = []
+    center_inter_idx: list[int] = []
+    endpoint_to_center = [0 for _ in endpoints]
+    endpoint_to_center_dist = [0.0 for _ in endpoints]
+    for inter_idx, idxs in grouped_indices.items():
+        pts = [endpoints[i] for i in idxs]
+        tol = args.snap_tol_m if inter_idx >= 0 else args.snap_tol_outside_m
+        group_centers, group_assignment, group_dists = _cluster_points(pts, tol)
+        base = len(centers)
+        centers.extend(group_centers)
+        center_inter_idx.extend([inter_idx] * len(group_centers))
+        for local_i, ep_idx in enumerate(idxs):
+            endpoint_to_center[ep_idx] = base + group_assignment[local_i]
+            endpoint_to_center_dist[ep_idx] = group_dists[local_i]
     node_points = list(centers) + list(junction_nodes)
+    node_inter_idx = list(center_inter_idx) + list(range(len(junction_nodes)))
+    node_types = ["endpoint"] * len(centers) + ["junction"] * len(junction_nodes)
     node_degree = {i: 0 for i in range(len(node_points))}
 
     edges = []
@@ -210,7 +228,6 @@ def main() -> int:
     dangling_merged = 0
     issue_idx = 0
 
-    assign_idx = 0
     for i, line in enumerate(split_centerlines):
         coords = list(line.coords)
         p0 = Point(coords[0])
@@ -218,19 +235,44 @@ def main() -> int:
         inter0 = endpoint_inter_idx[2 * i]
         inter1 = endpoint_inter_idx[2 * i + 1]
         if inter0 >= 0:
-            a0 = len(centers) + inter0
-            dist0 = p0.distance(junction_nodes[inter0])
+            junction_idx = len(centers) + inter0
+            junction_dist = p0.distance(junction_nodes[inter0])
+            if junction_dist <= args.snap_tol_m:
+                a0 = junction_idx
+                dist0 = junction_dist
+            else:
+                a0 = endpoint_to_center[2 * i]
+                dist0 = endpoint_to_center_dist[2 * i]
         else:
-            a0 = assignment[assign_idx]
-            dist0 = dists[assign_idx]
-            assign_idx += 1
+            a0 = endpoint_to_center[2 * i]
+            dist0 = endpoint_to_center_dist[2 * i]
         if inter1 >= 0:
-            a1 = len(centers) + inter1
-            dist1 = p1.distance(junction_nodes[inter1])
+            junction_idx = len(centers) + inter1
+            junction_dist = p1.distance(junction_nodes[inter1])
+            if junction_dist <= args.snap_tol_m:
+                a1 = junction_idx
+                dist1 = junction_dist
+            else:
+                a1 = endpoint_to_center[2 * i + 1]
+                dist1 = endpoint_to_center_dist[2 * i + 1]
         else:
-            a1 = assignment[assign_idx]
-            dist1 = dists[assign_idx]
-            assign_idx += 1
+            a1 = endpoint_to_center[2 * i + 1]
+            dist1 = endpoint_to_center_dist[2 * i + 1]
+        if a0 == a1:
+            split_use_p1 = dist1 >= dist0
+            new_idx = len(node_points)
+            if split_use_p1:
+                node_points.append(Point(p1.x, p1.y))
+                node_inter_idx.append(inter1)
+                a1 = new_idx
+                dist1 = 0.0
+            else:
+                node_points.append(Point(p0.x, p0.y))
+                node_inter_idx.append(inter0)
+                a0 = new_idx
+                dist0 = 0.0
+            node_types.append("endpoint")
+            node_degree[new_idx] = 0
         edge_id = f"edge_{i:05d}"
         length_m = float(line.length)
         in_inter = False
@@ -324,22 +366,26 @@ def main() -> int:
         if node_degree[n0] == 1 or node_degree[n1] == 1:
             dangling_node = n0 if node_degree[n0] == 1 else n1
             other_node = n1 if dangling_node == n0 else n0
+            inter_idx = node_inter_idx[dangling_node]
             best_j = -1
             best_d = 1e9
-            for j, jp in enumerate(junction_nodes):
+            for j, jp in enumerate(node_points):
+                if j == dangling_node:
+                    continue
+                if node_inter_idx[j] != inter_idx:
+                    continue
                 d = node_points[dangling_node].distance(jp)
                 if d < best_d:
                     best_d = d
                     best_j = j
             if best_j >= 0 and best_d <= args.merge_tol_m:
-                new_node_idx = len(centers) + best_j
                 if dangling_node == n0:
-                    e["from_node"] = f"node_{new_node_idx:05d}"
+                    e["from_node"] = f"node_{best_j:05d}"
                 else:
-                    e["to_node"] = f"node_{new_node_idx:05d}"
+                    e["to_node"] = f"node_{best_j:05d}"
                 node_degree[dangling_node] -= 1
                 node_degree[other_node] += 0
-                node_degree[new_node_idx] += 1
+                node_degree[best_j] += 1
                 dangling_merged += 1
 
     # Recompute degree after merge attempts
@@ -381,7 +427,6 @@ def main() -> int:
     node_features = []
     isolated_nodes_removed = 0
     for i, p in enumerate(node_points):
-        node_type = "junction" if i >= len(centers) else "endpoint"
         if node_degree[i] == 0:
             isolated_nodes_removed += 1
             issue_idx += 1
@@ -413,7 +458,7 @@ def main() -> int:
                 "properties": {
                     "node_id": f"node_{i:05d}",
                     "degree": int(node_degree[i]),
-                    "node_type": node_type,
+                    "node_type": node_types[i],
                 },
             }
         )
