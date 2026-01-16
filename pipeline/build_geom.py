@@ -273,6 +273,15 @@ def _postprocess_intersections(geom, road_poly, min_area: float, topk: int, simp
     return cleaned, total_area
 
 
+def _clean_polygons(geom, min_area: float, topk: int):
+    polys = _explode_polygons(geom)
+    polys = [p for p in polys if p.area >= min_area]
+    polys.sort(key=lambda p: p.area, reverse=True)
+    if topk > 0:
+        polys = polys[:topk]
+    return polys
+
+
 def _write_geojson(path: Path, features: list[dict]) -> None:
     fc = {"type": "FeatureCollection", "features": features}
     path.write_text(json.dumps(fc, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -282,6 +291,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drive", default="2013_05_28_drive_0000_sync", help="KITTI-360 drive name")
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames to read")
+    ap.add_argument("--road-min-area", type=float, default=50.0, help="min road polygon area to keep")
+    ap.add_argument("--road-topk", type=int, default=1, help="keep top-k road components by area")
     ap.add_argument("--inter-min-area", type=float, default=100.0, help="min intersection area to keep")
     ap.add_argument("--inter-topk", type=int, default=10, help="keep top-k intersections by area")
     ap.add_argument("--inter-simplify", type=float, default=0.8, help="intersection simplify meters")
@@ -365,6 +376,13 @@ def main() -> int:
     road_poly = unary_union([road_poly, traj_line.buffer(6.0, cap_style=2, join_style=2)])
     road_poly = road_poly.simplify(simplify_m, preserve_topology=True)
 
+    road_before = len(_explode_polygons(road_poly))
+    road_min_area = float(args.road_min_area)
+    road_topk = int(args.road_topk)
+    road_keep = _clean_polygons(road_poly, road_min_area, road_topk)
+    road_after = len(road_keep)
+    road_poly = unary_union(road_keep) if road_keep else road_poly
+
     center_lines = _build_centerlines(traj_line, road_poly)
     center_features = [
         {"type": "Feature", "geometry": mapping(center_lines[0]), "properties": {"name": "left"}},
@@ -386,6 +404,18 @@ def main() -> int:
             topk=inter_topk,
             simplify_m=inter_simplify,
         )
+        inter_before = len(inter_polys)
+        inter_union2 = unary_union(inter_polys) if inter_polys else inter_union
+        inter_clean = _clean_polygons(inter_union2, inter_min_area, inter_topk)
+        inter_clean = [
+            p.simplify(inter_simplify, preserve_topology=True).buffer(0)
+            for p in inter_clean
+            if not p.is_empty
+        ]
+        inter_clean = [p for p in inter_clean if p.area >= inter_min_area]
+        inter_polys = inter_clean
+        inter_area_total = sum(p.area for p in inter_polys)
+        inter_after = len(inter_polys)
     inter_features = [{"type": "Feature", "geometry": mapping(p), "properties": {}} for p in inter_polys]
 
     _write_geojson(out_dir / "centerlines.geojson", center_features)
@@ -399,6 +429,8 @@ def main() -> int:
     for i, ln in enumerate(line_lengths, 1):
         print(f"[QC] centerline_{i} length={ln:.2f}m")
     print(f"[QC] centerline_total length={total_len:.2f}m")
+    print(f"[QC] road_component_count_before={road_before} after={road_after}")
+    print(f"[QC] inter_component_count_before={inter_before if inter_pts else 0} after={inter_after if inter_pts else 0}")
     top5 = sorted([p.area for p in inter_polys], reverse=True)[:5]
     print(f"[QC] intersections_count={len(inter_polys)}")
     print(f"[QC] intersections_area_total={inter_area_total:.2f}m2")
