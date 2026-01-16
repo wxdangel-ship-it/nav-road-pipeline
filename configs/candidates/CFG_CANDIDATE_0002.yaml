@@ -1,0 +1,63 @@
+{
+  "config_id": "CFG_BASELINE_0001_B_T019",
+  "runtime_target": "windows-native",
+  "prior_data_id": "NONE",
+  "modules": {
+    "M0": {
+      "impl_id": "m0_align2",
+      "params": {
+        "align_tol_m": 2.4975018667203734
+      }
+    },
+    "M1": {
+      "impl_id": "m1_stub",
+      "params": {}
+    },
+    "M2": {
+      "impl_id": "m2_stub",
+      "params": {
+        "dummy_thr": 0.11893154776116122
+      }
+    },
+    "M3": {
+      "impl_id": "m3_stub",
+      "params": {}
+    },
+    "M4": {
+      "impl_id": "m4_stub",
+      "params": {
+        "split_eps_m": 12.236977072756424
+      }
+    },
+    "M5": {
+      "impl_id": "m5_stub",
+      "params": {}
+    },
+    "M6a": {
+      "impl_id": "m6a_stub",
+      "params": {
+        "smooth_lambda": 0.656489967807578
+      }
+    },
+    "M6b": {
+      "impl_id": "m6b_stub",
+      "params": {}
+    },
+    "M6c": {
+      "impl_id": "m6c_stub",
+      "params": {}
+    },
+    "M7": {
+      "impl_id": "m7_stub",
+      "params": {}
+    },
+    "M8": {
+      "impl_id": "m8_stub",
+      "params": {}
+    },
+    "M9": {
+      "impl_id": "m9_stub",
+      "params": {}
+    }
+  }
+}
