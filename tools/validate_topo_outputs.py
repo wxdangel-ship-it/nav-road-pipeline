@@ -26,8 +26,8 @@ from typing import Any, Dict, List, Tuple
 # =========================
 # 参数区（按需修改）
 # =========================
-SUMMARY_PATH = r"runs\topo_20260117_003932\outputs\TopoSummary.md"
-ISSUES_PATH = r"runs\topo_20260117_003932\outputs\TopoIssues.jsonl"  # 按实际文件名改
+SUMMARY_PATH = r"runs\topo_20260117_073912\outputs\TopoSummary.md"
+ISSUES_PATH = r"runs\topo_20260117_073912\outputs\TopoIssues.jsonl"  # 按实际文件名改
 
 # TOPOISSUE_SPEC（你们真实 spec 如有更严格要求，可在这里补充）
 REQUIRED_ISSUE_KEYS = [
@@ -138,9 +138,20 @@ def validate_summary(summary: Dict[str, Any], logger: logging.Logger) -> List[st
             warns.append(f"dangling_nodes 数量={len(dang_nodes)} 与 dangling_total={dang_total} 不一致（确认口径：final vs detected）")
 
     # dangling_removed > dangling_total 提示
+    dang_detected = summary.get("dangling_detected")
     dang_removed = summary.get("dangling_removed")
-    if isinstance(dang_total, int) and isinstance(dang_removed, int) and dang_removed > dang_total:
-        warns.append(f"dangling_removed={dang_removed} 大于 dangling_total={dang_total}（建议 v2.4 明确 detected/removed/merged/remaining 口径并加 invariant）")
+    dang_merged = summary.get("dangling_merged")
+    dang_unfixed = summary.get("dangling_unfixed")
+
+    if isinstance(dang_detected, int) and all(isinstance(x, int) for x in [dang_removed, dang_merged, dang_unfixed]):
+        s = dang_removed + dang_merged + dang_unfixed
+        if dang_detected != s:
+            warns.append(f"dangling invariant 不成立：detected={dang_detected} != removed+merged+unfixed={s}")
+    else:
+        # 仅在没有 dangling_detected 的旧版本里，才保留 removed > total 的提醒
+        if isinstance(summary.get("dangling_total"), int) and isinstance(dang_removed, int) and dang_removed > summary[
+            "dangling_total"]:
+            warns.append(...)
 
     if warns:
         logger.warning("TopoSummary 自洽性存在 %d 条提醒：", len(warns))
