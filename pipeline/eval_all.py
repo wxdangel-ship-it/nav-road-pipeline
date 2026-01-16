@@ -404,7 +404,7 @@ def main() -> int:
             inter_cnt = float(qc.get("intersections_count", 0))
             inter_area = float(qc.get("intersections_area_total_m2", 0.0))
             area_ratio = inter_area / max(1.0, diag * diag)
-            B = min(1.0, 0.2 + 0.0018 * frag + 0.01 * inter_cnt + 0.2 * max(0.0, 0.02 - area_ratio))
+            B = min(1.0, 0.2 + 0.0010 * frag + 0.01 * inter_cnt + 0.2 * max(0.0, 0.02 - area_ratio))
             A = max(0.0, 5.0 * (1.0 - ratio))
             base_m = {
                 "C": round(C, 4),
