@@ -170,6 +170,8 @@ def main() -> int:
     ap.add_argument("--max-frames", type=int, default=2000, help="max frames for geom input")
     ap.add_argument("--snap-tol-m", type=float, default=1.5, help="node snap tolerance (m)")
     ap.add_argument("--spur-len-m", type=float, default=8.0, help="spur length threshold (m)")
+    ap.add_argument("--merge-tol-m", type=float, default=2.0, help="dangling merge tolerance (m)")
+    ap.add_argument("--max-degree-warn", type=int, default=12, help="degree warning threshold")
     args = ap.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -205,6 +207,7 @@ def main() -> int:
     issues = []
     removed_edges = 0
     dangling_count = 0
+    dangling_merged = 0
     issue_idx = 0
 
     assign_idx = 0
@@ -312,6 +315,42 @@ def main() -> int:
         node_degree[n0] += 1
         node_degree[n1] += 1
 
+    # Attempt merge for long dangling edges
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        if e["length_m"] < args.spur_len_m:
+            continue
+        if node_degree[n0] == 1 or node_degree[n1] == 1:
+            dangling_node = n0 if node_degree[n0] == 1 else n1
+            other_node = n1 if dangling_node == n0 else n0
+            best_j = -1
+            best_d = 1e9
+            for j, jp in enumerate(junction_nodes):
+                d = node_points[dangling_node].distance(jp)
+                if d < best_d:
+                    best_d = d
+                    best_j = j
+            if best_j >= 0 and best_d <= args.merge_tol_m:
+                new_node_idx = len(centers) + best_j
+                if dangling_node == n0:
+                    e["from_node"] = f"node_{new_node_idx:05d}"
+                else:
+                    e["to_node"] = f"node_{new_node_idx:05d}"
+                node_degree[dangling_node] -= 1
+                node_degree[other_node] += 0
+                node_degree[new_node_idx] += 1
+                dangling_merged += 1
+
+    # Recompute degree after merge attempts
+    node_degree = {i: 0 for i in range(len(node_points))}
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        node_degree[n0] += 1
+        node_degree[n1] += 1
+
+    # Remaining long dangling edges -> issues
     for e in kept_edges:
         n0 = int(e["from_node"].split("_")[1])
         n1 = int(e["to_node"].split("_")[1])
@@ -340,8 +379,33 @@ def main() -> int:
 
     # Output nodes/edges
     node_features = []
+    isolated_nodes_removed = 0
     for i, p in enumerate(node_points):
         node_type = "junction" if i >= len(centers) else "endpoint"
+        if node_degree[i] == 0:
+            isolated_nodes_removed += 1
+            issue_idx += 1
+            issues.append(
+                {
+                    "issue_id": f"{run_id}_{issue_idx:04d}",
+                    "tile_id": args.drive,
+                    "involved_edges": [],
+                    "involved_nodes": [f"node_{i:05d}"],
+                    "rule_failed": "IsolatedNode",
+                    "severity": "S1",
+                    "description": "Isolated node removed.",
+                    "recommend_actions": ["remove_spur"],
+                    "evidence_summary": {
+                        "traj_support": "unknown",
+                        "lidar_support": "unknown",
+                        "image_support": "unknown",
+                        "prior_conflict": "none",
+                        "alignment_residual": None,
+                    },
+                    "error_code": "E08",
+                }
+            )
+            continue
         node_features.append(
             {
                 "type": "Feature",
@@ -381,18 +445,59 @@ def main() -> int:
     for d in node_degree.values():
         degree_hist[str(d)] = degree_hist.get(str(d), 0) + 1
     dangling_nodes = [f"node_{i:05d}" for i, d in node_degree.items() if d == 1]
+    max_degree = max(node_degree.values()) if node_degree else 0
     component_sizes = _component_sizes(len(node_points), kept_edges)
+    dangling_total = sum(1 for d in node_degree.values() if d == 1)
+    dangling_unfixed_nodes = set()
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        if e["length_m"] >= args.spur_len_m:
+            if node_degree[n0] == 1:
+                dangling_unfixed_nodes.add(n0)
+            if node_degree[n1] == 1:
+                dangling_unfixed_nodes.add(n1)
+    warning = None
+    if max_degree > args.max_degree_warn:
+        warning = f"max_degree={max_degree} exceeds {args.max_degree_warn}"
+        issue_idx += 1
+        issues.append(
+            {
+                "issue_id": f"{run_id}_{issue_idx:04d}",
+                "tile_id": args.drive,
+                "involved_edges": [],
+                "involved_nodes": [],
+                "rule_failed": "OverMergedJunction",
+                "severity": "S1",
+                "description": "Junction overly merged (high degree).",
+                "recommend_actions": ["merge_endpoints"],
+                "evidence_summary": {
+                    "traj_support": "unknown",
+                    "lidar_support": "unknown",
+                    "image_support": "unknown",
+                    "prior_conflict": "none",
+                    "alignment_residual": None,
+                },
+                "error_code": "E08",
+            }
+        )
     summary = {
         "run_id": run_id,
         "node_count": len(node_features),
         "edge_count": len(edge_features),
+        "dangling_total": dangling_total,
         "dangling_removed": removed_edges,
-        "dangling_total": dangling_count,
+        "dangling_merged": dangling_merged,
+        "dangling_unfixed": len(dangling_unfixed_nodes),
         "dangling_nodes": dangling_nodes,
+        "isolated_nodes_removed": isolated_nodes_removed,
         "degree_histogram": degree_hist,
+        "max_degree": max_degree,
         "components": {"count": len(component_sizes), "sizes": component_sizes},
         "issues_count": len(issues),
     }
+    if warning:
+        summary["warning"] = warning
     (out_dir / "TopoSummary.md").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"[TOPO] DONE -> {out_dir}")
