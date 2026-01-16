@@ -158,11 +158,11 @@ def _offset_polyline_coords(coords: np.ndarray, offset: float) -> LineString | N
     return LineString(shifted.tolist())
 
 
-def _build_centerlines(line: LineString, road_poly) -> list[LineString]:
+def _build_centerlines(line: LineString, road_poly, center_offset: float) -> list[LineString]:
     line_len = float(line.length)
     base = line.simplify(0.5)
     coords = np.asarray(base.coords)
-    for offset in (3.5, 2.5, 1.5, 0.8):
+    for offset in (center_offset, max(1.0, center_offset * 0.7), max(0.8, center_offset * 0.45)):
         left = _offset_polyline_coords(coords, offset)
         right = _offset_polyline_coords(coords, -offset)
         if left is None or right is None:
@@ -402,6 +402,7 @@ def main() -> int:
     ap.add_argument("--density-thr", type=int, default=3, help="grid density threshold")
     ap.add_argument("--corridor-m", type=float, default=15.0, help="trajectory corridor width (m)")
     ap.add_argument("--simplify-m", type=float, default=1.2, help="geometry simplify meters")
+    ap.add_argument("--centerline-offset-m", type=float, default=3.5, help="centerline offset (m)")
     args = ap.parse_args()
 
     data_root = os.environ.get("POC_DATA_ROOT", "")
@@ -432,6 +433,7 @@ def main() -> int:
     density_thr = int(args.density_thr)
     corridor_m = float(args.corridor_m)
     simplify_m = float(args.simplify_m)
+    center_offset_m = float(args.centerline_offset_m)
 
     origin = (float(poses_xy[0, 0]), float(poses_xy[0, 1]))
     grid: dict[tuple[int, int], int] = {}
@@ -489,7 +491,7 @@ def main() -> int:
     road_after = len(road_keep)
     road_poly = unary_union(road_keep) if road_keep else road_poly
 
-    center_lines = _build_centerlines(traj_line, road_poly)
+    center_lines = _build_centerlines(traj_line, road_poly, center_offset_m)
     center_features = [
         {"type": "Feature", "geometry": mapping(center_lines[0]), "properties": {"name": "left"}},
         {"type": "Feature", "geometry": mapping(center_lines[1]), "properties": {"name": "right"}},
@@ -624,6 +626,7 @@ def main() -> int:
         "density_threshold": int(density_thr),
         "corridor_m": round(corridor_m, 3),
         "simplify_m": round(simplify_m, 3),
+        "centerline_offset_m": round(center_offset_m, 3),
     }
     (out_dir / "qc.json").write_text(json.dumps(qc, ensure_ascii=False, indent=2), encoding="utf-8")
 

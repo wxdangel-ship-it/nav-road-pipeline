@@ -209,16 +209,19 @@ def _geom_params_from_config(cfg: dict) -> dict:
     modules = cfg.get("modules", {}) or {}
     m2 = modules.get("M2", {})
     m6a = modules.get("M6a", {})
+    m4 = modules.get("M4", {})
 
     dummy_thr = float(m2.get("params", {}).get("dummy_thr", 0.5))
     smooth_lambda = float(m6a.get("params", {}).get("smooth_lambda", 0.7))
     max_shift = float(m6a.get("params", {}).get("max_shift_m", 1.0))
+    split_eps = float(m4.get("params", {}).get("split_eps_m", 12.0))
 
-    density_thr = 2 if dummy_thr < 0.4 else 3
-    corridor_m = max(15.0, min(16.0, 15.0 + (max_shift - 1.0) * 0.5))
-    simplify_m = 1.2
+    density_thr = max(2, min(10, int(round(2 + dummy_thr * 8))))
+    simplify_m = max(0.3, min(2.0, 2.0 - smooth_lambda * 0.8))
+    center_offset_m = max(6.0, min(20.0, split_eps / 3.0))
+    corridor_m = max(15.0, min(22.0, 12.0 + max_shift * 2.0))
     grid_resolution = 0.5
-    peak_ratio = max(1.45, min(1.65, 1.55 + (dummy_thr - 0.5) * 0.2))
+    peak_ratio = max(1.4, min(1.7, 1.6 - dummy_thr * 0.3))
     width_mult = max(0.6, min(1.0, 0.8 + (max_shift - 1.0) * 0.1))
 
     return {
@@ -226,6 +229,7 @@ def _geom_params_from_config(cfg: dict) -> dict:
         "--corridor-m": round(corridor_m, 3),
         "--simplify-m": round(simplify_m, 3),
         "--grid-resolution": grid_resolution,
+        "--centerline-offset-m": round(center_offset_m, 3),
         "--width-peak-ratio": round(peak_ratio, 3),
         "--width-buffer-mult": round(width_mult, 3),
     }
@@ -281,6 +285,7 @@ def main() -> int:
         if not qc_path.exists():
             raise SystemExit("ERROR: qc.json not found after build_geom.")
         qc = json.loads(qc_path.read_text(encoding="utf-8"))
+        qc_knobs = {k.lstrip("-"): v for k, v in geom_args.items()}
         ds_summary = {
             "drive_count": 1,
             "drives": [geom_drive],
@@ -369,6 +374,7 @@ def main() -> int:
                 "pose_coverage": 0.0,
                 "prior_osm_available": False,
                 "prior_sat_available": False,
+                "qc_knobs": qc_knobs,
             }
             m = dict(base_m)
             sig = _config_signature(cfg, arm_name)
