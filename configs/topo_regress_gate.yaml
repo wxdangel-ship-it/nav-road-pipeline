@@ -1,0 +1,7 @@
+max_degree_max: 12
+require_dangling_merged_min: 1
+min_pass_drives: 1
+allow_skipped: true
+delta_max_degree: 1
+delta_issues_count: 5
+delta_actions_count: 10
