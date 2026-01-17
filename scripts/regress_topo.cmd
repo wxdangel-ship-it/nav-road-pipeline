@@ -8,8 +8,13 @@ if not exist .venv\Scripts\python.exe (
   call .\scripts\setup.cmd
 )
 
+if "%POC_DATA_ROOT%"=="" (
+  if exist "E:\KITTI360\KITTI-360" set "POC_DATA_ROOT=E:\KITTI360\KITTI-360"
+)
+if not "%POC_DATA_ROOT%"=="" echo [REGRESS] POC_DATA_ROOT=%POC_DATA_ROOT%
+
 if "%MAX_FRAMES%"=="" set "MAX_FRAMES=2000"
-if "%MAX_DRIVES%"=="" set "MAX_DRIVES=3"
+if "%MAX_DRIVES%"=="" set "MAX_DRIVES=6"
 if "%REQUIRE_OXTS%"=="" set "REQUIRE_OXTS=1"
 if "%REQUIRE_VELODYNE%"=="" set "REQUIRE_VELODYNE=1"
 if "%ALLOW_SKIP_INVALID%"=="" set "ALLOW_SKIP_INVALID=0"
@@ -41,24 +46,54 @@ if not "%DRIVES_LIST%"=="" (
   set "DISCOVERY_MODE=explicit"
 )
 
+for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "RUN_TAG=%%t"
+set "REGRESS_DIR=runs\regress_%RUN_TAG%"
+if not exist "%REGRESS_DIR%" mkdir "%REGRESS_DIR%"
+set "INDEX_FILE=%REGRESS_DIR%\regress_index.jsonl"
+if exist "%INDEX_FILE%" del /f /q "%INDEX_FILE%" 2>nul
+
 if "%DRIVES_LIST%"=="" (
-  for /f "usebackq delims=" %%d in (`
-    .venv\Scripts\python.exe -c "from pathlib import Path; import os; from pipeline.adapters.kitti360_adapter import discover_drives; root=os.environ.get('POC_DATA_ROOT',''); drives=discover_drives(Path(root)) if root else []; max_drives=int(os.environ.get('MAX_DRIVES','3')); print('\n'.join(drives[:max_drives]))"
-  `) do (
-    if not "%%d"=="" set "DRIVES_LIST=!DRIVES_LIST! %%d"
+  if "%POC_DATA_ROOT%"=="" (
+    echo [REGRESS] ERROR: POC_DATA_ROOT not set and default path not found.
+    exit /b 1
   )
+  set "DISCOVERY_MODE=auto"
+  set "SEEN_DRIVES= "
+  set "DISCOVERED_COUNT=0"
+  set "FOUND_VALID=0"
+  set "SELECTED_COUNT=0"
+  for %%S in ("%POC_DATA_ROOT%" "%POC_DATA_ROOT%\data_3d_raw" "%POC_DATA_ROOT%\data_2d_raw" "%POC_DATA_ROOT%\data_poses" "%POC_DATA_ROOT%\data_poses_oxts" "%POC_DATA_ROOT%\data_poses_oxts_extract") do (
+    for /d %%d in ("%%~S\*_drive_*_sync") do (
+      set "DRIVE=%%~nxd"
+      echo !SEEN_DRIVES! | findstr /i /c:" !DRIVE! " >nul
+      if errorlevel 1 (
+        set "SEEN_DRIVES=!SEEN_DRIVES!!DRIVE! "
+        set /a DISCOVERED_COUNT+=1
+        call :check_drive_data
+        if "!DRIVE_OK!"=="1" (
+          set /a FOUND_VALID+=1
+          set "DRIVES_LIST=!DRIVES_LIST! !DRIVE!"
+          set /a SELECTED_COUNT+=1
+          if "!SELECTED_COUNT!" GEQ "%MAX_DRIVES%" goto :discovery_done
+        ) else (
+          call :write_index SKIPPED "!DRIVE_BAD_REASON!" "" ""
+          echo [REGRESS] WARN: drive !DRIVE! skipped ^(!DRIVE_BAD_REASON!^)
+        )
+      )
+    )
+  )
+)
+
+:discovery_done
+if "%DISCOVERY_MODE%"=="auto" (
+  echo [REGRESS] auto-discovery checked=%DISCOVERED_COUNT% valid=%FOUND_VALID% selected=%SELECTED_COUNT% max_drives=%MAX_DRIVES%
+  echo [REGRESS] selected drives:%DRIVES_LIST%
 )
 
 if "%DRIVES_LIST%"=="" (
   echo [REGRESS] ERROR: no drives found. Set DRIVES or DRIVES_FILE or POC_DATA_ROOT/MAX_DRIVES.
   exit /b 1
 )
-
-for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "RUN_TAG=%%t"
-set "REGRESS_DIR=runs\regress_%RUN_TAG%"
-if not exist "%REGRESS_DIR%" mkdir "%REGRESS_DIR%"
-set "INDEX_FILE=%REGRESS_DIR%\regress_index.jsonl"
-if exist "%INDEX_FILE%" del /f /q "%INDEX_FILE%" 2>nul
 
 set "RUNNABLE_COUNT=0"
 
