@@ -1,1 +1,94 @@
-drives: []
+drives:
+- drive: 2013_05_28_drive_0000_sync
+  max_degree: 4
+  dangling_detected: 12
+  dangling_removed: 9
+  dangling_merged: 0
+  dangling_unfixed: 3
+  issues_count: 26
+  actions_count: 55
+  actions_by_type:
+    RemoveEdge: 9
+    RemoveIsolatedNode: 14
+    SnapNode: 24
+    SuppressSelfLoop: 8
+- drive: 2013_05_28_drive_0003_sync
+  max_degree: 2
+  dangling_detected: 4
+  dangling_removed: 0
+  dangling_merged: 0
+  dangling_unfixed: 4
+  issues_count: 7
+  actions_count: 3
+  actions_by_type:
+    RemoveIsolatedNode: 3
+- drive: 2013_05_28_drive_0004_sync
+  max_degree: 4
+  dangling_detected: 5
+  dangling_removed: 2
+  dangling_merged: 0
+  dangling_unfixed: 3
+  issues_count: 13
+  actions_count: 15
+  actions_by_type:
+    RemoveEdge: 2
+    RemoveIsolatedNode: 8
+    SnapNode: 4
+    SuppressSelfLoop: 1
+- drive: 2013_05_28_drive_0005_sync
+  max_degree: 4
+  dangling_detected: 8
+  dangling_removed: 5
+  dangling_merged: 0
+  dangling_unfixed: 3
+  issues_count: 17
+  actions_count: 36
+  actions_by_type:
+    RemoveEdge: 5
+    RemoveIsolatedNode: 9
+    SnapNode: 18
+    SuppressSelfLoop: 4
+- drive: 2013_05_28_drive_0006_sync
+  max_degree: 8
+  dangling_detected: 22
+  dangling_removed: 22
+  dangling_merged: 0
+  dangling_unfixed: 0
+  issues_count: 48
+  actions_count: 123
+  actions_by_type:
+    RemoveEdge: 22
+    RemoveIsolatedNode: 26
+    SnapNode: 53
+    SuppressSelfLoop: 22
+- drive: 2013_05_28_drive_0007_sync
+  max_degree: 2
+  dangling_detected: 4
+  dangling_removed: 0
+  dangling_merged: 0
+  dangling_unfixed: 4
+  issues_count: 5
+  actions_count: 1
+  actions_by_type:
+    RemoveIsolatedNode: 1
+- drive: 2013_05_28_drive_0009_sync
+  max_degree: 2
+  dangling_detected: 5
+  dangling_removed: 1
+  dangling_merged: 0
+  dangling_unfixed: 4
+  issues_count: 8
+  actions_count: 4
+  actions_by_type:
+    RemoveEdge: 1
+    RemoveIsolatedNode: 3
+- drive: 2013_05_28_drive_0010_sync
+  max_degree: 2
+  dangling_detected: 4
+  dangling_removed: 0
+  dangling_merged: 0
+  dangling_unfixed: 4
+  issues_count: 7
+  actions_count: 3
+  actions_by_type:
+    RemoveIsolatedNode: 3
