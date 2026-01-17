@@ -159,9 +159,147 @@ def _component_sizes(node_count: int, edges: list[dict]) -> list[int]:
     return sizes
 
 
+def _component_sizes_active(node_count: int, edges: list[dict], active_nodes: set[int]) -> list[int]:
+    adj = {i: set() for i in active_nodes}
+    for e in edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        if n0 in active_nodes and n1 in active_nodes:
+            adj[n0].add(n1)
+            adj[n1].add(n0)
+    visited = set()
+    sizes = []
+    for i in active_nodes:
+        if i in visited:
+            continue
+        stack = [i]
+        visited.add(i)
+        count = 0
+        while stack:
+            cur = stack.pop()
+            count += 1
+            for nb in adj.get(cur, []):
+                if nb not in visited:
+                    visited.add(nb)
+                    stack.append(nb)
+        sizes.append(count)
+    return sizes
+
+
+def _degree_histogram(degrees: dict[int, int], active_nodes: set[int] | None = None) -> dict[str, int]:
+    degree_hist = {}
+    for i, d in degrees.items():
+        if active_nodes is not None and i not in active_nodes:
+            continue
+        degree_hist[str(d)] = degree_hist.get(str(d), 0) + 1
+    return degree_hist
+
+
 def _write_geojson(path: Path, features: list[dict]) -> None:
     fc = {"type": "FeatureCollection", "features": features}
     path.write_text(json.dumps(fc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def validate_outputs(summary: dict, issues_path: Path, actions_path: Path) -> None:
+    required_issue_fields = {
+        "issue_id",
+        "tile_id",
+        "involved_edges",
+        "involved_nodes",
+        "rule_failed",
+        "severity",
+        "description",
+        "recommend_actions",
+        "evidence_summary",
+        "error_code",
+    }
+    valid_severity = {"S0", "S1", "S2", "S3"}
+    required_action_fields = {
+        "action_id",
+        "tile_id",
+        "action_type",
+        "reason_rule",
+        "involved_nodes_before",
+        "involved_nodes_after",
+        "involved_edges_before",
+        "involved_edges_after",
+        "intersection_bucket_id",
+        "metrics",
+        "related_issue_ids",
+    }
+
+    degree_hist_pre = summary.get("degree_histogram_pre_prune", {})
+    degree_hist_post = summary.get("degree_histogram_post_prune", {})
+    components_pre = summary.get("components_pre_prune", {}).get("sizes", [])
+    components_post = summary.get("components_post_prune", {}).get("sizes", [])
+
+    node_count_pre = int(summary.get("node_count_pre_prune", 0))
+    node_count_post = int(summary.get("node_count_post_prune", 0))
+    if int(summary.get("node_count", -1)) != node_count_post:
+        raise SystemExit("ERROR: node_count must match node_count_post_prune.")
+    if sum(int(v) for v in degree_hist_pre.values()) != node_count_pre:
+        raise SystemExit("ERROR: degree_histogram_pre_prune sum mismatch.")
+    if sum(int(v) for v in degree_hist_post.values()) != node_count_post:
+        raise SystemExit("ERROR: degree_histogram_post_prune sum mismatch.")
+    if sum(int(v) for v in components_pre) != node_count_pre:
+        raise SystemExit("ERROR: components_pre_prune sizes sum mismatch.")
+    if sum(int(v) for v in components_post) != node_count_post:
+        raise SystemExit("ERROR: components_post_prune sizes sum mismatch.")
+
+    dangling_detected = int(summary.get("dangling_detected", -1))
+    dangling_removed = int(summary.get("dangling_removed", -1))
+    dangling_merged = int(summary.get("dangling_merged", -1))
+    dangling_unfixed = int(summary.get("dangling_unfixed", -1))
+    if dangling_detected != dangling_removed + dangling_merged + dangling_unfixed:
+        raise SystemExit("ERROR: dangling invariant violated.")
+    if int(summary.get("dangling_total", -1)) != dangling_unfixed:
+        raise SystemExit("ERROR: dangling_total must equal dangling_unfixed.")
+    if len(summary.get("dangling_nodes", [])) != dangling_unfixed:
+        raise SystemExit("ERROR: dangling_nodes count must equal dangling_unfixed.")
+
+    issue_lines = issues_path.read_text(encoding="utf-8").splitlines()
+    if len(issue_lines) != int(summary.get("issues_count", -1)):
+        raise SystemExit("ERROR: issues_count does not match TopoIssues line count.")
+    issue_ids = set()
+    for line in issue_lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"ERROR: TopoIssues invalid JSON line: {exc}") from exc
+        if not required_issue_fields.issubset(item.keys()):
+            raise SystemExit("ERROR: TopoIssues missing required fields.")
+        if item.get("severity") not in valid_severity:
+            raise SystemExit("ERROR: TopoIssues invalid severity.")
+        issue_id = item.get("issue_id")
+        if issue_id:
+            issue_ids.add(issue_id)
+
+    action_lines = actions_path.read_text(encoding="utf-8").splitlines()
+    if len(action_lines) != int(summary.get("actions_count", -1)):
+        raise SystemExit("ERROR: actions_count does not match TopoActions line count.")
+    action_ids = set()
+    actions_by_type = {}
+    for line in action_lines:
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"ERROR: TopoActions invalid JSON line: {exc}") from exc
+        if not required_action_fields.issubset(item.keys()):
+            raise SystemExit("ERROR: TopoActions missing required fields.")
+        action_id = item.get("action_id")
+        if action_id in action_ids:
+            raise SystemExit("ERROR: TopoActions action_id must be unique.")
+        action_ids.add(action_id)
+        action_type = item.get("action_type")
+        actions_by_type[action_type] = actions_by_type.get(action_type, 0) + 1
+        related_issue_ids = item.get("related_issue_ids") or []
+        if not isinstance(related_issue_ids, list):
+            raise SystemExit("ERROR: TopoActions related_issue_ids must be a list.")
+        for issue_id in related_issue_ids:
+            if issue_id not in issue_ids:
+                raise SystemExit("ERROR: TopoActions related_issue_ids contains unknown issue_id.")
+    if actions_by_type != summary.get("actions_by_type", {}):
+        raise SystemExit("ERROR: actions_by_type does not match TopoActions content.")
 
 
 def main() -> int:
@@ -223,15 +361,48 @@ def main() -> int:
 
     edges = []
     issues = []
+    actions = []
     removed_edges = 0
+    dangling_removed_endpoints = 0
     dangling_count = 0
     dangling_merged = 0
     issue_idx = 0
+    action_seq = 0
+
+    def add_action(
+        action_type: str,
+        reason_rule: str,
+        involved_nodes_before: list[str] | None = None,
+        involved_nodes_after: list[str] | None = None,
+        involved_edges_before: list[str] | None = None,
+        involved_edges_after: list[str] | None = None,
+        intersection_bucket_id: int | None = None,
+        metrics: dict | None = None,
+        related_issue_ids: list[str] | None = None,
+    ) -> None:
+        nonlocal action_seq
+        action_seq += 1
+        actions.append(
+            {
+                "action_id": f"{run_id}_a{action_seq:04d}",
+                "tile_id": args.drive,
+                "action_type": action_type,
+                "reason_rule": reason_rule,
+                "involved_nodes_before": involved_nodes_before or [],
+                "involved_nodes_after": involved_nodes_after or [],
+                "involved_edges_before": involved_edges_before or [],
+                "involved_edges_after": involved_edges_after or [],
+                "intersection_bucket_id": intersection_bucket_id,
+                "metrics": metrics,
+                "related_issue_ids": related_issue_ids or [],
+            }
+        )
 
     for i, line in enumerate(split_centerlines):
         coords = list(line.coords)
         p0 = Point(coords[0])
         p1 = Point(coords[-1])
+        edge_id = f"edge_{i:05d}"
         inter0 = endpoint_inter_idx[2 * i]
         inter1 = endpoint_inter_idx[2 * i + 1]
         if inter0 >= 0:
@@ -258,6 +429,30 @@ def main() -> int:
         else:
             a1 = endpoint_to_center[2 * i + 1]
             dist1 = endpoint_to_center_dist[2 * i + 1]
+        if dist0 > 0:
+            add_action(
+                action_type="SnapNode",
+                reason_rule="EndpointSnap",
+                involved_nodes_before=[f"endpoint_{2 * i:05d}"],
+                involved_nodes_after=[f"node_{a0:05d}"],
+                intersection_bucket_id=int(inter0) if inter0 >= 0 else None,
+                metrics={
+                    "snap_dist_m": round(dist0, 3),
+                    "snap_tol_m": args.snap_tol_m if inter0 >= 0 else args.snap_tol_outside_m,
+                },
+            )
+        if dist1 > 0:
+            add_action(
+                action_type="SnapNode",
+                reason_rule="EndpointSnap",
+                involved_nodes_before=[f"endpoint_{2 * i + 1:05d}"],
+                involved_nodes_after=[f"node_{a1:05d}"],
+                intersection_bucket_id=int(inter1) if inter1 >= 0 else None,
+                metrics={
+                    "snap_dist_m": round(dist1, 3),
+                    "snap_tol_m": args.snap_tol_m if inter1 >= 0 else args.snap_tol_outside_m,
+                },
+            )
         if a0 == a1:
             split_use_p1 = dist1 >= dist0
             new_idx = len(node_points)
@@ -273,7 +468,15 @@ def main() -> int:
                 dist0 = 0.0
             node_types.append("endpoint")
             node_degree[new_idx] = 0
-        edge_id = f"edge_{i:05d}"
+            add_action(
+                action_type="SuppressSelfLoop",
+                reason_rule="SelfLoopGuard",
+                involved_nodes_before=[f"node_{a0:05d}"],
+                involved_nodes_after=[f"node_{a0:05d}", f"node_{a1:05d}"],
+                involved_edges_before=[edge_id],
+                involved_edges_after=[edge_id],
+                metrics={"split_use_p1": bool(split_use_p1)},
+            )
         length_m = float(line.length)
         in_inter = False
         if inter_union and not inter_union.is_empty:
@@ -325,10 +528,30 @@ def main() -> int:
         if (node_degree[n0] == 1 or node_degree[n1] == 1) and e["length_m"] < args.spur_len_m:
             dangling_count += 1
             removed_edges += 1
+            if n0 == n1:
+                if node_degree[n0] == 1:
+                    dangling_removed_endpoints += 1
+            else:
+                if node_degree[n0] == 1:
+                    dangling_removed_endpoints += 1
+                if node_degree[n1] == 1:
+                    dangling_removed_endpoints += 1
             issue_idx += 1
+            issue_id = f"{run_id}_{issue_idx:04d}"
+            add_action(
+                action_type="RemoveEdge",
+                reason_rule="DanglingEnd",
+                involved_nodes_before=[e["from_node"], e["to_node"]],
+                involved_nodes_after=[e["from_node"], e["to_node"]],
+                involved_edges_before=[e["edge_id"]],
+                involved_edges_after=[],
+                intersection_bucket_id=None,
+                metrics={"length_m": e["length_m"], "spur_len_m": args.spur_len_m},
+                related_issue_ids=[issue_id],
+            )
             issues.append(
                 {
-                    "issue_id": f"{run_id}_{issue_idx:04d}",
+                    "issue_id": issue_id,
                     "tile_id": args.drive,
                     "involved_edges": [e["edge_id"]],
                     "involved_nodes": [e["from_node"], e["to_node"]],
@@ -356,6 +579,16 @@ def main() -> int:
         n1 = int(e["to_node"].split("_")[1])
         node_degree[n0] += 1
         node_degree[n1] += 1
+
+    dangling_candidates_long = set()
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        if e["length_m"] >= args.spur_len_m:
+            if node_degree[n0] == 1:
+                dangling_candidates_long.add(n0)
+            if node_degree[n1] == 1:
+                dangling_candidates_long.add(n1)
 
     # Attempt merge for long dangling edges
     for e in kept_edges:
@@ -387,6 +620,23 @@ def main() -> int:
                 node_degree[other_node] += 0
                 node_degree[best_j] += 1
                 dangling_merged += 1
+                add_action(
+                    action_type="MergeDangling",
+                    reason_rule="LongDanglingMerge",
+                    involved_nodes_before=[
+                        f"node_{dangling_node:05d}",
+                        f"node_{best_j:05d}",
+                        f"node_{other_node:05d}",
+                    ],
+                    involved_nodes_after=[f"node_{best_j:05d}", f"node_{other_node:05d}"],
+                    involved_edges_before=[e["edge_id"]],
+                    involved_edges_after=[e["edge_id"]],
+                    intersection_bucket_id=int(inter_idx) if inter_idx >= 0 else None,
+                    metrics={
+                        "merge_tol_m": args.merge_tol_m,
+                        "merge_dist_m": round(best_d, 3),
+                    },
+                )
 
     # Recompute degree after merge attempts
     node_degree = {i: 0 for i in range(len(node_points))}
@@ -395,6 +645,22 @@ def main() -> int:
         n1 = int(e["to_node"].split("_")[1])
         node_degree[n0] += 1
         node_degree[n1] += 1
+
+    dangling_unfixed_nodes = set()
+    for e in kept_edges:
+        n0 = int(e["from_node"].split("_")[1])
+        n1 = int(e["to_node"].split("_")[1])
+        if e["length_m"] >= args.spur_len_m:
+            if node_degree[n0] == 1:
+                dangling_unfixed_nodes.add(n0)
+            if node_degree[n1] == 1:
+                dangling_unfixed_nodes.add(n1)
+    if len(dangling_candidates_long) != dangling_merged + len(dangling_unfixed_nodes):
+        raise SystemExit(
+            "ERROR: dangling invariant violated for long candidates "
+            f"(candidates={len(dangling_candidates_long)} merged={dangling_merged} "
+            f"unfixed={len(dangling_unfixed_nodes)})."
+        )
 
     # Remaining long dangling edges -> issues
     for e in kept_edges:
@@ -430,9 +696,21 @@ def main() -> int:
         if node_degree[i] == 0:
             isolated_nodes_removed += 1
             issue_idx += 1
+            issue_id = f"{run_id}_{issue_idx:04d}"
+            add_action(
+                action_type="RemoveIsolatedNode",
+                reason_rule="IsolatedNode",
+                involved_nodes_before=[f"node_{i:05d}"],
+                involved_nodes_after=[],
+                involved_edges_before=[],
+                involved_edges_after=[],
+                intersection_bucket_id=None,
+                metrics=None,
+                related_issue_ids=[issue_id],
+            )
             issues.append(
                 {
-                    "issue_id": f"{run_id}_{issue_idx:04d}",
+                    "issue_id": issue_id,
                     "tile_id": args.drive,
                     "involved_edges": [],
                     "involved_nodes": [f"node_{i:05d}"],
@@ -481,27 +759,18 @@ def main() -> int:
     _write_geojson(out_dir / "graph_nodes.geojson", node_features)
     _write_geojson(out_dir / "graph_edges.geojson", edge_features)
 
-    issues_path = out_dir / "TopoIssues.jsonl"
-    with issues_path.open("w", encoding="utf-8") as f:
-        for item in issues:
-            f.write(json.dumps(item, ensure_ascii=False) + "\n")
-
-    degree_hist = {}
-    for d in node_degree.values():
-        degree_hist[str(d)] = degree_hist.get(str(d), 0) + 1
-    dangling_nodes = [f"node_{i:05d}" for i, d in node_degree.items() if d == 1]
+    active_nodes = {i for i, d in node_degree.items() if d > 0}
+    node_count_pre_prune = len(node_points)
+    node_count_post_prune = len(node_features)
+    degree_hist_pre = _degree_histogram(node_degree)
+    degree_hist_post = _degree_histogram(node_degree, active_nodes)
+    components_pre = _component_sizes(node_count_pre_prune, kept_edges)
+    components_post = _component_sizes_active(node_count_pre_prune, kept_edges, active_nodes)
+    dangling_unfixed = len(dangling_unfixed_nodes)
+    dangling_detected = dangling_removed_endpoints + len(dangling_candidates_long)
+    dangling_remaining = dangling_unfixed
+    dangling_nodes = [f"node_{i:05d}" for i in sorted(dangling_unfixed_nodes)]
     max_degree = max(node_degree.values()) if node_degree else 0
-    component_sizes = _component_sizes(len(node_points), kept_edges)
-    dangling_total = sum(1 for d in node_degree.values() if d == 1)
-    dangling_unfixed_nodes = set()
-    for e in kept_edges:
-        n0 = int(e["from_node"].split("_")[1])
-        n1 = int(e["to_node"].split("_")[1])
-        if e["length_m"] >= args.spur_len_m:
-            if node_degree[n0] == 1:
-                dangling_unfixed_nodes.add(n0)
-            if node_degree[n1] == 1:
-                dangling_unfixed_nodes.add(n1)
     warning = None
     if max_degree > args.max_degree_warn:
         warning = f"max_degree={max_degree} exceeds {args.max_degree_warn}"
@@ -526,23 +795,50 @@ def main() -> int:
                 "error_code": "E08",
             }
         )
+    issues_path = out_dir / "TopoIssues.jsonl"
+    with issues_path.open("w", encoding="utf-8") as f:
+        for item in issues:
+            f.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    actions_path = out_dir / "TopoActions.jsonl"
+    with actions_path.open("w", encoding="utf-8") as f:
+        for item in actions:
+            f.write(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + "\n")
+
+    # degree_histogram/components kept as pre-prune for backward compatibility.
+    actions_by_type = {}
+    for item in actions:
+        action_type = item["action_type"]
+        actions_by_type[action_type] = actions_by_type.get(action_type, 0) + 1
     summary = {
         "run_id": run_id,
-        "node_count": len(node_features),
+        "node_count": node_count_post_prune,
+        "node_count_pre_prune": node_count_pre_prune,
+        "node_count_post_prune": node_count_post_prune,
         "edge_count": len(edge_features),
-        "dangling_total": dangling_total,
-        "dangling_removed": removed_edges,
+        "dangling_detected": dangling_detected,
+        "dangling_total": dangling_remaining,
+        "dangling_remaining": dangling_remaining,
+        "dangling_removed": dangling_removed_endpoints,
+        "dangling_removed_edges": removed_edges,
         "dangling_merged": dangling_merged,
-        "dangling_unfixed": len(dangling_unfixed_nodes),
+        "dangling_unfixed": dangling_unfixed,
         "dangling_nodes": dangling_nodes,
         "isolated_nodes_removed": isolated_nodes_removed,
-        "degree_histogram": degree_hist,
+        "degree_histogram": degree_hist_post,
+        "degree_histogram_pre_prune": degree_hist_pre,
+        "degree_histogram_post_prune": degree_hist_post,
         "max_degree": max_degree,
-        "components": {"count": len(component_sizes), "sizes": component_sizes},
+        "components": {"count": len(components_post), "sizes": components_post},
+        "components_pre_prune": {"count": len(components_pre), "sizes": components_pre},
+        "components_post_prune": {"count": len(components_post), "sizes": components_post},
         "issues_count": len(issues),
+        "actions_count": len(actions),
+        "actions_by_type": actions_by_type,
     }
     if warning:
         summary["warning"] = warning
+    validate_outputs(summary, issues_path, actions_path)
     (out_dir / "TopoSummary.md").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"[TOPO] DONE -> {out_dir}")
@@ -550,6 +846,7 @@ def main() -> int:
     print(f"- {out_dir / 'graph_nodes.geojson'}")
     print(f"- {out_dir / 'graph_edges.geojson'}")
     print(f"- {out_dir / 'TopoIssues.jsonl'}")
+    print(f"- {out_dir / 'TopoActions.jsonl'}")
     print(f"- {out_dir / 'TopoSummary.md'}")
     return 0
 

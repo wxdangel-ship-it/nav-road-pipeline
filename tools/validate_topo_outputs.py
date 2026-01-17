@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Tuple
 # 参数区（按需修改）
 # =========================
 SUMMARY_PATH = r"runs\topo_20260117_073912\outputs\TopoSummary.md"
+ACTION_FILENAME = "TopoActions.jsonl"
 ISSUES_PATH = r"runs\topo_20260117_073912\outputs\TopoIssues.jsonl"  # 按实际文件名改
 
 # TOPOISSUE_SPEC（你们真实 spec 如有更严格要求，可在这里补充）
@@ -96,48 +97,45 @@ def iter_jsonl(path: str) -> Tuple[int, List[Dict[str, Any]], List[str]]:
 
 
 def validate_summary(summary: Dict[str, Any], logger: logging.Logger) -> List[str]:
-    """校验 Summary 自洽性，返回 warnings。"""
+    """Validate Summary consistency and return warnings."""
     warns: List[str] = []
 
     node_count = summary.get("node_count")
-    isolated_removed = summary.get("isolated_nodes_removed")
     deg_hist = summary.get("degree_histogram", {})
     comp = summary.get("components", {})
 
-    # degree_histogram 合计
+    # degree_histogram sum (post_prune)
     if isinstance(deg_hist, dict) and deg_hist:
         try:
             deg_total = sum(int(v) for v in deg_hist.values())
-            if isinstance(node_count, int) and isinstance(isolated_removed, int):
-                if deg_total not in (node_count, node_count + isolated_removed):
-                    warns.append(f"degree_histogram 合计={deg_total} 与 node_count={node_count} / +isolated_removed={node_count+isolated_removed} 均不匹配")
-            elif isinstance(node_count, int) and deg_total != node_count:
-                warns.append(f"degree_histogram 合计={deg_total} 与 node_count={node_count} 不匹配（且 isolated_nodes_removed 缺失/非整数）")
+            if isinstance(node_count, int) and deg_total != node_count:
+                warns.append(f"degree_histogram sum={deg_total} != node_count={node_count} (post_prune)")
         except Exception:
-            warns.append("degree_histogram 解析失败（值非整数？）")
+            warns.append("degree_histogram parse failed (non-int values?)")
 
-    # components sizes 合计
+    # components sizes sum (post_prune)
     if isinstance(comp, dict) and "sizes" in comp:
         sizes = comp.get("sizes", [])
         if isinstance(sizes, list) and sizes:
             try:
                 size_total = sum(int(x) for x in sizes)
-                if isinstance(node_count, int) and isinstance(isolated_removed, int):
-                    if size_total not in (node_count, node_count + isolated_removed):
-                        warns.append(f"components.sizes 合计={size_total} 与 node_count={node_count} / +isolated_removed={node_count+isolated_removed} 均不匹配")
-                elif isinstance(node_count, int) and size_total != node_count:
-                    warns.append(f"components.sizes 合计={size_total} 与 node_count={node_count} 不匹配（且 isolated_nodes_removed 缺失/非整数）")
+                if isinstance(node_count, int) and size_total != node_count:
+                    warns.append(f"components.sizes sum={size_total} != node_count={node_count} (post_prune)")
             except Exception:
-                warns.append("components.sizes 解析失败（值非整数？）")
+                warns.append("components.sizes parse failed (non-int values?)")
 
-    # dangling_nodes 与 dangling_total
+    # dangling_nodes vs final remaining
     dang_nodes = summary.get("dangling_nodes", [])
     dang_total = summary.get("dangling_total")
+    dang_remaining = summary.get("dangling_remaining")
     if isinstance(dang_nodes, list) and isinstance(dang_total, int):
         if len(dang_nodes) != dang_total:
-            warns.append(f"dangling_nodes 数量={len(dang_nodes)} 与 dangling_total={dang_total} 不一致（确认口径：final vs detected）")
+            warns.append(f"dangling_nodes count={len(dang_nodes)} != dangling_total={dang_total}")
+    if isinstance(dang_nodes, list) and isinstance(dang_remaining, int):
+        if len(dang_nodes) != dang_remaining:
+            warns.append(f"dangling_nodes count={len(dang_nodes)} != dangling_remaining={dang_remaining}")
 
-    # dangling_removed > dangling_total 提示
+    # dangling invariant / legacy check
     dang_detected = summary.get("dangling_detected")
     dang_removed = summary.get("dangling_removed")
     dang_merged = summary.get("dangling_merged")
@@ -146,19 +144,20 @@ def validate_summary(summary: Dict[str, Any], logger: logging.Logger) -> List[st
     if isinstance(dang_detected, int) and all(isinstance(x, int) for x in [dang_removed, dang_merged, dang_unfixed]):
         s = dang_removed + dang_merged + dang_unfixed
         if dang_detected != s:
-            warns.append(f"dangling invariant 不成立：detected={dang_detected} != removed+merged+unfixed={s}")
+            warns.append(
+                f"dangling invariant failed: detected={dang_detected} != removed+merged+unfixed={s}"
+            )
     else:
-        # 仅在没有 dangling_detected 的旧版本里，才保留 removed > total 的提醒
         if isinstance(summary.get("dangling_total"), int) and isinstance(dang_removed, int) and dang_removed > summary[
             "dangling_total"]:
-            warns.append(...)
+            warns.append(f"dangling_removed={dang_removed} > dangling_total={summary['dangling_total']}")
 
     if warns:
-        logger.warning("TopoSummary 自洽性存在 %d 条提醒：", len(warns))
+        logger.warning("TopoSummary consistency warnings: %d", len(warns))
         for w in warns:
             logger.warning("  - %s", w)
     else:
-        logger.info("TopoSummary 自洽性检查：未发现明显问题")
+        logger.info("TopoSummary consistency check: OK")
 
     return warns
 
@@ -216,6 +215,58 @@ def validate_issues(objs: List[Dict[str, Any]], logger: logging.Logger) -> Tuple
     return errors, warns
 
 
+def validate_actions(
+    actions_path: str,
+    summary: Dict[str, Any],
+    issue_ids: set[str],
+    logger: logging.Logger,
+) -> List[str]:
+    errors: List[str] = []
+    if not os.path.exists(actions_path):
+        return errors
+
+    total_lines, objs, bad_lines = iter_jsonl(actions_path)
+    if bad_lines:
+        errors.append(f"TopoActions JSONL parse failed lines={len(bad_lines)}")
+        for line in bad_lines[:10]:
+            logger.error("TopoActions JSONL bad line: %s", line)
+        return errors
+
+    actions_count = summary.get("actions_count")
+    if isinstance(actions_count, int) and actions_count != total_lines:
+        errors.append(f"Summary actions_count={actions_count} != TopoActions lines={total_lines}")
+
+    ids = [o.get("action_id") for o in objs]
+    dup = [k for k, c in Counter(ids).items() if k and c > 1]
+    if dup:
+        errors.append(f"Duplicate action_id: {dup[:10]}{'...' if len(dup) > 10 else ''}")
+
+    if "actions_by_type" in summary and isinstance(summary.get("actions_by_type"), dict):
+        by_type = Counter(o.get("action_type", "UNKNOWN") for o in objs)
+        if dict(by_type) != summary.get("actions_by_type"):
+            errors.append("actions_by_type mismatch with TopoActions")
+
+    for i, o in enumerate(objs, start=1):
+        related = o.get("related_issue_ids")
+        if related is None:
+            continue
+        if not isinstance(related, list):
+            errors.append(f"action #{i} related_issue_ids is not a list")
+            continue
+        for issue_id in related:
+            if issue_id not in issue_ids:
+                errors.append(f"action #{i} related_issue_id={issue_id} not found in TopoIssues")
+
+    if errors:
+        logger.error("TopoActions validation errors: %d", len(errors))
+        for e in errors:
+            logger.error("  - %s", e)
+    else:
+        logger.info("TopoActions validation: OK")
+
+    return errors
+
+
 def main() -> int:
     logger = setup_logger()
 
@@ -248,8 +299,11 @@ def main() -> int:
         logger.warning("Summary issues_count=%d 与 TopoIssues 实际条数=%d 不一致", issues_count, len(objs))
 
     errors, _warns = validate_issues(objs, logger)
+    issue_ids = {o.get('issue_id') for o in objs if o.get('issue_id')}
+    actions_path = os.path.join(os.path.dirname(SUMMARY_PATH), ACTION_FILENAME)
+    action_errors = validate_actions(actions_path, summary, issue_ids, logger)
 
-    if errors:
+    if errors or action_errors:
         return 1
 
     logger.info("校验通过（无致命错误）")
