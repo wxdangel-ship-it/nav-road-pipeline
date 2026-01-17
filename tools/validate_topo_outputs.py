@@ -16,6 +16,7 @@
     直接在 PyCharm 运行本脚本即可（无需命令行参数）。
 """
 
+import argparse
 import json
 import logging
 import os
@@ -57,6 +58,28 @@ def setup_logger() -> logging.Logger:
         ch.setFormatter(fmt)
         logger.addHandler(ch)
     return logger
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(
+        description="Validate TopoSummary/TopoIssues/TopoActions outputs."
+    )
+    ap.add_argument(
+        "--summary",
+        default=os.environ.get("TOPO_SUMMARY_PATH", SUMMARY_PATH),
+        help="TopoSummary.md path (or env TOPO_SUMMARY_PATH)",
+    )
+    ap.add_argument(
+        "--issues",
+        default=os.environ.get("TOPO_ISSUES_PATH", ISSUES_PATH),
+        help="TopoIssues.jsonl path (or env TOPO_ISSUES_PATH)",
+    )
+    ap.add_argument(
+        "--actions",
+        default=os.environ.get("TOPO_ACTIONS_PATH", ""),
+        help="TopoActions.jsonl path (or env TOPO_ACTIONS_PATH). Optional.",
+    )
+    return ap.parse_args()
 
 
 def read_json_from_markdown(path: str) -> Dict[str, Any]:
@@ -270,16 +293,21 @@ def validate_actions(
 def main() -> int:
     logger = setup_logger()
 
-    if not os.path.exists(SUMMARY_PATH):
-        logger.error("TopoSummary 不存在：%s", SUMMARY_PATH)
+    args = parse_args()
+    summary_path = args.summary
+    issues_path = args.issues
+    actions_path = args.actions or os.path.join(os.path.dirname(summary_path), ACTION_FILENAME)
+
+    if not os.path.exists(summary_path):
+        logger.error("TopoSummary 不存在：%s", summary_path)
         return 1
-    if not os.path.exists(ISSUES_PATH):
-        logger.error("TopoIssues 不存在：%s", ISSUES_PATH)
+    if not os.path.exists(issues_path):
+        logger.error("TopoIssues 不存在：%s", issues_path)
         return 1
 
     # 1) Summary
     try:
-        summary = read_json_from_markdown(SUMMARY_PATH)
+        summary = read_json_from_markdown(summary_path)
     except Exception as e:
         logger.error("TopoSummary 解析失败：%s: %s", type(e).__name__, str(e))
         return 1
@@ -288,7 +316,7 @@ def main() -> int:
     validate_summary(summary, logger)
 
     # 2) Issues
-    total_lines, objs, bad_lines = iter_jsonl(ISSUES_PATH)
+    total_lines, objs, bad_lines = iter_jsonl(issues_path)
     if bad_lines:
         logger.error("TopoIssues JSONL 解析失败行数=%d（示例前10条）：%s", len(bad_lines), bad_lines[:10])
         return 1
@@ -300,7 +328,6 @@ def main() -> int:
 
     errors, _warns = validate_issues(objs, logger)
     issue_ids = {o.get('issue_id') for o in objs if o.get('issue_id')}
-    actions_path = os.path.join(os.path.dirname(SUMMARY_PATH), ACTION_FILENAME)
     action_errors = validate_actions(actions_path, summary, issue_ids, logger)
 
     if errors or action_errors:

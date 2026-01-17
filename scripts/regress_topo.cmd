@@ -123,17 +123,25 @@ if %RUNNABLE_COUNT% EQU 0 (
   exit /b 1
 )
 
+set "RC=0"
+
 .venv\Scripts\python.exe tools\collect_topo_regress.py --regress-dir "%REGRESS_DIR%" --gate-config "configs\topo_regress_gate.yaml" --baseline "%BASELINE_PATH%"
-if errorlevel 1 exit /b 1
+if errorlevel 1 (
+  set "RC=1"
+  goto :done
+)
 
 if "%ENABLE_GATE%"=="1" (
   .venv\Scripts\python.exe tools\check_topo_regress_gate.py --index "%INDEX_FILE%" --config "configs\topo_regress_gate.yaml" --baseline "%BASELINE_PATH%" --baseline-mode "%BASELINE_MODE%"
-  if errorlevel 1 exit /b 1
+  if errorlevel 1 set "RC=1"
+) else (
+  call :check_min_pass
+  if errorlevel 1 set "RC=1"
 )
 
+:done
 echo [REGRESS] DONE -> %REGRESS_DIR%
-endlocal
-exit /b 0
+endlocal & exit /b %RC%
 
 :check_drive_data
 set "DRIVE_OK=1"
@@ -182,6 +190,10 @@ if "%REQUIRE_VELODYNE%"=="1" (
     goto :eof
   )
 )
+goto :eof
+
+:check_min_pass
+.venv\Scripts\python.exe -c "import json, os, sys, yaml; idx=os.environ.get('INDEX_FILE'); cfg=yaml.safe_load(open('configs/topo_regress_gate.yaml','r',encoding='utf-8')); min_pass=int(cfg.get('min_pass_drives',1)); cnt=0; f=open(idx,'r',encoding='utf-8');\nfor line in f:\n line=line.strip();\n if not line: continue\n if json.loads(line).get('status')=='PASS': cnt+=1\nsys.exit(0 if cnt>=min_pass else 1)"
 goto :eof
 
 :write_index

@@ -3,7 +3,7 @@ import csv
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -12,10 +12,10 @@ def read_json_from_markdown(path: Path) -> Dict[str, Any]:
     text = path.read_text(encoding="utf-8").strip()
     if text.startswith("{") and text.endswith("}"):
         return json.loads(text)
-    m = re.search(r"\{.*\}", text, flags=re.DOTALL)
-    if not m:
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
         raise ValueError(f"TopoSummary JSON not found in {path}")
-    return json.loads(m.group(0))
+    return json.loads(match.group(0))
 
 
 def read_index(index_path: Path) -> List[Dict[str, Any]]:
@@ -50,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def load_gate_config(path: Path) -> Dict[str, Any] | None:
+def load_gate_config(path: Path) -> Optional[Dict[str, Any]]:
     if not path.exists():
         return None
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -106,12 +106,13 @@ def main() -> int:
     skipped_rows: List[Dict[str, Any]] = []
     fail_rows: List[Dict[str, Any]] = []
     action_types: set[str] = set()
+    missing_baseline: List[str] = []
 
     for item in items:
         status = item.get("status")
         if status == "PASS":
             summary_path = item.get("summary_path")
-            summary = {}
+            summary: Dict[str, Any] = {}
             if summary_path:
                 summary_file = Path(summary_path)
                 if summary_file.exists():
@@ -123,7 +124,10 @@ def main() -> int:
             )
             action_types.update(actions_by_type.keys())
             drive = item.get("drive")
-            baseline_item = baseline_map.get(drive, {})
+            baseline_item = baseline_map.get(drive, {}) if baseline_map else {}
+            if baseline_map and not baseline_item and drive:
+                missing_baseline.append(drive)
+
             delta_max_degree = None
             delta_issues_count = None
             delta_actions_count = None
@@ -139,7 +143,9 @@ def main() -> int:
                 {
                     "drive": drive,
                     "run_id": summary.get("run_id") or item.get("run_id"),
-                    "node_count_post_prune": summary.get("node_count_post_prune", summary.get("node_count")),
+                    "node_count_post_prune": summary.get(
+                        "node_count_post_prune", summary.get("node_count")
+                    ),
                     "max_degree": summary.get("max_degree"),
                     "dangling_detected": summary.get("dangling_detected"),
                     "dangling_removed": summary.get("dangling_removed"),
@@ -158,14 +164,13 @@ def main() -> int:
                 {"drive": item.get("drive"), "reason": item.get("reason")}
             )
         elif status == "FAIL":
-            fail_rows.append(
-                {"drive": item.get("drive"), "reason": item.get("reason")}
-            )
+            fail_rows.append({"drive": item.get("drive"), "reason": item.get("reason")})
 
     action_cols = [f"actions_{k}" for k in sorted(action_types)]
-    delta_cols = []
-    if baseline_map:
+    delta_cols: List[str] = []
+    if args.baseline:
         delta_cols = ["delta_max_degree", "delta_issues_count", "delta_actions_count"]
+
     headers = [
         "drive",
         "run_id",
@@ -206,8 +211,15 @@ def main() -> int:
             f.write("\n- Gate config:\n")
             for k, v in gate_cfg.items():
                 f.write(f"  - {k}: {v}\n")
-        if baseline_map:
-            f.write("\n- Baseline: provided\n")
+        if args.baseline:
+            if baseline_map:
+                f.write("\n- Baseline: provided\n")
+            else:
+                f.write("\n- Baseline: provided (no entries found)\n")
+            if missing_baseline:
+                f.write("\n- Baseline missing drives:\n")
+                for drive in sorted(set(missing_baseline)):
+                    f.write(f"  - {drive}\n")
 
         f.write("\n## PASS Drives\n\n")
         f.write("| " + " | ".join(headers) + " |\n")
@@ -224,19 +236,17 @@ def main() -> int:
                     vals.append("" if val is None else str(val))
             f.write("| " + " | ".join(vals) + " |\n")
 
-        if skipped_rows:
-            f.write("\n## SKIPPED Drives\n\n")
-            f.write("| drive | reason |\n")
-            f.write("|---|---|\n")
-            for row in skipped_rows:
-                f.write(f"| {row.get('drive','')} | {row.get('reason','')} |\n")
+        f.write("\n## SKIPPED Drives\n\n")
+        f.write("| drive | reason |\n")
+        f.write("|---|---|\n")
+        for row in skipped_rows:
+            f.write(f"| {row.get('drive','')} | {row.get('reason','')} |\n")
 
-        if fail_rows:
-            f.write("\n## FAIL Drives\n\n")
-            f.write("| drive | reason |\n")
-            f.write("|---|---|\n")
-            for row in fail_rows:
-                f.write(f"| {row.get('drive','')} | {row.get('reason','')} |\n")
+        f.write("\n## FAIL Drives\n\n")
+        f.write("| drive | reason |\n")
+        f.write("|---|---|\n")
+        for row in fail_rows:
+            f.write(f"| {row.get('drive','')} | {row.get('reason','')} |\n")
 
         if action_cols:
             f.write("\n## Actions By Type (per drive)\n\n")
