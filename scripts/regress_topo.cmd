@@ -140,7 +140,7 @@ if "%ENABLE_GATE%"=="1" (
 )
 
 :done
-echo [REGRESS] DONE -> %REGRESS_DIR%
+echo [REGRESS] DONE -^> %REGRESS_DIR%
 endlocal & exit /b %RC%
 
 :check_drive_data
