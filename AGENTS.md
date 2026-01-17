@@ -50,3 +50,11 @@
 ## 8) 自动化演进（默认策略）
 - autotune 按 Stage A/B/C 执行：筛选 -> 联合搜索 -> 定型
 - 新模块/新模型必须先过契约测试与小样本评测，再进入联合搜索
+
+## Push Policy (Manual)
+- Codex MUST NOT run: git push / gh / any network publishing.
+- Codex may run git add + git commit locally.
+- When push is needed, Codex should stop and output:
+  1) branch name
+  2) latest commit hash
+  3) suggested push command

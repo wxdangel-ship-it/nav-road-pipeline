@@ -3,3 +3,4 @@ autotune:
   stageB_budget_trials: 20
   stageC_topn: 3
   seed: 42
+  geom_windows: 3

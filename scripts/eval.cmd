@@ -13,6 +13,10 @@ set PRIOR=%POC_PRIOR_ROOT%
 set MAXF=
 set DRIVES=
 set INDEX=
+set EVALMODE=
+set DRIVE=
+set WINDOWS=
+set WINSTRIDE=
 
 :parse
 if "%~1"=="" goto run
@@ -22,6 +26,10 @@ if /I "%~1"=="--prior-root" (set PRIOR=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--max-frames" (set MAXF=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--drives" (set DRIVES=%~2 & shift & shift & goto parse)
 if /I "%~1"=="--index" (set INDEX=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--eval-mode" (set EVALMODE=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--drive" (set DRIVE=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--windows" (set WINDOWS=%~2 & shift & shift & goto parse)
+if /I "%~1"=="--window-stride" (set WINSTRIDE=%~2 & shift & shift & goto parse)
 shift
 goto parse
 
@@ -36,6 +44,10 @@ if not "%PRIOR%"=="" set CMD=%CMD% --prior-root "%PRIOR%"
 if not "%MAXF%"=="" set CMD=%CMD% --max-frames %MAXF%
 if not "%DRIVES%"=="" set CMD=%CMD% --drives "%DRIVES%"
 if not "%INDEX%"=="" set CMD=%CMD% --index "%INDEX%"
+if not "%EVALMODE%"=="" set CMD=%CMD% --eval-mode "%EVALMODE%"
+if not "%DRIVE%"=="" set CMD=%CMD% --drive "%DRIVE%"
+if not "%WINDOWS%"=="" set CMD=%CMD% --windows %WINDOWS%
+if not "%WINSTRIDE%"=="" set CMD=%CMD% --window-stride %WINSTRIDE%
 call %CMD%
 
 endlocal
