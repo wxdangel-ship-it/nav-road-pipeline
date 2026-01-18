@@ -1,0 +1,67 @@
+module: geom_roadseg
+candidates:
+  - candidate_id: segformer_b0_cityscapes
+    model_family: segformer
+    model_id: nvidia/segformer-b0-finetuned-cityscapes-1024-1024
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    postprocess_params:
+      drivable_classes: [road, sidewalk]
+
+  - candidate_id: segformer_b1_cityscapes
+    model_family: segformer
+    model_id: nvidia/segformer-b1-finetuned-cityscapes-1024-1024
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    postprocess_params:
+      drivable_classes: [road, sidewalk]
+
+  - candidate_id: mask2former_swin_tiny_cityscapes
+    model_family: mask2former
+    model_id: facebook/mask2former-swin-tiny-cityscapes-semantic
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    postprocess_params:
+      drivable_classes: [road, sidewalk]
+
+  - candidate_id: mask2former_swin_small_cityscapes
+    model_family: mask2former
+    model_id: facebook/mask2former-swin-small-cityscapes-semantic
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    postprocess_params:
+      drivable_classes: [road, sidewalk]
+
+  - candidate_id: pidnet_cityscapes
+    model_family: pidnet
+    model_id: pidnet_l_cityscapes
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    status: not_implemented
+    postprocess_params:
+      drivable_classes: [road, sidewalk]
+
+  - candidate_id: bisenetv2_cityscapes
+    model_family: bisenetv2
+    model_id: bisenetv2_cityscapes
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    status: not_implemented
+    postprocess_params:
+      drivable_classes: [road, sidewalk]
+
+  - candidate_id: segnext_tiny_cityscapes
+    model_family: segnext
+    model_id: segnext_tiny_cityscapes
+    camera: image_00
+    stride: 5
+    mask_threshold: 0.5
+    status: not_implemented
+    postprocess_params:
+      drivable_classes: [road, sidewalk]

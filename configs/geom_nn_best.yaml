@@ -1,0 +1,8 @@
+candidate_id: mask2former_swin_tiny_cityscapes
+model_family: mask2former
+model_id: facebook/mask2former-swin-tiny-cityscapes-semantic
+camera: image_00
+stride: 5
+mask_threshold: 0.5
+postprocess_params:
+  drivable_classes: [road, sidewalk]
