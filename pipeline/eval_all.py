@@ -178,6 +178,10 @@ def _agg_qc(qc_list: list[dict]) -> dict:
         "centerlines_in_polygon_ratio": round(_min("centerlines_in_polygon_ratio"), 4),
         "intersections_count": int(round(_avg("intersections_count"))),
         "intersections_area_total_m2": round(_avg("intersections_area_total_m2"), 3),
+        "polygon_roughness": round(_avg("polygon_roughness"), 6),
+        "polygon_vertex_count": int(round(_avg("polygon_vertex_count"))),
+        "roughness": round(_avg("roughness"), 6),
+        "vertex_count": int(round(_avg("vertex_count"))),
         "width_median_m": round(_avg("width_median_m"), 3),
         "width_p95_m": round(_avg("width_p95_m"), 3),
         "peak_point_count": int(round(_avg("peak_point_count"))),
@@ -406,7 +410,19 @@ def main() -> int:
             inter_cnt = float(qc.get("intersections_count", 0))
             inter_area = float(qc.get("intersections_area_total_m2", 0.0))
             area_ratio = inter_area / max(1.0, diag * diag)
-            B = min(1.0, 0.2 + 0.0010 * frag + 0.01 * inter_cnt + 0.2 * max(0.0, 0.02 - area_ratio))
+            roughness = float(qc.get("roughness") or qc.get("polygon_roughness") or 0.0)
+            vertex_count = float(qc.get("vertex_count") or qc.get("polygon_vertex_count") or 0.0)
+            rough_term = min(1.0, roughness / 120.0) if roughness > 0 else 0.0
+            vertex_term = min(1.0, vertex_count / 5000.0) if vertex_count > 0 else 0.0
+            B = min(
+                1.0,
+                0.18
+                + 0.0010 * frag
+                + 0.01 * inter_cnt
+                + 0.2 * max(0.0, 0.02 - area_ratio)
+                + 0.35 * rough_term
+                + 0.15 * vertex_term,
+            )
             A = max(0.0, 5.0 * (1.0 - ratio))
             base_m = {
                 "C": round(C, 4),

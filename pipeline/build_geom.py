@@ -19,6 +19,14 @@ from pipeline._io import ensure_dir, new_run_id
 from pipeline.nn.model_registry import load_model as load_nn_model
 from pipeline.sat_intersections import run_sat_intersections
 
+try:
+    from shapely import make_valid as _shapely_make_valid
+except Exception:
+    try:
+        from shapely.validation import make_valid as _shapely_make_valid
+    except Exception:
+        _shapely_make_valid = None
+
 
 def _find_oxts_dir(data_root: Path, drive: str) -> Path:
     candidates = [
@@ -343,6 +351,84 @@ def _close_open_geom(geom, close_m: float, open_m: float):
     return geom
 
 
+def _make_valid_geom(geom):
+    if geom is None or geom.is_empty:
+        return geom
+    if _shapely_make_valid is None:
+        return geom.buffer(0)
+    try:
+        fixed = _shapely_make_valid(geom)
+    except Exception:
+        fixed = geom.buffer(0)
+    return fixed
+
+
+def _remove_small_parts(geom, min_area: float):
+    if min_area <= 0:
+        return geom
+    polys = _explode_polygons(geom)
+    polys = [p for p in polys if p.area >= min_area]
+    if not polys:
+        return geom
+    return unary_union(polys)
+
+
+def _polygon_metrics(geom) -> dict:
+    if geom is None or geom.is_empty:
+        return {
+            "area_m2": 0.0,
+            "perimeter_m": 0.0,
+            "roughness": 0.0,
+            "vertex_count": 0,
+            "holes_count": 0,
+            "part_count": 0,
+        }
+    area = float(geom.area)
+    perim = float(geom.length)
+    return {
+        "area_m2": round(area, 3),
+        "perimeter_m": round(perim, 3),
+        "roughness": round(_polygon_roughness(perim, area), 6),
+        "vertex_count": int(_polygon_vertex_count(geom)),
+        "holes_count": int(_polygon_holes_count(geom)),
+        "part_count": int(len(_explode_polygons(geom))),
+    }
+
+
+def _apply_strong_smoothing(
+    geom,
+    min_part_area: float,
+    close_m: float,
+    open_m: float,
+    simplify_m: float,
+    min_hole_area: float,
+) -> tuple:
+    before = _polygon_metrics(geom)
+    out = _make_valid_geom(geom)
+    out = _remove_small_parts(out, min_part_area)
+    out = _close_open_geom(out, close_m, open_m)
+    if simplify_m > 0:
+        out = out.simplify(simplify_m, preserve_topology=True)
+    out = _fill_small_holes(out, min_hole_area)
+    out = _make_valid_geom(out)
+    polys = _explode_polygons(out)
+    if polys:
+        out = unary_union(polys)
+    after = _polygon_metrics(out)
+    report = {
+        "before": before,
+        "after": after,
+        "params": {
+            "min_part_area_m2": float(min_part_area),
+            "close_m": float(close_m),
+            "open_m": float(open_m),
+            "simplify_m": float(simplify_m),
+            "min_hole_area_m2": float(min_hole_area),
+        },
+    }
+    return out, report
+
+
 def _offset_polyline_coords(coords: np.ndarray, offset: float) -> LineString | None:
     if coords.shape[0] < 2:
         return None
@@ -521,12 +607,17 @@ def _road_bbox_dims(road_poly) -> tuple[float, float, float]:
 
 
 def _explode_polygons(geom) -> list:
-    if geom.is_empty:
+    if geom is None or geom.is_empty:
         return []
     if geom.geom_type == "Polygon":
         return [geom]
     if geom.geom_type == "MultiPolygon":
         return list(geom.geoms)
+    if geom.geom_type == "GeometryCollection":
+        polys = []
+        for g in geom.geoms:
+            polys.extend(_explode_polygons(g))
+        return polys
     return []
 
 
@@ -537,6 +628,8 @@ def _polygon_vertex_count(geom) -> int:
         return len(geom.exterior.coords)
     if geom.geom_type == "MultiPolygon":
         return sum(len(p.exterior.coords) for p in geom.geoms)
+    if geom.geom_type == "GeometryCollection":
+        return sum(len(p.exterior.coords) for p in _explode_polygons(geom))
     return 0
 
 
@@ -547,6 +640,8 @@ def _polygon_holes_count(geom) -> int:
         return len(geom.interiors)
     if geom.geom_type == "MultiPolygon":
         return sum(len(p.interiors) for p in geom.geoms)
+    if geom.geom_type == "GeometryCollection":
+        return sum(len(p.interiors) for p in _explode_polygons(geom))
     return 0
 
 
@@ -976,6 +1071,12 @@ def main() -> int:
         poly_smooth_buf_m = _get_env_float("POLY_SMOOTH_BUF_M", 1.0)
         inter_simplify_m = _get_env_float("INTER_SIMPLIFY_M", 0.5)
         inter_smooth_buf_m = _get_env_float("INTER_SMOOTH_BUF_M", 1.0)
+        smooth_profile = _get_env_str("SMOOTH_PROFILE", "default").lower()
+        strong_min_part_area_m2 = _get_env_float("STRONG_MIN_PART_AREA_M2", 120.0)
+        strong_close_m = _get_env_float("STRONG_CLOSE_M", 2.5)
+        strong_open_m = _get_env_float("STRONG_OPEN_M", 1.2)
+        strong_simplify_m = _get_env_float("STRONG_SIMPLIFY_M", 1.2)
+        strong_min_hole_area_m2 = _get_env_float("STRONG_MIN_HOLE_AREA_M2", 350.0)
         centerline_mode = _get_env_str("CENTERLINE_MODE", "auto").lower()
         dual_width_thresh_m = _get_env_float("DUAL_WIDTH_THRESH_M", 18.0)
         dual_min_len_m = _get_env_float("DUAL_MIN_LEN_M", 50.0)
@@ -1076,6 +1177,17 @@ def main() -> int:
         road_poly = _smooth_geom(road_poly, poly_smooth_buf_m)
         road_poly = road_poly.simplify(poly_simplify_m, preserve_topology=True)
         road_poly = _fill_small_holes(road_poly, post_fill_holes_m2)
+
+        smooth_compare = None
+        if smooth_profile == "strong":
+            road_poly, smooth_compare = _apply_strong_smoothing(
+                road_poly,
+                min_part_area=strong_min_part_area_m2,
+                close_m=strong_close_m,
+                open_m=strong_open_m,
+                simplify_m=strong_simplify_m,
+                min_hole_area=strong_min_hole_area_m2,
+            )
 
         road_before = len(_explode_polygons(road_poly))
         road_min_area = max(float(args.road_min_area), post_min_component_m2)
@@ -1310,6 +1422,8 @@ def main() -> int:
             "polygon_vertex_count": int(road_vertex_count),
             "polygon_roughness": round(road_roughness, 6),
             "polygon_holes_count": int(road_holes_count),
+            "vertex_count": int(road_vertex_count),
+            "roughness": round(road_roughness, 6),
             "intersections_vertex_count": int(inter_vertex_count),
             "intersections_roughness": round(inter_roughness, 6),
             "intersections_holes_count": int(inter_holes_count),
@@ -1326,6 +1440,14 @@ def main() -> int:
             "centerline_offset_m": round(center_offset_m, 3),
         }
         (out_dir / "qc.json").write_text(json.dumps(qc, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        smooth_compare_path = None
+        if smooth_compare:
+            smooth_compare_path = out_dir / "smooth_compare.json"
+            smooth_compare_path.write_text(
+                json.dumps(smooth_compare, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
 
         geom_summary.update(
             {
@@ -1352,6 +1474,8 @@ def main() -> int:
                 "polygon_vertex_count": qc["polygon_vertex_count"],
                 "polygon_roughness": qc["polygon_roughness"],
                 "polygon_holes_count": qc["polygon_holes_count"],
+                "vertex_count": qc["vertex_count"],
+                "roughness": qc["roughness"],
                 "intersections_vertex_count": qc["intersections_vertex_count"],
                 "intersections_roughness": qc["intersections_roughness"],
                 "intersections_holes_count": qc["intersections_holes_count"],
@@ -1367,6 +1491,13 @@ def main() -> int:
                 "post_fill_holes_m2": round(post_fill_holes_m2, 3),
                 "poly_simplify_m": round(poly_simplify_m, 3),
                 "poly_smooth_buf_m": round(poly_smooth_buf_m, 3),
+                "smooth_profile": smooth_profile,
+                "strong_min_part_area_m2": round(strong_min_part_area_m2, 3),
+                "strong_close_m": round(strong_close_m, 3),
+                "strong_open_m": round(strong_open_m, 3),
+                "strong_simplify_m": round(strong_simplify_m, 3),
+                "strong_min_hole_area_m2": round(strong_min_hole_area_m2, 3),
+                "smooth_compare_path": str(smooth_compare_path) if smooth_compare_path else None,
                 "inter_simplify_m": round(inter_simplify_m, 3),
                 "inter_smooth_buf_m": round(inter_smooth_buf_m, 3),
                 "intersection_backend_used": intersection_backend_used,

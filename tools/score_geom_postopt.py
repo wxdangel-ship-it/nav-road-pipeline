@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -128,9 +129,13 @@ def _score_drive(
     dist_p95 = osm.get("dist_p95_m") if metrics_valid and coverage_ok else None
 
     roughness, vertex_count, area_m2 = _polygon_metrics(outputs_dir / "road_polygon.geojson")
-    if summary.get("polygon_roughness") is not None:
+    if summary.get("roughness") is not None:
+        roughness = summary.get("roughness")
+    elif summary.get("polygon_roughness") is not None:
         roughness = summary.get("polygon_roughness")
-    if summary.get("polygon_vertex_count") is not None:
+    if summary.get("vertex_count") is not None:
+        vertex_count = summary.get("vertex_count")
+    elif summary.get("polygon_vertex_count") is not None:
         vertex_count = summary.get("polygon_vertex_count")
     if summary.get("polygon_area_m2") is not None:
         area_m2 = summary.get("polygon_area_m2")
@@ -145,6 +150,21 @@ def _score_drive(
             area_penalty = area_ratio
         else:
             area_penalty = area_ratio * 2.0
+
+    max_rough = os.environ.get("POSTOPT_MAX_ROUGHNESS", "").strip()
+    max_vertex = os.environ.get("POSTOPT_MAX_VERTEX_COUNT", "").strip()
+    if max_rough:
+        try:
+            if roughness is not None and float(roughness) > float(max_rough):
+                return "FAIL", {"reason": "roughness_cap"}
+        except ValueError:
+            pass
+    if max_vertex:
+        try:
+            if vertex_count is not None and float(vertex_count) > float(max_vertex):
+                return "FAIL", {"reason": "vertex_count_cap"}
+        except ValueError:
+            pass
 
     return "PASS", {
         "match_ratio": match_ratio,
@@ -359,8 +379,8 @@ def main() -> int:
     weights = {
         "osm_match_ratio": 1.0,
         "dist_p95_m": -0.05,
-        "roughness": -0.2,
-        "vertex_count": -0.002,
+        "roughness": -0.6,
+        "vertex_count": -0.01,
         "area_penalty": -0.3,
         "dual_ratio": 0.2,
         "center_feat_gap": 0.2,
