@@ -1,0 +1,183 @@
+nn_best_cfg: configs/geom_nn_best.yaml
+candidates:
+  - candidate_id: postopt_a
+    post:
+      POLY_SMOOTH_BUF_M: 0.5
+      POLY_SIMPLIFY_M: 0.3
+      POST_MASK_CLOSE_M: 0.8
+      POST_MASK_OPEN_M: 0.4
+      POST_MIN_COMPONENT_M2: 50
+      POST_FILL_HOLES_M2: 200
+      INTER_SMOOTH_BUF_M: 0.6
+      INTER_SIMPLIFY_M: 0.4
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_b
+    post:
+      POLY_SMOOTH_BUF_M: 1.0
+      POLY_SIMPLIFY_M: 0.5
+      POST_MASK_CLOSE_M: 1.0
+      POST_MASK_OPEN_M: 0.5
+      POST_MIN_COMPONENT_M2: 60
+      POST_FILL_HOLES_M2: 250
+      INTER_SMOOTH_BUF_M: 1.0
+      INTER_SIMPLIFY_M: 0.5
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_c
+    post:
+      POLY_SMOOTH_BUF_M: 1.5
+      POLY_SIMPLIFY_M: 0.5
+      POST_MASK_CLOSE_M: 1.2
+      POST_MASK_OPEN_M: 0.6
+      POST_MIN_COMPONENT_M2: 80
+      POST_FILL_HOLES_M2: 300
+      INTER_SMOOTH_BUF_M: 1.2
+      INTER_SIMPLIFY_M: 0.6
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_d
+    post:
+      POLY_SMOOTH_BUF_M: 2.0
+      POLY_SIMPLIFY_M: 0.8
+      POST_MASK_CLOSE_M: 1.5
+      POST_MASK_OPEN_M: 0.8
+      POST_MIN_COMPONENT_M2: 100
+      POST_FILL_HOLES_M2: 350
+      INTER_SMOOTH_BUF_M: 1.5
+      INTER_SIMPLIFY_M: 0.7
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_e
+    post:
+      POLY_SMOOTH_BUF_M: 1.0
+      POLY_SIMPLIFY_M: 0.3
+      POST_MASK_CLOSE_M: 0.8
+      POST_MASK_OPEN_M: 0.4
+      POST_MIN_COMPONENT_M2: 50
+      POST_FILL_HOLES_M2: 200
+      INTER_SMOOTH_BUF_M: 0.8
+      INTER_SIMPLIFY_M: 0.4
+      CENTERLINE_MODE: both
+
+  - candidate_id: postopt_f
+    post:
+      POLY_SMOOTH_BUF_M: 1.0
+      POLY_SIMPLIFY_M: 0.5
+      POST_MASK_CLOSE_M: 1.0
+      POST_MASK_OPEN_M: 0.5
+      POST_MIN_COMPONENT_M2: 60
+      POST_FILL_HOLES_M2: 250
+      INTER_SMOOTH_BUF_M: 1.0
+      INTER_SIMPLIFY_M: 0.5
+      CENTERLINE_MODE: both
+
+  - candidate_id: postopt_g
+    post:
+      POLY_SMOOTH_BUF_M: 1.5
+      POLY_SIMPLIFY_M: 0.5
+      POST_MASK_CLOSE_M: 1.2
+      POST_MASK_OPEN_M: 0.6
+      POST_MIN_COMPONENT_M2: 80
+      POST_FILL_HOLES_M2: 300
+      INTER_SMOOTH_BUF_M: 1.2
+      INTER_SIMPLIFY_M: 0.6
+      CENTERLINE_MODE: both
+
+  - candidate_id: postopt_h
+    post:
+      POLY_SMOOTH_BUF_M: 2.0
+      POLY_SIMPLIFY_M: 0.8
+      POST_MASK_CLOSE_M: 1.5
+      POST_MASK_OPEN_M: 0.8
+      POST_MIN_COMPONENT_M2: 100
+      POST_FILL_HOLES_M2: 350
+      INTER_SMOOTH_BUF_M: 1.5
+      INTER_SIMPLIFY_M: 0.7
+      CENTERLINE_MODE: both
+
+  - candidate_id: postopt_i
+    post:
+      POLY_SMOOTH_BUF_M: 0.5
+      POLY_SIMPLIFY_M: 0.5
+      POST_MASK_CLOSE_M: 0.6
+      POST_MASK_OPEN_M: 0.3
+      POST_MIN_COMPONENT_M2: 40
+      POST_FILL_HOLES_M2: 150
+      INTER_SMOOTH_BUF_M: 0.5
+      INTER_SIMPLIFY_M: 0.4
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_j
+    post:
+      POLY_SMOOTH_BUF_M: 1.2
+      POLY_SIMPLIFY_M: 0.6
+      POST_MASK_CLOSE_M: 1.0
+      POST_MASK_OPEN_M: 0.5
+      POST_MIN_COMPONENT_M2: 70
+      POST_FILL_HOLES_M2: 250
+      INTER_SMOOTH_BUF_M: 1.0
+      INTER_SIMPLIFY_M: 0.6
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_k
+    post:
+      POLY_SMOOTH_BUF_M: 1.2
+      POLY_SIMPLIFY_M: 0.6
+      POST_MASK_CLOSE_M: 1.0
+      POST_MASK_OPEN_M: 0.5
+      POST_MIN_COMPONENT_M2: 70
+      POST_FILL_HOLES_M2: 250
+      INTER_SMOOTH_BUF_M: 1.0
+      INTER_SIMPLIFY_M: 0.6
+      CENTERLINE_MODE: dual
+      DUAL_WIDTH_THRESH_M: 16
+
+  - candidate_id: postopt_l
+    post:
+      POLY_SMOOTH_BUF_M: 1.5
+      POLY_SIMPLIFY_M: 0.7
+      POST_MASK_CLOSE_M: 1.2
+      POST_MASK_OPEN_M: 0.6
+      POST_MIN_COMPONENT_M2: 80
+      POST_FILL_HOLES_M2: 300
+      INTER_SMOOTH_BUF_M: 1.2
+      INTER_SIMPLIFY_M: 0.7
+      CENTERLINE_MODE: dual
+      DUAL_WIDTH_THRESH_M: 18
+
+  - candidate_id: postopt_m
+    post:
+      POLY_SMOOTH_BUF_M: 2.0
+      POLY_SIMPLIFY_M: 1.0
+      POST_MASK_CLOSE_M: 1.5
+      POST_MASK_OPEN_M: 0.8
+      POST_MIN_COMPONENT_M2: 100
+      POST_FILL_HOLES_M2: 350
+      INTER_SMOOTH_BUF_M: 1.5
+      INTER_SIMPLIFY_M: 0.8
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_n
+    post:
+      POLY_SMOOTH_BUF_M: 3.0
+      POLY_SIMPLIFY_M: 1.5
+      POST_MASK_CLOSE_M: 2.0
+      POST_MASK_OPEN_M: 1.0
+      POST_MIN_COMPONENT_M2: 150
+      POST_FILL_HOLES_M2: 500
+      INTER_SMOOTH_BUF_M: 2.0
+      INTER_SIMPLIFY_M: 1.0
+      CENTERLINE_MODE: auto
+
+  - candidate_id: postopt_o
+    post:
+      POLY_SMOOTH_BUF_M: 4.0
+      POLY_SIMPLIFY_M: 2.0
+      POST_MASK_CLOSE_M: 2.0
+      POST_MASK_OPEN_M: 1.2
+      POST_MIN_COMPONENT_M2: 200
+      POST_FILL_HOLES_M2: 600
+      INTER_SMOOTH_BUF_M: 2.5
+      INTER_SIMPLIFY_M: 1.2
+      CENTERLINE_MODE: auto

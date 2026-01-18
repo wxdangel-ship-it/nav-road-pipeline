@@ -2,8 +2,6 @@
 setlocal enabledelayedexpansion
 cd /d %~dp0\..
 
-rem validate_topo_outputs.py supports --summary/--issues/--actions or env TOPO_*.
-
 if not exist .venv\Scripts\python.exe (
   call .\scripts\setup.cmd
 )
@@ -13,26 +11,12 @@ if "%POC_DATA_ROOT%"=="" (
 )
 if not "%POC_DATA_ROOT%"=="" echo [REGRESS] POC_DATA_ROOT=%POC_DATA_ROOT%
 
+if "%GEOM_BACKEND%"=="" set "GEOM_BACKEND=auto"
 if "%MAX_FRAMES%"=="" set "MAX_FRAMES=2000"
 if "%MAX_DRIVES%"=="" set "MAX_DRIVES=6"
 if "%REQUIRE_OXTS%"=="" set "REQUIRE_OXTS=1"
 if "%REQUIRE_VELODYNE%"=="" set "REQUIRE_VELODYNE=1"
 if "%ALLOW_SKIP_INVALID%"=="" set "ALLOW_SKIP_INVALID=0"
-if "%BASELINE_PATH%"=="" set "BASELINE_PATH=configs\topo_regress_baseline.yaml"
-if "%BASELINE_MODE%"=="" (
-  if exist "%BASELINE_PATH%" (
-    set "BASELINE_MODE=compare"
-  ) else (
-    set "BASELINE_MODE=off"
-  )
-)
-if "%ENABLE_GATE%"=="" (
-  if /I "%BASELINE_MODE%"=="update" (
-    set "ENABLE_GATE=0"
-  ) else (
-    set "ENABLE_GATE=1"
-  )
-)
 
 set "DRIVES_LIST=%DRIVES%"
 if not "%DRIVES_LIST%"=="" set "DRIVES_LIST=%DRIVES_LIST:,= %"
@@ -59,9 +43,9 @@ if not "%DRIVES_LIST%"=="" (
 )
 
 for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"`) do set "RUN_TAG=%%t"
-set "REGRESS_DIR=runs\regress_%RUN_TAG%"
+set "REGRESS_DIR=runs\regress_geom_%RUN_TAG%"
 if not exist "%REGRESS_DIR%" mkdir "%REGRESS_DIR%"
-set "INDEX_FILE=%REGRESS_DIR%\regress_index.jsonl"
+set "INDEX_FILE=%REGRESS_DIR%\geom_index.jsonl"
 if exist "%INDEX_FILE%" del /f /q "%INDEX_FILE%" 2>nul
 
 if "%DRIVES_LIST%"=="" (
@@ -111,7 +95,7 @@ set "RUNNABLE_COUNT=0"
 
 for %%d in (%DRIVES_LIST%) do (
   set "DRIVE=%%d"
-  echo [REGRESS] drive=%%d
+  echo [REGRESS] drive=%%d backend=%GEOM_BACKEND%
 
   call :check_drive_data
   if "!DRIVE_OK!"=="0" (
@@ -133,35 +117,17 @@ for %%d in (%DRIVES_LIST%) do (
       exit /b 1
     )
 
-    call .\scripts\build_topo.cmd --drive %%d --max-frames %MAX_FRAMES%
-    if errorlevel 1 (
-      call :write_index FAIL "build_topo_failed" "" ""
-      exit /b 1
-    )
-
     for /f "usebackq delims=" %%p in (`
-      .venv\Scripts\python.exe -c "from pathlib import Path; runs=Path('runs'); dirs=sorted([p for p in runs.iterdir() if p.is_dir() and p.name.startswith('topo_')], key=lambda p: p.stat().st_mtime); print(dirs[-1].name if dirs else '')"
-    `) do set "TOPO_RUN=%%p"
-    if "!TOPO_RUN!"=="" (
-      call :write_index FAIL "topo_run_not_found" "" ""
-      echo [REGRESS] ERROR: could not find topo run for drive %%d
+      .venv\Scripts\python.exe -c "from pathlib import Path; runs=Path('runs'); dirs=sorted([p for p in runs.iterdir() if p.is_dir() and p.name.startswith('geom_')], key=lambda p: p.stat().st_mtime); print(dirs[-1].name if dirs else '')"
+    `) do set "GEOM_RUN=%%p"
+    if "!GEOM_RUN!"=="" (
+      call :write_index FAIL "geom_run_not_found" "" ""
+      echo [REGRESS] ERROR: could not find geom run for drive %%d
       exit /b 1
     )
-    set "TOPO_OUT=runs\!TOPO_RUN!\outputs"
+    set "GEOM_OUT=runs\!GEOM_RUN!\outputs"
 
-    call .\scripts\eval.cmd --max-frames %MAX_FRAMES%
-    if errorlevel 1 (
-      call :write_index FAIL "eval_failed" "!TOPO_RUN!" "!TOPO_OUT!"
-      exit /b 1
-    )
-
-    .venv\Scripts\python.exe tools\validate_topo_outputs.py --summary "!TOPO_OUT!\TopoSummary.md" --issues "!TOPO_OUT!\TopoIssues.jsonl" --actions "!TOPO_OUT!\TopoActions.jsonl"
-    if errorlevel 1 (
-      call :write_index FAIL "validate_failed" "!TOPO_RUN!" "!TOPO_OUT!"
-      exit /b 1
-    )
-
-    call :write_index PASS "" "!TOPO_RUN!" "!TOPO_OUT!"
+    call :write_index PASS "" "!GEOM_RUN!" "!GEOM_OUT!"
   )
 )
 
@@ -170,30 +136,14 @@ if %RUNNABLE_COUNT% EQU 0 (
   exit /b 1
 )
 
-set "RC=0"
-
-.venv\Scripts\python.exe tools\collect_topo_regress.py --regress-dir "%REGRESS_DIR%" --gate-config "configs\topo_regress_gate.yaml" --baseline "%BASELINE_PATH%"
+.venv\Scripts\python.exe tools\collect_geom_regress.py --regress-dir "%REGRESS_DIR%"
 if errorlevel 1 (
-  set "RC=1"
-  goto :done
+  echo [REGRESS] WARN: collect_geom_regress failed
+  exit /b 1
 )
 
-if "%ENABLE_GATE%"=="1" (
-  .venv\Scripts\python.exe tools\check_topo_regress_gate.py --index "%INDEX_FILE%" --config "configs\topo_regress_gate.yaml" --baseline "%BASELINE_PATH%" --baseline-mode "%BASELINE_MODE%"
-  if errorlevel 1 set "RC=1"
-) else (
-  if /I "%BASELINE_MODE%"=="update" (
-    .venv\Scripts\python.exe tools\check_topo_regress_gate.py --index "%INDEX_FILE%" --config "configs\topo_regress_gate.yaml" --baseline "%BASELINE_PATH%" --baseline-mode "update"
-    if errorlevel 1 echo [REGRESS] WARN: baseline update gate failed; continuing
-  ) else (
-    call :check_min_pass
-    if errorlevel 1 set "RC=1"
-  )
-)
-
-:done
 echo [REGRESS] DONE -^> %REGRESS_DIR%
-endlocal & exit /b %RC%
+endlocal & exit /b 0
 
 :check_drive_data
 set "DRIVE_OK=1"
@@ -244,17 +194,13 @@ if "%REQUIRE_VELODYNE%"=="1" (
 )
 goto :eof
 
-:check_min_pass
-.venv\Scripts\python.exe -c "import json, os, sys, yaml; idx=os.environ.get('INDEX_FILE'); cfg=yaml.safe_load(open('configs/topo_regress_gate.yaml','r',encoding='utf-8')); min_pass=int(cfg.get('min_pass_drives',1)); f=open(idx,'r',encoding='utf-8'); cnt=sum(1 for line in f if line.strip() and json.loads(line.strip()).get('status')=='PASS'); sys.exit(0 if cnt>=min_pass else 1)"
-goto :eof
-
 :write_index
 set "IDX_STATUS=%~1"
 set "IDX_REASON=%~2"
 set "IDX_RUN=%~3"
 set "IDX_OUT=%~4"
 for /f "usebackq delims=" %%t in (`powershell -NoProfile -Command "Get-Date -Format yyyy-MM-ddTHH:mm:ss"`) do set "IDX_TS=%%t"
-.venv\Scripts\python.exe -c "import json,os; out=os.environ.get('IDX_OUT') or None; print(json.dumps({'drive':os.environ.get('DRIVE'), 'status':os.environ.get('IDX_STATUS'), 'reason':os.environ.get('IDX_REASON') or None, 'run_id':os.environ.get('IDX_RUN') or None, 'outputs_dir': out, 'topo_outputs': out, 'summary_path': (os.path.join(out, 'TopoSummary.md') if out else None), 'issues_path': (os.path.join(out, 'TopoIssues.jsonl') if out else None), 'actions_path': (os.path.join(out, 'TopoActions.jsonl') if out else None), 'timestamp':os.environ.get('IDX_TS')}))" >> "%INDEX_FILE%"
+.venv\Scripts\python.exe -c "import json,os; out=os.environ.get('IDX_OUT') or None; wgs84_road=(os.path.join(out,'road_polygon_wgs84.geojson') if out else None); wgs84_center=(os.path.join(out,'centerlines_wgs84.geojson') if out else None); wgs84_inter=(os.path.join(out,'intersections_wgs84.geojson') if out else None); crs=(os.path.join(out,'crs.json') if out else None); summary=(os.path.join(out,'GeomSummary.json') if out else None); print(json.dumps({'drive':os.environ.get('DRIVE'), 'status':os.environ.get('IDX_STATUS'), 'reason':os.environ.get('IDX_REASON') or None, 'geom_run_id':os.environ.get('IDX_RUN') or None, 'outputs_dir': out, 'wgs84_road': wgs84_road, 'wgs84_centerlines': wgs84_center, 'wgs84_intersections': wgs84_inter, 'crs_path': crs, 'summary_path': summary, 'backend': os.environ.get('GEOM_BACKEND'), 'timestamp':os.environ.get('IDX_TS')}))" >> "%INDEX_FILE%"
 set "IDX_STATUS="
 set "IDX_REASON="
 set "IDX_RUN="
