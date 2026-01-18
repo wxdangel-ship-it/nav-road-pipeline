@@ -46,6 +46,13 @@ def _load_baseline(path: Path) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _baseline_drives(baseline: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]]) -> List[str]:
+    if baseline:
+        return sorted(baseline.keys())
+    drives = sorted({e.get("drive") for e in entries if e.get("drive")})
+    return drives
+
+
 def _polygon_metrics(road_path: Path) -> Tuple[Optional[float], Optional[int], Optional[float]]:
     if not road_path.exists():
         return None, None, None
@@ -199,17 +206,55 @@ def _aggregate(
         pass_count = fail_count = skipped_count = 0
         scores: List[float] = []
         reasons: List[str] = []
-        for entry in items:
+        drive_list = _baseline_drives(baseline, items)
+        entry_map = {(e.get("drive") or ""): e for e in items}
+        for drive in drive_list:
+            entry = entry_map.get(drive)
+            if entry is None:
+                fail_count += 1
+                reasons.append("missing_entry")
+                drive_rows.append(
+                    {
+                        "candidate_id": cid,
+                        "drive": drive,
+                        "status": "FAIL",
+                        "score": None,
+                        "match_ratio": None,
+                        "dist_p95_m": None,
+                        "roughness": None,
+                        "vertex_count": None,
+                        "polygon_area_m2": None,
+                        "area_ratio": None,
+                        "area_penalty": None,
+                        "dual_ratio": None,
+                        "center_feat_count": None,
+                        "centerlines_in_polygon_ratio": None,
+                        "missing_reason": "missing_entry",
+                    }
+                )
+                continue
+
             if entry.get("status") != "PASS":
                 fail_count += 1
-                reasons.append(entry.get("reason") or "build_geom_failed")
+                reason = entry.get("reason") or "build_geom_failed"
+                reasons.append(reason)
                 drive_rows.append(
                     {
                         "candidate_id": cid,
                         "drive": entry.get("drive"),
                         "status": "FAIL",
                         "score": None,
-                        "reason": entry.get("reason") or "build_geom_failed",
+                        "match_ratio": None,
+                        "dist_p95_m": None,
+                        "roughness": None,
+                        "vertex_count": None,
+                        "polygon_area_m2": None,
+                        "area_ratio": None,
+                        "area_penalty": None,
+                        "dual_ratio": None,
+                        "center_feat_count": None,
+                        "centerlines_in_polygon_ratio": None,
+                        "missing_reason": reason,
                     }
                 )
                 continue
@@ -224,13 +269,24 @@ def _aggregate(
                         "drive": entry.get("drive"),
                         "status": "FAIL",
                         "score": None,
-                        "reason": "missing_outputs_dir",
+                        "match_ratio": None,
+                        "dist_p95_m": None,
+                        "roughness": None,
+                        "vertex_count": None,
+                        "polygon_area_m2": None,
+                        "area_ratio": None,
+                        "area_penalty": None,
+                        "dual_ratio": None,
+                        "center_feat_count": None,
+                        "centerlines_in_polygon_ratio": None,
+                        "missing_reason": "missing_outputs_dir",
                     }
                 )
                 continue
 
-            drive = entry.get("drive") or ""
             status, meta = _score_drive(Path(outputs_dir), drive, baseline)
+            score = None
+            missing_reason = None
             if status == "PASS":
                 pass_count += 1
                 score = 0.0
@@ -250,27 +306,28 @@ def _aggregate(
                 scores.append(score)
             else:
                 fail_count += 1
-                reasons.append(meta.get("reason") or "qc_failed")
+                missing_reason = meta.get("reason") or "qc_failed"
+                reasons.append(missing_reason)
 
-                drive_rows.append(
-                    {
-                        "candidate_id": cid,
-                        "drive": drive,
-                        "status": status,
-                        "score": scores[-1] if scores and status == "PASS" else None,
-                        "match_ratio": meta.get("match_ratio"),
-                        "dist_p95_m": meta.get("dist_p95_m"),
-                        "roughness": meta.get("roughness"),
-                        "vertex_count": meta.get("vertex_count"),
-                        "polygon_area_m2": meta.get("polygon_area_m2"),
-                        "area_ratio": meta.get("area_ratio"),
-                        "area_penalty": meta.get("area_penalty"),
-                        "dual_ratio": meta.get("dual_ratio"),
-                        "center_feat_count": meta.get("center_feat_count"),
-                        "centerlines_in_polygon_ratio": meta.get("centerlines_in_polygon_ratio"),
-                        "reason": meta.get("reason") or "",
-                    }
-                )
+            drive_rows.append(
+                {
+                    "candidate_id": cid,
+                    "drive": drive,
+                    "status": status,
+                    "score": score,
+                    "match_ratio": meta.get("match_ratio"),
+                    "dist_p95_m": meta.get("dist_p95_m"),
+                    "roughness": meta.get("roughness"),
+                    "vertex_count": meta.get("vertex_count"),
+                    "polygon_area_m2": meta.get("polygon_area_m2"),
+                    "area_ratio": meta.get("area_ratio"),
+                    "area_penalty": meta.get("area_penalty"),
+                    "dual_ratio": meta.get("dual_ratio"),
+                    "center_feat_count": meta.get("center_feat_count"),
+                    "centerlines_in_polygon_ratio": meta.get("centerlines_in_polygon_ratio"),
+                    "missing_reason": missing_reason,
+                }
+            )
 
         if fail_count > 0:
             status = "FAIL"
@@ -304,7 +361,18 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
+            writer.writerow({k: ("N/A" if row.get(k) is None else row.get(k, "")) for k in fieldnames})
+
+
+def _fmt(val: Any, fmt: str) -> str:
+    if val is None or val == "":
+        return "N/A"
+    try:
+        if fmt:
+            return format(float(val), fmt)
+    except (ValueError, TypeError):
+        return str(val)
+    return str(val)
 
 
 def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[str, Any]]) -> None:
@@ -343,7 +411,7 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
     lines.append("## Per-Drive")
     lines.append("")
     lines.append(
-        "| candidate_id | drive | status | score | match_ratio | dist_p95_m | roughness | vertex_count | area_ratio | dual_ratio | reason |"
+        "| candidate_id | drive | status | score | match_ratio | dist_p95_m | roughness | vertex_count | area_ratio | dual_ratio | missing_reason |"
     )
     lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     for row in drives:
@@ -352,14 +420,14 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
                 cid=row.get("candidate_id") or "",
                 drive=row.get("drive") or "",
                 status=row.get("status") or "",
-                score="" if row.get("score") is None else f"{row.get('score'):.4f}",
-                mr="" if row.get("match_ratio") is None else f"{row.get('match_ratio'):.4f}",
-                dp="" if row.get("dist_p95_m") is None else f"{row.get('dist_p95_m'):.2f}",
-                r="" if row.get("roughness") is None else f"{row.get('roughness'):.2f}",
-                v=row.get("vertex_count") or "",
-                ar="" if row.get("area_ratio") is None else f"{row.get('area_ratio'):.3f}",
-                dr="" if row.get("dual_ratio") is None else f"{row.get('dual_ratio'):.2f}",
-                reason=row.get("reason") or "",
+                score=_fmt(row.get("score"), ".4f"),
+                mr=_fmt(row.get("match_ratio"), ".4f"),
+                dp=_fmt(row.get("dist_p95_m"), ".2f"),
+                r=_fmt(row.get("roughness"), ".2f"),
+                v=_fmt(row.get("vertex_count"), ""),
+                ar=_fmt(row.get("area_ratio"), ".3f"),
+                dr=_fmt(row.get("dual_ratio"), ".2f"),
+                reason=row.get("missing_reason") or "",
             )
         )
     path.write_text("\n".join(lines), encoding="utf-8")
