@@ -5,6 +5,7 @@ import datetime
 import json
 import math
 import os
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
@@ -12,6 +13,10 @@ from shapely.geometry import Point, shape, mapping
 from shapely.ops import unary_union, transform as geom_transform
 from pyproj import Transformer
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from pipeline.sat_intersections import run_sat_intersections
 
