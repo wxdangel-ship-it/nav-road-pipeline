@@ -29,7 +29,14 @@ Windows-native road production pipeline (POC->Prod)
   - `scripts\\intersections_hybrid.cmd --index runs\\<sweep_run>\\postopt_index.jsonl --stage full --config configs\\intersections_hybrid.yaml --out-dir runs\\sat_intersections_full`
 
 Missing reason enums (per-drive CSV/JSON):
-- `OK`, `no_candidates`, `no_tiles`, `low_confidence`, `read_error`, `missing_inputs`, `missing_entry`
+- `OK`, `no_candidates`, `no_tiles`, `out_of_coverage`, `low_confidence`, `read_error`, `missing_inputs`, `missing_entry`, `tiles_dir_missing`, `dop20_root_unset`, `dop20_root_missing`
 
 QGIS layer suggestion:
 - `road_polygon_wgs84.geojson` -> `intersections_algo_wgs84.geojson` -> `intersections_sat_wgs84.geojson` -> `intersections_final_wgs84.geojson`
+
+## DOP20 WMS download (Golden8 AOI)
+- Build AOI:
+  - `python tools\\build_golden8_aoi.py --index runs\\sweep_geom_postopt_20260119_061421\\postopt_index.jsonl --out-dir runs\\golden8_aoi --margin-m 2000 --crs-epsg 32632`
+- Download tiles (WMS -> jpg+jgw):
+  - `scripts\\download_dop20.cmd`
+  - Or override AOI: `scripts\\download_dop20.cmd runs\\golden8_aoi\\golden8_aoi.json`

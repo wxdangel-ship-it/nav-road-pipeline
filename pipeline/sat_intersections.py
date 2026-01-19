@@ -238,7 +238,6 @@ def run_sat_intersections(
 
     features = []
     metrics = []
-    polys = []
     traj_pts = [Point(xy) for xy in traj_points]
     conf_values: List[float] = []
 
@@ -259,7 +258,6 @@ def run_sat_intersections(
             continue
         radius = 12.0 + 20.0 * conf
         poly = pt.buffer(radius)
-        polys.append(poly)
         traj_support = sum(1 for p in traj_pts if poly.contains(p))
         area = float(poly.area)
         perim = float(poly.length)
@@ -322,7 +320,6 @@ def run_sat_intersections(
             "reason": reason,
             "count": len(features),
             "metrics_path": str(metrics_path),
-            "polys": polys,
             "avg_confidence": round(float(avg_conf), 4),
             "candidates_used": len(features),
         }
