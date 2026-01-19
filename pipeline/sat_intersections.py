@@ -156,37 +156,58 @@ def run_sat_intersections(
     conf_thr: float = 0.3,
     dop20_root: Optional[Path] = None,
 ) -> Dict[str, object]:
+    base = {
+        "present": False,
+        "reason": "",
+        "count": 0,
+        "avg_confidence": 0.0,
+        "conf_mean": 0.0,
+        "conf_p50": 0.0,
+        "conf_p95": 0.0,
+        "candidates_total": int(len(candidates)),
+        "candidates_used": 0,
+        "tiles_total": 0,
+        "tiles_hit": 0,
+        "patches_read": 0,
+        "read_errors": 0,
+    }
     if np is None or rasterio is None:
-        return {"present": False, "reason": "missing_dependencies"}
+        return {**base, "reason": "missing_dependencies"}
     if dop20_root is None or not dop20_root.exists():
-        return {"present": False, "reason": "dop20_root_missing"}
+        return {**base, "reason": "dop20_root_missing"}
     tiles_dir = dop20_root / "tiles_utm32"
     if not tiles_dir.exists():
-        return {"present": False, "reason": "tiles_dir_missing"}
+        return {**base, "reason": "tiles_dir_missing"}
     if not candidates:
-        return {"present": False, "reason": "no_candidates"}
+        return {**base, "reason": "no_candidates"}
 
     try:
         index_items = load_tile_index(dop20_root, tiles_dir)
     except Exception as exc:
-        return {"present": False, "reason": f"index_failed:{exc}"}
+        return {**base, "reason": f"index_failed:{exc}"}
     if not index_items:
-        return {"present": False, "reason": "no_tiles"}
+        return {**base, "reason": "no_tiles"}
+    base["tiles_total"] = len(index_items)
 
     features = []
     metrics = []
     polys = []
     traj_pts = [Point(xy) for xy in traj_points]
+    conf_values: List[float] = []
 
     for idx, pt in enumerate(candidates):
         tile_path = _find_tile_for_point(index_items, pt.x, pt.y)
         if not tile_path:
             continue
+        base["tiles_hit"] += 1
         patch = _read_patch(tile_path, pt.x, pt.y, patch_m)
         if patch is None:
+            base["read_errors"] += 1
             continue
+        base["patches_read"] += 1
         _, ratio = _road_mask_simple(patch)
         conf = float(ratio)
+        conf_values.append(conf)
         if conf < conf_thr:
             continue
         radius = 12.0 + 20.0 * conf
@@ -225,7 +246,40 @@ def run_sat_intersections(
             )
         _safe_write_json(sat_wgs84_path, {"type": "FeatureCollection", "features": wgs84_features})
 
+    avg_conf = 0.0
+    if metrics:
+        avg_conf = sum(m.get("sat_confidence", 0.0) for m in metrics) / len(metrics)
+    if conf_values:
+        conf_sorted = sorted(conf_values)
+        base["conf_mean"] = round(float(sum(conf_values) / len(conf_values)), 4)
+        mid = conf_sorted[len(conf_sorted) // 2]
+        base["conf_p50"] = round(float(mid), 4)
+        base["conf_p95"] = round(float(conf_sorted[int(max(0, len(conf_sorted) * 0.95) - 1)]), 4)
+
+    reason = "OK"
+    if not features:
+        if base["candidates_total"] <= 0:
+            reason = "no_candidates"
+        elif base["tiles_total"] <= 0:
+            reason = "no_tiles"
+        elif base["tiles_hit"] <= 0:
+            reason = "no_tiles"
+        elif base["patches_read"] <= 0:
+            reason = "read_error"
+        else:
+            reason = "low_confidence"
     metrics_path = outputs_dir / "intersections_sat_metrics.json"
+    base.update(
+        {
+            "present": bool(features),
+            "reason": reason,
+            "count": len(features),
+            "metrics_path": str(metrics_path),
+            "polys": polys,
+            "avg_confidence": round(float(avg_conf), 4),
+            "candidates_used": len(features),
+        }
+    )
     _safe_write_json(
         metrics_path,
         {
@@ -234,17 +288,15 @@ def run_sat_intersections(
             "patch_m": patch_m,
             "conf_thr": conf_thr,
             "count": len(features),
+            "missing_reason": reason,
+            "candidates_total": base["candidates_total"],
+            "candidates_used": len(features),
+            "tiles_hit": base["tiles_hit"],
+            "tiles_total": base["tiles_total"],
+            "patches_read": base["patches_read"],
+            "read_errors": base["read_errors"],
             "items": metrics,
         },
     )
-
-    avg_conf = 0.0
-    if metrics:
-        avg_conf = sum(m.get("sat_confidence", 0.0) for m in metrics) / len(metrics)
-    return {
-        "present": bool(features),
-        "count": len(features),
-        "metrics_path": str(metrics_path),
-        "polys": polys,
-        "avg_confidence": round(float(avg_conf), 4),
-    }
+    base["metrics_path"] = str(metrics_path)
+    return base

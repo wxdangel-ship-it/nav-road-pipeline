@@ -37,12 +37,13 @@ def _read_summary(outputs_dir: Path) -> Dict[str, object]:
         return {}
 
 
-def _merge_layers(entries: List[dict], suffix: str, out_dir: Path) -> None:
+def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict) -> None:
     center_frames = []
     road_frames = []
     inter_frames = []
     inter_algo_frames = []
     inter_sat_frames = []
+    inter_final_frames = []
 
     for entry in entries:
         outputs_dir = Path(entry["outputs_dir"])
@@ -59,45 +60,72 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path) -> None:
         inter_path = outputs_dir / f"intersections{suffix}.geojson"
         inter_algo_path = outputs_dir / f"intersections_algo{suffix}.geojson"
         inter_sat_path = outputs_dir / f"intersections_sat{suffix}.geojson"
+        inter_final_path = outputs_dir / f"intersections_final{suffix}.geojson"
         if center_path.exists():
             gdf = gpd.read_file(center_path)
             gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
             gdf["geom_run_id"] = run_id
             gdf["candidate_id"] = candidate_id
             center_frames.append(gdf)
         if road_path.exists():
             gdf = gpd.read_file(road_path)
             gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
             gdf["geom_run_id"] = run_id
             gdf["candidate_id"] = candidate_id
             road_frames.append(gdf)
         if inter_path.exists():
             gdf = gpd.read_file(inter_path)
             gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
             gdf["geom_run_id"] = run_id
             gdf["candidate_id"] = candidate_id
             gdf["backend_used"] = backend_used
             gdf["sat_present"] = sat_present
             gdf["sat_confidence"] = sat_conf
             inter_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections{suffix}"})
         if inter_algo_path.exists():
             gdf = gpd.read_file(inter_algo_path)
             gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
             gdf["geom_run_id"] = run_id
             gdf["candidate_id"] = candidate_id
             gdf["backend_used"] = "algo"
             gdf["sat_present"] = sat_present
             gdf["sat_confidence"] = sat_conf
             inter_algo_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_algo{suffix}"})
         if inter_sat_path.exists():
             gdf = gpd.read_file(inter_sat_path)
             gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
             gdf["geom_run_id"] = run_id
             gdf["candidate_id"] = candidate_id
             gdf["backend_used"] = "sat"
             gdf["sat_present"] = sat_present
             gdf["sat_confidence"] = sat_conf
             inter_sat_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_sat{suffix}"})
+        if inter_final_path.exists():
+            gdf = gpd.read_file(inter_final_path)
+            gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
+            gdf["geom_run_id"] = run_id
+            gdf["candidate_id"] = candidate_id
+            inter_final_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_final{suffix}"})
 
     if center_frames:
         gpd.GeoDataFrame(pd.concat(center_frames, ignore_index=True)).to_file(
@@ -110,15 +138,27 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path) -> None:
     if inter_frames:
         merged = gpd.GeoDataFrame(pd.concat(inter_frames, ignore_index=True))
         merged.to_file(out_dir / f"merged_intersections{suffix}.geojson", driver="GeoJSON")
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_intersections{suffix}"})
+    if inter_final_frames:
+        merged_final = gpd.GeoDataFrame(pd.concat(inter_final_frames, ignore_index=True))
+        merged_final.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+    elif inter_frames:
         merged.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_final{suffix}"})
     if inter_algo_frames:
         gpd.GeoDataFrame(pd.concat(inter_algo_frames, ignore_index=True)).to_file(
             out_dir / f"merged_intersections_algo{suffix}.geojson", driver="GeoJSON"
         )
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_algo{suffix}"})
     if inter_sat_frames:
         gpd.GeoDataFrame(pd.concat(inter_sat_frames, ignore_index=True)).to_file(
             out_dir / f"merged_intersections_sat{suffix}.geojson", driver="GeoJSON"
         )
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_sat{suffix}"})
 
 
 def main() -> int:
@@ -149,8 +189,10 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _merge_layers(entries, "", out_dir)
-    _merge_layers(entries, "_wgs84", out_dir)
+    report = {}
+    _merge_layers(entries, "", out_dir, report)
+    _merge_layers(entries, "_wgs84", out_dir, report)
+    (out_dir / "merge_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 
 

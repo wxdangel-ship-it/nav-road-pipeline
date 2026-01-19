@@ -1,0 +1,12 @@
+sat:
+  patch_m: 256.0
+  conf_thr: 0.3
+  crs_epsg: 32632
+
+run:
+  expected_drives_file: configs/golden_drives.txt
+  quick_max_candidates: 20
+  full_segment_size: 60
+  traj_sample_m: 8.0
+  dop20_root_env: DOP20_ROOT
+  dop20_root_fallback: ""
