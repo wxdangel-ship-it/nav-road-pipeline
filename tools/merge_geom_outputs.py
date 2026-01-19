@@ -87,7 +87,7 @@ def _read_summary(outputs_dir: Path) -> Dict[str, object]:
         return {}
 
 
-def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict) -> None:
+def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict, intersections_root: Path | None = None) -> None:
     center_frames = []
     center_single_frames = []
     center_dual_frames = []
@@ -113,10 +113,15 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
         center_dual_path = outputs_dir / f"centerlines_dual{suffix}.geojson"
         center_both_path = outputs_dir / f"centerlines_both{suffix}.geojson"
         road_path = outputs_dir / f"road_polygon{suffix}.geojson"
-        inter_path = outputs_dir / f"intersections{suffix}.geojson"
-        inter_algo_path = outputs_dir / f"intersections_algo{suffix}.geojson"
-        inter_sat_path = outputs_dir / f"intersections_sat{suffix}.geojson"
-        inter_final_path = outputs_dir / f"intersections_final{suffix}.geojson"
+        inter_dir = outputs_dir
+        if intersections_root is not None:
+            candidate = intersections_root / "outputs" / drive
+            if candidate.exists():
+                inter_dir = candidate
+        inter_path = inter_dir / f"intersections{suffix}.geojson"
+        inter_algo_path = inter_dir / f"intersections_algo{suffix}.geojson"
+        inter_sat_path = inter_dir / f"intersections_sat{suffix}.geojson"
+        inter_final_path = inter_dir / f"intersections_final{suffix}.geojson"
         if center_path.exists():
             gdf = gpd.read_file(center_path)
             gdf["drive"] = drive
@@ -304,6 +309,7 @@ def main() -> int:
     ap.add_argument("--index", required=True, help="postopt_index.jsonl")
     ap.add_argument("--best-postopt", required=True, help="best_postopt.yaml")
     ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--intersections-v2-dir", default="", help="optional intersections_v2 run dir")
     args = ap.parse_args()
 
     index_path = Path(args.index)
@@ -328,8 +334,9 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     report = {}
-    _merge_layers(entries, "", out_dir, report)
-    _merge_layers(entries, "_wgs84", out_dir, report)
+    v2_root = Path(args.intersections_v2_dir) if args.intersections_v2_dir else None
+    _merge_layers(entries, "", out_dir, report, v2_root)
+    _merge_layers(entries, "_wgs84", out_dir, report, v2_root)
     report.setdefault("missing_layer", [])
     report.setdefault("empty_layer", [])
     report.setdefault("feature_count", {})
