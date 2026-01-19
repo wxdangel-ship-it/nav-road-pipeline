@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.sat_intersections import run_sat_intersections
+from pipeline.sat_intersections import load_tile_index, run_sat_intersections
 
 
 def _read_index(path: Path) -> List[dict]:
@@ -44,6 +44,72 @@ def _read_drives(path: Path) -> List[str]:
 
 def _load_yaml(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _resolve_dop20_root(run_cfg: dict) -> Tuple[Optional[Path], str]:
+    cfg_value = run_cfg.get("dop20_root")
+    if cfg_value is not None:
+        cfg_str = str(cfg_value).strip()
+        if cfg_str:
+            return Path(cfg_str), "config"
+    env_key = run_cfg.get("dop20_root_env", "DOP20_ROOT")
+    env_value = os.getenv(env_key or "", "").strip()
+    if env_value:
+        return Path(env_value), "env"
+    fallback = str(run_cfg.get("dop20_root_fallback", "") or "").strip()
+    if fallback:
+        return Path(fallback), "fallback"
+    return None, "unset"
+
+
+def _resolve_index_cache_path(dop20_root: Path) -> Path:
+    override = os.getenv("DOP20_INDEX_CACHE", "").strip()
+    if override:
+        return Path(override)
+    return dop20_root / "dop20_tiles_index.json"
+
+
+def _read_index_payload(cache_path: Path) -> Tuple[Optional[list], Optional[dict]]:
+    if not cache_path.exists():
+        return None, None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None, None
+    if isinstance(payload, list):
+        return payload, None
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        meta = payload.get("meta")
+        if isinstance(items, list):
+            return items, meta if isinstance(meta, dict) else None
+    return None, None
+
+
+def _items_bbox(items: List[dict]) -> Optional[Tuple[float, float, float, float]]:
+    if not items:
+        return None
+    return (
+        float(min(item["minx"] for item in items)),
+        float(min(item["miny"] for item in items)),
+        float(max(item["maxx"] for item in items)),
+        float(max(item["maxy"] for item in items)),
+    )
+
+
+def _points_bbox(points: List[Point]) -> Optional[Tuple[float, float, float, float]]:
+    if not points:
+        return None
+    return (
+        float(min(p.x for p in points)),
+        float(min(p.y for p in points)),
+        float(max(p.x for p in points)),
+        float(max(p.y for p in points)),
+    )
+
+
+def _bbox_intersects(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> bool:
+    return not (a[2] < b[0] or a[0] > b[2] or a[3] < b[1] or a[1] > b[3])
 
 
 def _sample_line_points(geom, step_m: float) -> List[Tuple[float, float]]:
@@ -269,20 +335,68 @@ def main() -> int:
     quick_max_candidates = int(run_cfg.get("quick_max_candidates", 20))
     full_segment_size = int(run_cfg.get("full_segment_size", 50))
     traj_sample_m = float(run_cfg.get("traj_sample_m", 8.0))
-    dop20_root = Path(run_cfg.get("dop20_root", "") or "")
-    if not dop20_root:
-        env_key = run_cfg.get("dop20_root_env", "DOP20_ROOT")
-        if env_key and env_key in os.environ:
-            dop20_root = Path(os.environ[env_key])
-    if not dop20_root or not dop20_root.exists():
-        env_root = Path(os.environ.get("POC_DATA_ROOT", "")) if os.environ.get("POC_DATA_ROOT") else Path()
-        if env_root:
-            dop20_root = env_root / "_lglbw_dop20"
-    if not dop20_root or not dop20_root.exists():
-        fallback = run_cfg.get("dop20_root_fallback", "")
-        dop20_root = Path(fallback) if fallback else Path()
-    if not dop20_root or not dop20_root.exists():
-        dop20_root = None
+    dop20_root, dop20_source = _resolve_dop20_root(run_cfg)
+    dop20_state = "unset"
+    if dop20_root is not None:
+        if dop20_root.exists():
+            dop20_root = dop20_root.resolve()
+            dop20_state = "ok"
+        else:
+            dop20_state = "missing"
+
+    if dop20_state == "ok":
+        print(f"[SAT] dop20_root={dop20_root} (source={dop20_source})")
+    else:
+        print(f"[SAT] dop20_root={dop20_state} (source={dop20_source})")
+
+    tiles_dir = dop20_root / "tiles_utm32" if dop20_root else None
+    tiles_dir_exists = bool(tiles_dir and tiles_dir.exists())
+    if tiles_dir:
+        print(f"[SAT] dop20_tiles_dir={tiles_dir} exists={str(tiles_dir_exists).lower()}")
+
+    index_items = None
+    index_bbox = None
+    index_cache_path = _resolve_index_cache_path(dop20_root) if dop20_root else None
+    if index_cache_path:
+        cache_items, cache_meta = _read_index_payload(index_cache_path)
+        force_rebuild = False
+        if cache_items is not None:
+            cached_root = (cache_meta or {}).get("root_abs")
+            if not cached_root:
+                force_rebuild = True
+            else:
+                try:
+                    if str(Path(str(cached_root)).resolve()) != str(dop20_root):
+                        force_rebuild = True
+                except Exception:
+                    force_rebuild = True
+        if force_rebuild:
+            print(f"[SAT] WARNING index_root_mismatch, rebuilding index at {index_cache_path}")
+        if tiles_dir_exists:
+            index_items, index_meta = load_tile_index(
+                dop20_root,
+                tiles_dir,
+                crs_epsg=crs_epsg,
+                force_rebuild=force_rebuild,
+            )
+            index_bbox = None
+            if isinstance(index_meta, dict):
+                bbox = index_meta.get("bbox")
+                if isinstance(bbox, dict):
+                    try:
+                        index_bbox = (
+                            float(bbox.get("minx")),
+                            float(bbox.get("miny")),
+                            float(bbox.get("maxx")),
+                            float(bbox.get("maxy")),
+                        )
+                    except Exception:
+                        index_bbox = None
+            if index_bbox is None and index_items:
+                index_bbox = _items_bbox(index_items)
+            tiles_count = len(index_items) if index_items else 0
+            bbox_text = "None" if not index_bbox else ",".join(f"{v:.3f}" for v in index_bbox)
+            print(f"[SAT] dop20_index={index_cache_path} tiles={tiles_count} bbox={bbox_text}")
 
     run_id = ""
     if args.out_dir:
@@ -330,7 +444,11 @@ def main() -> int:
         conf_values: List[float] = []
         features: List[dict] = []
 
-        if args.finalize:
+        query_bbox = _points_bbox(candidates)
+
+        if dop20_state != "ok":
+            missing_reason = "dop20_root_unset" if dop20_state == "unset" else "dop20_root_missing"
+        elif args.finalize:
             seg_dirs = []
             seg_parent = segments_root / drive
             if seg_parent.exists():
@@ -408,10 +526,15 @@ def main() -> int:
         if not features and missing_reason == "OK":
             if counts["candidates_total"] <= 0:
                 missing_reason = "no_candidates"
+            elif not tiles_dir_exists:
+                missing_reason = "tiles_dir_missing"
             elif counts["tiles_total"] <= 0:
                 missing_reason = "no_tiles"
             elif counts["tiles_hit"] <= 0:
-                missing_reason = "no_tiles"
+                if query_bbox and index_bbox and not _bbox_intersects(query_bbox, index_bbox):
+                    missing_reason = "out_of_coverage"
+                else:
+                    missing_reason = "no_tiles"
             elif counts["patches_read"] <= 0:
                 missing_reason = "read_error"
             else:

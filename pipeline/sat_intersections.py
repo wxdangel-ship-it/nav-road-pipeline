@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import os
@@ -32,6 +33,7 @@ except Exception:  # pragma: no cover - optional dependency
     Transformer = None
 
 RasterIndex = List[Dict[str, float]]
+IndexMeta = Dict[str, object]
 
 
 def _safe_write_json(path: Path, payload: Dict) -> None:
@@ -61,17 +63,37 @@ def _scan_tiles(tiles_dir: Path) -> RasterIndex:
     return items
 
 
-def _load_index_cache(cache_path: Path) -> Optional[RasterIndex]:
+def _load_index_cache(cache_path: Path) -> Tuple[Optional[RasterIndex], Optional[IndexMeta]]:
     if not cache_path.exists():
-        return None
+        return None, None
     try:
-        return json.loads(cache_path.read_text(encoding="utf-8"))
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
+        return None, None
+    if isinstance(payload, list):
+        return payload, None
+    if isinstance(payload, dict):
+        items = payload.get("items")
+        meta = payload.get("meta")
+        if isinstance(items, list):
+            return items, meta if isinstance(meta, dict) else None
+    return None, None
+
+
+def _index_bbox(items: RasterIndex) -> Optional[Dict[str, float]]:
+    if not items:
         return None
+    return {
+        "minx": float(min(item["minx"] for item in items)),
+        "miny": float(min(item["miny"] for item in items)),
+        "maxx": float(max(item["maxx"] for item in items)),
+        "maxy": float(max(item["maxy"] for item in items)),
+    }
 
 
-def _save_index_cache(cache_path: Path, items: RasterIndex) -> None:
-    cache_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+def _save_index_cache(cache_path: Path, items: RasterIndex, meta: Optional[IndexMeta]) -> None:
+    payload = {"meta": meta or {}, "items": items}
+    cache_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _cache_path(dop20_root: Path) -> Path:
@@ -81,19 +103,44 @@ def _cache_path(dop20_root: Path) -> Path:
     return dop20_root / "dop20_tiles_index.json"
 
 
-def load_tile_index(dop20_root: Path, tiles_dir: Path) -> RasterIndex:
+def load_tile_index(
+    dop20_root: Path,
+    tiles_dir: Path,
+    *,
+    crs_epsg: Optional[int] = None,
+    force_rebuild: bool = False,
+) -> Tuple[RasterIndex, Optional[IndexMeta]]:
     cache_path = _cache_path(dop20_root)
-    cached = _load_index_cache(cache_path)
+    cached, meta = _load_index_cache(cache_path)
+    dop20_root_abs = str(dop20_root.resolve())
+    if cached is not None and not force_rebuild:
+        cached_root = (meta or {}).get("root_abs")
+        if cached_root:
+            try:
+                if str(Path(str(cached_root)).resolve()) != dop20_root_abs:
+                    cached = None
+            except Exception:
+                cached = None
+        else:
+            cached = None
     if cached is not None:
-        return cached
+        return cached, meta
     items = _scan_tiles(tiles_dir)
+    meta = {
+        "root_abs": dop20_root_abs,
+        "tiles_dir_abs": str(tiles_dir.resolve()),
+        "tiles_count": len(items),
+        "bbox": _index_bbox(items),
+        "crs_epsg": crs_epsg,
+        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+    }
     try:
-        _save_index_cache(cache_path, items)
+        _save_index_cache(cache_path, items, meta)
     except PermissionError:
         fallback = Path("cache") / "dop20_tiles_index.json"
         fallback.parent.mkdir(parents=True, exist_ok=True)
-        _save_index_cache(fallback, items)
-    return items
+        _save_index_cache(fallback, items, meta)
+    return items, meta
 
 
 def _find_tile_for_point(items: RasterIndex, x: float, y: float) -> Optional[str]:
@@ -182,7 +229,7 @@ def run_sat_intersections(
         return {**base, "reason": "no_candidates"}
 
     try:
-        index_items = load_tile_index(dop20_root, tiles_dir)
+        index_items, _ = load_tile_index(dop20_root, tiles_dir, crs_epsg=crs_epsg)
     except Exception as exc:
         return {**base, "reason": f"index_failed:{exc}"}
     if not index_items:
