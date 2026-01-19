@@ -61,6 +61,32 @@ def _collect_lines(features: List[dict]) -> List[LineString]:
     return lines
 
 
+def _collect_lines_with_types(features: List[dict]) -> Tuple[List[LineString], List[str]]:
+    lines = []
+    types = []
+    for feat in features:
+        geom = feat.get("geometry")
+        if not geom:
+            continue
+        props = feat.get("properties") or {}
+        hw = props.get("highway")
+        if isinstance(hw, (list, tuple)):
+            hw_val = str(hw[0]) if hw else ""
+        else:
+            hw_val = str(hw) if hw is not None else ""
+        shp = shape(geom)
+        if shp.is_empty:
+            continue
+        if shp.geom_type == "LineString":
+            lines.append(shp)
+            types.append(hw_val)
+        elif shp.geom_type == "MultiLineString":
+            for seg in shp.geoms:
+                lines.append(seg)
+                types.append(hw_val)
+    return lines, types
+
+
 def _collect_polys(features: List[dict]) -> List[Polygon]:
     polys = []
     for feat in features:
@@ -118,11 +144,62 @@ def _osm_degree_junctions(lines: List[LineString], snap_m: float, min_degree: in
     return points
 
 
+def _osm_degree_junctions_info(
+    lines: List[LineString],
+    types_by_line: List[str],
+    snap_m: float,
+    min_degree: int,
+) -> List[Tuple[Point, int, List[str]]]:
+    nodes: List[Tuple[float, float]] = []
+    grid: Dict[Tuple[int, int], List[int]] = {}
+    edges: Dict[int, set] = {}
+    node_highways: Dict[int, set] = {}
+    for line_idx, line in enumerate(lines):
+        if line.is_empty or len(line.coords) < 2:
+            continue
+        p1 = Point(line.coords[0])
+        p2 = Point(line.coords[-1])
+        n1 = _snap_point(p1, nodes, grid, snap_m)
+        n2 = _snap_point(p2, nodes, grid, snap_m)
+        if n1 == n2:
+            continue
+        edges.setdefault(n1, set()).add(n2)
+        edges.setdefault(n2, set()).add(n1)
+        hw = types_by_line[line_idx] if line_idx < len(types_by_line) else ""
+        if hw:
+            node_highways.setdefault(n1, set()).add(hw)
+            node_highways.setdefault(n2, set()).add(hw)
+    out = []
+    for idx, neighbors in edges.items():
+        degree = len(neighbors)
+        if degree >= min_degree:
+            x, y = nodes[idx]
+            types = sorted(node_highways.get(idx, set()))
+            out.append((Point(x, y), degree, types))
+    return out
+
+
 def _entry_bbox_wgs84(entry: dict) -> Optional[Tuple[float, float, float, float]]:
     bbox = entry.get("bbox_wgs84") or entry.get("bbox4326")
     if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
         return float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
     return None
+
+
+def _expand_bbox_wgs84(bbox: Tuple[float, float, float, float], margin_m: float) -> Tuple[float, float, float, float]:
+    if margin_m <= 0:
+        return bbox
+    wgs84 = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    utm = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+    xs, ys = wgs84.transform([bbox[0], bbox[2]], [bbox[1], bbox[3]])
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    minx -= margin_m
+    miny -= margin_m
+    maxx += margin_m
+    maxy += margin_m
+    lon, lat = utm.transform([minx, maxx], [miny, maxy])
+    return min(lon), min(lat), max(lon), max(lat)
 
 
 def _assign_sat_features_to_drives(
@@ -263,15 +340,49 @@ def main() -> int:
 
     osm_path = Path(args.osm_path)
     osm_feats = _read_geojson(osm_path)
+    osm_feats_total = len(osm_feats)
     osm_lines = _collect_lines(osm_feats)
     if not osm_lines:
         raise SystemExit(f"ERROR: no OSM lines found in {osm_path}")
     osm_coords = osm_lines[0].coords[0]
     is_wgs84 = _is_wgs84_coords(osm_coords[0], osm_coords[1])
+    if is_wgs84:
+        osm_lines_utm = [_to_utm32(line) for line in osm_lines]
+    else:
+        osm_lines_utm = osm_lines
+    junctions = _osm_degree_junctions(osm_lines_utm, args.osm_snap_m, args.osm_min_degree)
+    osm_lines_wgs = [_to_wgs84(line) for line in osm_lines_utm] if not is_wgs84 else osm_lines
+    osm_types = []
+    if osm_path.exists():
+        osm_feats = _read_geojson(osm_path)
+        osm_lines_wgs, osm_types = _collect_lines_with_types(osm_feats)
+    is_wgs84 = True
+    if osm_lines_wgs:
+        c0 = list(osm_lines_wgs[0].coords)[0]
+        is_wgs84 = _is_wgs84_coords(c0[0], c0[1])
     if not is_wgs84:
-        osm_lines = [_to_wgs84(line) for line in osm_lines]
-    junctions = _osm_degree_junctions(osm_lines, args.osm_snap_m, args.osm_min_degree)
-    osm_junctions = [{"type": "Feature", "geometry": mapping(pt), "properties": {}} for pt in junctions]
+        osm_lines_wgs = [_to_wgs84(line) for line in osm_lines_utm]
+    junctions_info = _osm_degree_junctions_info(osm_lines_utm, osm_types, args.osm_snap_m, args.osm_min_degree)
+    if not is_wgs84:
+        junctions_info = [( _to_wgs84(pt), deg, types) for pt, deg, types in junctions_info]
+    osm_junctions = []
+    unassigned = 0
+    for pt, degree, types in junctions_info:
+        assigned = False
+        for drive, bbox in road_bboxes.items():
+            bbox = _expand_bbox_wgs84(bbox, 50.0)
+            if bbox[0] <= pt.x <= bbox[2] and bbox[1] <= pt.y <= bbox[3]:
+                assigned = True
+                break
+        if not assigned:
+            unassigned += 1
+        osm_junctions.append(
+            {
+                "type": "Feature",
+                "geometry": mapping(pt),
+                "properties": {"degree": degree, "highway_types": types},
+            }
+        )
     _write_geojson(audit_dir / "osm_junctions_wgs84.geojson", osm_junctions)
 
     final_polys = []
@@ -285,7 +396,7 @@ def main() -> int:
     final_union_utm = _to_utm32(final_union) if not final_union.is_empty else Polygon()
 
     missing_points = []
-    for pt in junctions:
+    for pt, _, _ in junctions_info:
         pt_utm = _to_utm32(pt)
         dist = pt_utm.distance(final_union_utm) if not final_union_utm.is_empty else float("inf")
         if dist > args.radius_m:
@@ -302,10 +413,16 @@ def main() -> int:
             missing_counts["sat_unassigned"] = int(stats["sat_unmatched"])
             total_missing += int(stats["sat_unmatched"])
 
+    if unassigned:
+        missing_counts["unassigned_drive"] = unassigned
+        total_missing += unassigned
+    if osm_feats_total > 0 and len(junctions_info) == 0:
+        missing_counts["filtered_highway"] = missing_counts.get("filtered_highway", 0) + 1
+        total_missing += 1
     summary = {
         "missing_total": total_missing,
         "missing_reason_counts": missing_counts,
-        "osm_junctions_total": len(junctions),
+        "osm_junctions_total": len(junctions_info),
         "missing_osm_junctions": len(missing_points),
         "sat_assignment": sat_stats,
     }

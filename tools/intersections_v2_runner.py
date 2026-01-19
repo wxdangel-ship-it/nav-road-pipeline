@@ -63,7 +63,6 @@ def _to_wgs84(features: List[dict], crs_epsg: int) -> List[dict]:
 
 def _find_latest_osm_path() -> Optional[Path]:
     candidates = list(Path("runs").rglob("drivable_roads.geojson"))
-    candidates.extend(Path("runs").rglob("osm_ref_roads.geojson"))
     if not candidates:
         return None
     return max(candidates, key=lambda p: p.stat().st_mtime)
@@ -75,6 +74,35 @@ def _entry_bbox_wgs84(entry: dict) -> Optional[Tuple[float, float, float, float]
         if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
             return float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
     return None
+
+
+def _drive_bbox_wgs84(entry: dict, road_poly: Optional[Polygon]) -> Optional[Tuple[float, float, float, float]]:
+    bbox = _entry_bbox_wgs84(entry)
+    if bbox is not None:
+        return bbox
+    if road_poly is None or road_poly.is_empty:
+        return None
+    minx, miny, maxx, maxy = road_poly.bounds
+    wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+    xs, ys = wgs84.transform([minx, maxx], [miny, maxy])
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _expand_bbox(bbox: Tuple[float, float, float, float], margin_m: float) -> Tuple[float, float, float, float]:
+    minx, miny, maxx, maxy = bbox
+    if margin_m <= 0:
+        return bbox
+    wgs84 = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    utm = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+    xs, ys = wgs84.transform([minx, maxx], [miny, maxy])
+    minx_u, maxx_u = min(xs), max(xs)
+    miny_u, maxy_u = min(ys), max(ys)
+    minx_u -= margin_m
+    miny_u -= margin_m
+    maxx_u += margin_m
+    maxy_u += margin_m
+    lon, lat = utm.transform([minx_u, maxx_u], [miny_u, maxy_u])
+    return min(lon), min(lat), max(lon), max(lat)
 
 
 def _infer_bbox_from_road(road_poly: Polygon) -> Optional[Tuple[float, float, float, float]]:
@@ -152,6 +180,37 @@ def _collect_lines(features: List[dict]) -> List[LineString]:
     return lines
 
 
+def _collect_lines_with_types(features: List[dict]) -> Tuple[List[LineString], List[str]]:
+    lines = []
+    types = []
+    for feat in features:
+        geom = feat.get("geometry")
+        if not geom:
+            continue
+        props = feat.get("properties") or {}
+        hw = props.get("highway")
+        if isinstance(hw, (list, tuple)):
+            hw_val = str(hw[0]) if hw else ""
+        else:
+            hw_val = str(hw) if hw is not None else ""
+        shp = shape(geom)
+        if shp.is_empty:
+            continue
+        if shp.geom_type == "LineString":
+            lines.append(shp)
+            types.append(hw_val)
+        elif shp.geom_type == "MultiLineString":
+            for seg in shp.geoms:
+                lines.append(seg)
+                types.append(hw_val)
+    return lines, types
+
+
+def _to_utm32(geom):
+    wgs84 = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    return geom_transform(wgs84.transform, geom)
+
+
 def _collect_polys(features: List[dict]) -> List[Polygon]:
     polys = []
     for feat in features:
@@ -174,6 +233,8 @@ def _filter_osm_features(features: List[dict], allowlist: List[str]) -> List[dic
     allow = {str(a).strip() for a in allowlist if str(a).strip()}
     if not allow:
         return features
+    allow.update({a for a in allow if a.endswith("_link")})
+    allow.update({f"{a}_link" for a in list(allow) if not a.endswith("_link")})
     kept = []
     for feat in features:
         props = feat.get("properties") or {}
@@ -187,6 +248,24 @@ def _filter_osm_features(features: List[dict], allowlist: List[str]) -> List[dic
         if values & allow:
             kept.append(feat)
     return kept
+
+
+def _osm_highway_counts(features: List[dict]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for feat in features:
+        props = feat.get("properties") or {}
+        hw = props.get("highway")
+        if hw is None:
+            continue
+        if isinstance(hw, (list, tuple)):
+            values = [str(v).strip() for v in hw]
+        else:
+            values = [str(hw).strip()]
+        for v in values:
+            if not v:
+                continue
+            counts[v] = counts.get(v, 0) + 1
+    return counts
 
 
 def _snap_point(point: Point, nodes: List[Tuple[float, float]], grid: Dict[Tuple[int, int], List[int]], snap_m: float) -> int:
@@ -207,11 +286,17 @@ def _snap_point(point: Point, nodes: List[Tuple[float, float]], grid: Dict[Tuple
     return idx
 
 
-def _osm_degree_seeds(lines: List[LineString], snap_m: float, min_degree: int) -> List[Tuple[Point, int]]:
+def _osm_degree_seeds(
+    lines: List[LineString],
+    snap_m: float,
+    min_degree: int,
+    highway_by_line: List[str],
+) -> List[Tuple[Point, int, List[str]]]:
     nodes: List[Tuple[float, float]] = []
     grid: Dict[Tuple[int, int], List[int]] = {}
     edges: Dict[int, set] = {}
-    for line in lines:
+    node_highways: Dict[int, set] = {}
+    for line_idx, line in enumerate(lines):
         if line.is_empty or len(line.coords) < 2:
             continue
         p1 = Point(line.coords[0])
@@ -222,12 +307,17 @@ def _osm_degree_seeds(lines: List[LineString], snap_m: float, min_degree: int) -
             continue
         edges.setdefault(n1, set()).add(n2)
         edges.setdefault(n2, set()).add(n1)
+        hw = highway_by_line[line_idx] if line_idx < len(highway_by_line) else ""
+        if hw:
+            node_highways.setdefault(n1, set()).add(hw)
+            node_highways.setdefault(n2, set()).add(hw)
     seeds = []
     for idx, neighbors in edges.items():
         degree = len(neighbors)
         if degree >= min_degree:
             x, y = nodes[idx]
-            seeds.append((Point(x, y), degree))
+            types = sorted(node_highways.get(idx, set()))
+            seeds.append((Point(x, y), degree, types))
     return seeds
 
 
@@ -472,6 +562,7 @@ def main() -> int:
     out_outputs.mkdir(parents=True, exist_ok=True)
 
     road_polys_by_drive: Dict[str, Polygon] = {}
+    drive_bboxes_wgs84: Dict[str, Tuple[float, float, float, float]] = {}
     for entry in entries:
         drive = str(entry.get("drive") or "")
         outputs_dir = Path(entry.get("outputs_dir") or "")
@@ -483,7 +574,11 @@ def main() -> int:
         road_feats = _read_geojson(road_path)
         road_polys = _collect_polys(road_feats)
         if road_polys:
-            road_polys_by_drive[drive] = unary_union(road_polys)
+            road_poly = unary_union(road_polys)
+            road_polys_by_drive[drive] = road_poly
+            bbox = _drive_bbox_wgs84(entry, road_poly)
+            if bbox is not None:
+                drive_bboxes_wgs84[drive] = bbox
 
     sat_features_by_drive: Dict[str, List[dict]] = {}
     sat_outputs_dir = Path(seeds_cfg.get("sat_outputs_dir", ""))
@@ -529,6 +624,8 @@ def main() -> int:
         osm_global_path = _find_latest_osm_path()
         if osm_global_path:
             print(f"[V2] using OSM roads from: {osm_global_path}")
+    if osm_global_path is None:
+        raise SystemExit("ERROR: drivable_roads.geojson not found. Set seeds.osm_roads_path to a drivable_roads.geojson path.")
 
     rows = []
     seen_drives = set()
@@ -604,22 +701,46 @@ def main() -> int:
             osm_path = osm_global_path or (outputs_dir / "drivable_roads.geojson")
             if osm_path is not None and osm_path.exists():
                 osm_feats = _read_geojson(osm_path)
+                all_counts = _osm_highway_counts(osm_feats)
                 allowlist = seeds_cfg.get("osm_highway_allowlist") or []
                 osm_feats = _filter_osm_features(osm_feats, allowlist)
-                osm_lines = _collect_lines(osm_feats)
+                filt_counts = _osm_highway_counts(osm_feats)
+                if filt_counts:
+                    print(f"[V2] OSM highway counts (filtered): {filt_counts}")
+                else:
+                    print(f"[V2][WARN] OSM highway counts empty after filter; raw counts: {all_counts}")
+                osm_lines, osm_types = _collect_lines_with_types(osm_feats)
+                if not osm_lines:
+                    missing_reasons.append("filtered_highway")
+                    osm_lines = []
+                    osm_types = []
+                is_wgs84 = False
+                if osm_lines:
+                    c0 = list(osm_lines[0].coords)[0]
+                    is_wgs84 = _is_wgs84_coords(c0[0], c0[1])
+                if is_wgs84:
+                    osm_lines_utm = [_to_utm32(line) for line in osm_lines]
+                else:
+                    osm_lines_utm = osm_lines
                 snap_m = float(seeds_cfg.get("osm_snap_m", 2.0))
                 min_degree = int(seeds_cfg.get("osm_min_degree", 3))
-                osm_seeds = _osm_degree_seeds(osm_lines, snap_m, min_degree)
+                osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, min_degree, osm_types)
                 if not osm_seeds and min_degree > 2:
-                    osm_seeds = _osm_degree_seeds(osm_lines, snap_m, 2)
+                    osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, 2, osm_types)
                     if osm_seeds:
                         print(f"[V2][WARN] no osm degree>={min_degree} seeds for {drive}, fallback to degree>=2")
                         min_degree = 2
                 if not osm_seeds:
-                    junctions = _centerline_junctions(osm_lines)
+                    junctions = _centerline_junctions(osm_lines_utm)
                     if junctions:
                         print(f"[V2][WARN] no osm degree seeds for {drive}, fallback to osm intersections")
                         for pt in junctions:
+                            pt_wgs = _to_wgs84(pt) if not is_wgs84 else pt
+                            bbox = drive_bboxes_wgs84.get(drive)
+                            if bbox is not None:
+                                bbox = _expand_bbox(bbox, 50.0)
+                                if not (bbox[0] <= pt_wgs.x <= bbox[2] and bbox[1] <= pt_wgs.y <= bbox[3]):
+                                    continue
                             seeds.append(
                                 {
                                     "seed": pt,
@@ -630,7 +751,13 @@ def main() -> int:
                                 }
                             )
                             seed_counts["osm"] += 1
-                for pt, degree in osm_seeds:
+                for pt, degree, hw_types in osm_seeds:
+                    pt_wgs = _to_wgs84(pt) if not is_wgs84 else pt
+                    bbox = drive_bboxes_wgs84.get(drive)
+                    if bbox is not None:
+                        bbox = _expand_bbox(bbox, 50.0)
+                        if not (bbox[0] <= pt_wgs.x <= bbox[2] and bbox[1] <= pt_wgs.y <= bbox[3]):
+                            continue
                     conf = min(1.0, 0.4 + 0.1 * float(degree))
                     seeds.append(
                         {
@@ -639,6 +766,8 @@ def main() -> int:
                             "reason": f"osm_degree{min_degree}",
                             "conf_prior": conf,
                             "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
+                            "degree": degree,
+                            "highway_types": hw_types,
                         }
                     )
                     seed_counts["osm"] += 1
@@ -699,7 +828,16 @@ def main() -> int:
             refined_seeds.append({**item, "seed": ref_seed, "refine_src": refine_src, "conf_refine": conf_refine})
 
             seed_features.append(
-                {"type": "Feature", "geometry": mapping(seed), "properties": {"src_seed": item["src_seed"], "reason": item["reason"]}}
+                {
+                    "type": "Feature",
+                    "geometry": mapping(seed),
+                    "properties": {
+                        "src_seed": item["src_seed"],
+                        "reason": item["reason"],
+                        "degree": item.get("degree"),
+                        "highway_types": item.get("highway_types"),
+                    },
+                }
             )
             refined_seed_features.append(
                 {
@@ -710,6 +848,8 @@ def main() -> int:
                         "reason": item["reason"],
                         "refine_src": refine_src,
                         "conf_refine": conf_refine,
+                        "degree": item.get("degree"),
+                        "highway_types": item.get("highway_types"),
                     },
                 }
             )

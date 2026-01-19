@@ -8,7 +8,7 @@ seeds:
   traj_min_sep_m: 25.0
   traj_search_radius_m: 30.0
   osm_enabled: true
-  osm_roads_path: ""
+  osm_roads_path: runs/drivable_roads.geojson
   osm_highway_allowlist:
     - residential
     - unclassified
