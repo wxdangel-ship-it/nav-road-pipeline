@@ -312,6 +312,32 @@ def _load_nn_best_cfg(path: Path) -> dict:
     return data
 
 
+def _load_centerlines_cfg(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if "centerlines" in data:
+        return data.get("centerlines") or {}
+    return data
+
+
+def _centerlines_defaults() -> dict:
+    return {
+        "mode": "both",
+        "step_m": 5.0,
+        "probe_m": 25.0,
+        "dual_width_threshold_m": 12.0,
+        "min_dual_sample_ratio": 0.6,
+        "min_segment_length_m": 30.0,
+        "dual_offset_mode": "fixed",
+        "dual_offset_m": 3.5,
+        "dual_offset_max_m": 8.0,
+        "dual_offset_margin_m": 1.0,
+        "dual_min_keep_ratio": 0.6,
+        "dual_fallback_single": True,
+    }
+
+
 def _fill_small_holes(geom, min_area: float):
     if min_area <= 0:
         return geom
@@ -487,75 +513,243 @@ def _longest_line(geom) -> LineString | None:
     return None
 
 
-def _build_centerline_features(
-    traj_line: LineString,
+def _offset_line(line: LineString, offset: float) -> LineString | None:
+    if line is None or line.is_empty:
+        return None
+    try:
+        if hasattr(line, "offset_curve"):
+            out = line.offset_curve(offset, join_style=2)
+        else:
+            out = line.parallel_offset(offset, join_style=2)
+    except Exception:
+        coords = np.asarray(line.coords)
+        out = _offset_polyline_coords(coords, offset)
+    return _longest_line(out)
+
+
+def _clip_line(line: LineString | None, road_poly, min_keep_ratio: float) -> LineString | None:
+    if line is None or line.is_empty:
+        return None
+    clipped = _merge_lines(line.intersection(road_poly))
+    if clipped is None:
+        return None
+    if clipped.length < min_keep_ratio * max(1e-6, line.length):
+        return None
+    return clipped
+
+
+def _centerline_width_stats(
+    line: LineString,
     road_poly,
+    step_m: float,
+    probe_m: float,
+) -> dict:
+    pts, widths = _width_profile(line, road_poly, step_m, probe_m=probe_m)
+    valid = [w for w in widths if w > 0]
+    if not valid:
+        return {
+            "width_median": 0.0,
+            "width_p95": 0.0,
+            "dual_sample_ratio": 0.0,
+            "sample_count": 0,
+        }
+    return {
+        "width_median": float(np.median(valid)),
+        "width_p95": float(np.percentile(valid, 95)),
+        "dual_sample_ratio": 0.0,
+        "sample_count": len(valid),
+        "widths": valid,
+    }
+
+
+def _centerline_dual_offset(
     width_median: float,
     mode: str,
-    dual_width_thresh: float,
-    dual_offset: Optional[float],
-    dual_min_len: float,
+    offset_fixed: float,
+    offset_max: float,
+    offset_margin: float,
     center_offset_default: float,
-) -> tuple[list[LineString], list[dict], float]:
+) -> float:
+    if mode == "half_width" and width_median > 0:
+        half = max(0.0, width_median * 0.5 - offset_margin)
+        return max(0.0, min(offset_max, half))
+    if offset_fixed > 0:
+        return offset_fixed
+    return max(0.0, center_offset_default)
+
+
+def _build_centerline_outputs(
+    traj_line: LineString,
+    road_poly,
+    center_cfg: dict,
+    center_offset_default: float,
+) -> dict:
     base_line = _merge_lines(traj_line.intersection(road_poly)) or traj_line
     base_len = float(base_line.length)
+    step_m = float(center_cfg["step_m"])
+    probe_m = float(center_cfg["probe_m"])
 
-    dual_ok = False
-    if mode in {"dual", "both"}:
-        dual_ok = True
-    elif mode == "auto":
-        dual_ok = width_median >= dual_width_thresh and base_len >= dual_min_len
+    width_stats = _centerline_width_stats(base_line, road_poly, step_m, probe_m)
+    widths = width_stats.get("widths") or []
+    width_median = float(width_stats["width_median"])
+    width_p95 = float(width_stats["width_p95"])
+    dual_ratio = 0.0
+    if widths:
+        dual_ratio = sum(1 for w in widths if w >= center_cfg["dual_width_threshold_m"]) / len(widths)
+    width_stats["dual_sample_ratio"] = dual_ratio
 
-    if dual_offset is None:
-        if width_median > 0:
-            dual_offset = max(3.0, min(12.0, width_median * 0.35))
-        else:
-            dual_offset = max(3.0, min(12.0, center_offset_default))
+    dual_triggered = (
+        base_len >= float(center_cfg["min_segment_length_m"])
+        and dual_ratio >= float(center_cfg["min_dual_sample_ratio"])
+        and widths
+    )
 
-    features: list[dict] = []
-    lines: list[LineString] = []
+    offset_mode = str(center_cfg["dual_offset_mode"]).lower()
+    dual_offset = _centerline_dual_offset(
+        width_median,
+        offset_mode,
+        float(center_cfg["dual_offset_m"]),
+        float(center_cfg["dual_offset_max_m"]),
+        float(center_cfg["dual_offset_margin_m"]),
+        center_offset_default,
+    )
 
-    def _add_single():
-        line = base_line
-        lines.append(line)
-        features.append(
+    outputs: dict[str, list[dict]] = {"single": [], "dual": [], "both": [], "auto": []}
+    outputs_lines: dict[str, list[LineString]] = {"single": [], "dual": [], "both": [], "auto": []}
+    dual_fallback = False
+
+    def _make_single(mode_label: str) -> dict:
+        return {
+            "type": "Feature",
+            "geometry": mapping(base_line),
+            "properties": {
+                "lane_mode": "single",
+                "line_type": "single",
+                "side": "C",
+                "mode": mode_label,
+                "offset_m": 0.0,
+                "dual_triggered": bool(dual_triggered),
+            },
+        }
+
+    def _make_dual(mode_label: str) -> list[dict]:
+        if dual_offset <= 0:
+            return []
+        left = _offset_line(base_line, dual_offset)
+        right = _offset_line(base_line, -dual_offset)
+        left = _clip_line(left, road_poly, float(center_cfg["dual_min_keep_ratio"]))
+        right = _clip_line(right, road_poly, float(center_cfg["dual_min_keep_ratio"]))
+        if left is None or right is None:
+            return []
+        return [
             {
                 "type": "Feature",
-                "geometry": mapping(line),
-                "properties": {"lane_mode": "single", "offset_m": 0.0},
-            }
-        )
-
-    def _add_dual():
-        left, right = _build_centerlines(base_line, road_poly, float(dual_offset))
-        lines.extend([left, right])
-        features.extend(
-            [
-                {
-                    "type": "Feature",
-                    "geometry": mapping(left),
-                    "properties": {"lane_mode": "dual_left", "offset_m": float(dual_offset)},
+                "geometry": mapping(left),
+                "properties": {
+                    "lane_mode": "dual_left",
+                    "line_type": "dual",
+                    "side": "L",
+                    "mode": mode_label,
+                    "offset_m": float(dual_offset),
+                    "dual_triggered": bool(dual_triggered),
                 },
-                {
-                    "type": "Feature",
-                    "geometry": mapping(right),
-                    "properties": {"lane_mode": "dual_right", "offset_m": float(dual_offset)},
+            },
+            {
+                "type": "Feature",
+                "geometry": mapping(right),
+                "properties": {
+                    "lane_mode": "dual_right",
+                    "line_type": "dual",
+                    "side": "R",
+                    "mode": mode_label,
+                    "offset_m": float(dual_offset),
+                    "dual_triggered": bool(dual_triggered),
                 },
-            ]
-        )
+            },
+        ]
 
-    if mode == "single":
-        _add_single()
-    elif mode == "dual":
-        _add_dual() if dual_ok else _add_single()
+    outputs["single"].append(_make_single("single"))
+    outputs_lines["single"].append(base_line)
+
+    dual_features = _make_dual("dual")
+    if dual_features:
+        outputs["dual"].extend(dual_features)
+        outputs_lines["dual"].extend([shape(f["geometry"]) for f in dual_features])
+    else:
+        dual_fallback = True
+
+    mode = str(center_cfg["mode"]).lower()
+    if mode == "dual":
+        if dual_features:
+            outputs["auto"] = dual_features
+            outputs_lines["auto"] = outputs_lines["dual"]
+        elif center_cfg.get("dual_fallback_single", True):
+            outputs["auto"] = outputs["single"]
+            outputs_lines["auto"] = outputs_lines["single"]
     elif mode == "both":
-        _add_single()
-        if dual_ok:
-            _add_dual()
-    else:  # auto
-        _add_dual() if dual_ok else _add_single()
+        outputs["both"] = outputs["single"] + (dual_features if dual_features else [])
+        outputs_lines["both"] = outputs_lines["single"] + (outputs_lines["dual"] if dual_features else [])
+        outputs["auto"] = outputs["both"]
+        outputs_lines["auto"] = outputs_lines["both"]
+    elif mode == "auto":
+        if dual_triggered and dual_features:
+            outputs["auto"] = dual_features
+            outputs_lines["auto"] = outputs_lines["dual"]
+        else:
+            outputs["auto"] = outputs["single"]
+            outputs_lines["auto"] = outputs_lines["single"]
+    else:  # single
+        outputs["auto"] = outputs["single"]
+        outputs_lines["auto"] = outputs_lines["single"]
 
-    return lines, features, float(dual_offset)
+    if dual_fallback and outputs.get("auto"):
+        for feat in outputs["auto"]:
+            props = feat.get("properties") or {}
+            props["dual_fallback"] = 1
+            feat["properties"] = props
+
+    return {
+        "outputs": outputs,
+        "outputs_lines": outputs_lines,
+        "active_features": outputs["auto"],
+        "active_lines": outputs_lines["auto"],
+        "dual_triggered": bool(dual_triggered),
+        "dual_offset_m": float(dual_offset),
+        "dual_fallback": bool(dual_fallback),
+        "width_median": width_median,
+        "width_p95": width_p95,
+        "dual_sample_ratio": float(dual_ratio),
+    }
+
+
+def _write_centerlines_outputs(
+    out_dir: Path,
+    outputs: dict,
+    wgs84: Transformer,
+) -> None:
+    def _with_mode(features: list[dict], mode: str) -> list[dict]:
+        out = []
+        for feat in features:
+            props = dict(feat.get("properties") or {})
+            props["mode"] = mode
+            out.append({"type": "Feature", "geometry": feat.get("geometry"), "properties": props})
+        return out
+
+    single = _with_mode(outputs.get("single") or [], "single")
+    dual = _with_mode(outputs.get("dual") or [], "dual")
+    both = _with_mode(outputs.get("both") or [], "both")
+    auto = _with_mode(outputs.get("auto") or [], "auto")
+
+    _write_geojson(out_dir / "centerlines_single.geojson", single)
+    _write_geojson(out_dir / "centerlines_dual.geojson", dual)
+    _write_geojson(out_dir / "centerlines_both.geojson", both)
+    _write_geojson(out_dir / "centerlines_auto.geojson", auto)
+    _write_geojson(out_dir / "centerlines.geojson", auto)
+    _write_geojson_wgs84(out_dir / "centerlines_single_wgs84.geojson", single, wgs84)
+    _write_geojson_wgs84(out_dir / "centerlines_dual_wgs84.geojson", dual, wgs84)
+    _write_geojson_wgs84(out_dir / "centerlines_both_wgs84.geojson", both, wgs84)
+    _write_geojson_wgs84(out_dir / "centerlines_auto_wgs84.geojson", auto, wgs84)
+    _write_geojson_wgs84(out_dir / "centerlines_wgs84.geojson", auto, wgs84)
 
 
 def _heading_angles(coords: np.ndarray) -> np.ndarray:
@@ -724,7 +918,12 @@ def _ray_intersections(road_poly, origin: tuple[float, float], direction: tuple[
     return None
 
 
-def _width_profile(line: LineString, road_poly, step_m: float) -> tuple[list[tuple[float, float]], list[float]]:
+def _width_profile(
+    line: LineString,
+    road_poly,
+    step_m: float,
+    probe_m: float = 60.0,
+) -> tuple[list[tuple[float, float]], list[float]]:
     pts = _sample_line_points(line, step_m)
     if len(pts) < 2:
         return pts, []
@@ -742,8 +941,8 @@ def _width_profile(line: LineString, road_poly, step_m: float) -> tuple[list[tup
             widths.append(0.0)
             continue
         nx, ny = -dy / length, dx / length
-        w1 = _ray_intersections(road_poly, (coords[i, 0], coords[i, 1]), (nx, ny))
-        w2 = _ray_intersections(road_poly, (coords[i, 0], coords[i, 1]), (-nx, -ny))
+        w1 = _ray_intersections(road_poly, (coords[i, 0], coords[i, 1]), (nx, ny), max_dist=probe_m)
+        w2 = _ray_intersections(road_poly, (coords[i, 0], coords[i, 1]), (-nx, -ny), max_dist=probe_m)
         if w1 is None or w2 is None:
             widths.append(0.0)
         else:
@@ -975,6 +1174,7 @@ def main() -> int:
     ap.add_argument("--corridor-m", type=float, default=15.0, help="trajectory corridor width (m)")
     ap.add_argument("--simplify-m", type=float, default=1.2, help="geometry simplify meters")
     ap.add_argument("--centerline-offset-m", type=float, default=3.5, help="centerline offset (m)")
+    ap.add_argument("--centerlines-config", default="configs/centerlines.yaml", help="centerlines config yaml")
     ap.add_argument("--allow-empty-intersections", type=int, default=1, help="allow empty intersections without failing")
     ap.add_argument(
         "--intersection-backend",
@@ -1077,11 +1277,25 @@ def main() -> int:
         strong_open_m = _get_env_float("STRONG_OPEN_M", 1.2)
         strong_simplify_m = _get_env_float("STRONG_SIMPLIFY_M", 1.2)
         strong_min_hole_area_m2 = _get_env_float("STRONG_MIN_HOLE_AREA_M2", 350.0)
-        centerline_mode = _get_env_str("CENTERLINE_MODE", "auto").lower()
-        dual_width_thresh_m = _get_env_float("DUAL_WIDTH_THRESH_M", 18.0)
-        dual_min_len_m = _get_env_float("DUAL_MIN_LEN_M", 50.0)
-        dual_offset_raw = _get_env_str("DUAL_OFFSET_M", "auto").lower()
-        dual_offset_m = None if dual_offset_raw in {"auto", ""} else float(dual_offset_raw)
+        center_cfg = _centerlines_defaults()
+        center_cfg_path = Path(os.environ.get("CENTERLINES_CONFIG", "") or args.centerlines_config)
+        center_cfg.update(_load_centerlines_cfg(center_cfg_path))
+        env_mode = os.environ.get("CENTERLINE_MODE", "").strip()
+        if env_mode:
+            center_cfg["mode"] = env_mode
+        env_dual_width = os.environ.get("DUAL_WIDTH_THRESH_M", "").strip()
+        if env_dual_width:
+            center_cfg["dual_width_threshold_m"] = float(env_dual_width)
+        env_dual_len = os.environ.get("DUAL_MIN_LEN_M", "").strip()
+        if env_dual_len:
+            center_cfg["min_segment_length_m"] = float(env_dual_len)
+        env_dual_offset = os.environ.get("DUAL_OFFSET_M", "").strip().lower()
+        if env_dual_offset:
+            if env_dual_offset not in {"auto", ""}:
+                center_cfg["dual_offset_m"] = float(env_dual_offset)
+                center_cfg["dual_offset_mode"] = "fixed"
+
+        centerline_mode = str(center_cfg["mode"]).lower()
         inter_backend = _get_env_str("INTERSECTION_BACKEND", args.intersection_backend).lower()
         sat_patch_m = _get_env_float("SAT_PATCH_M", float(args.sat_patch_m))
         sat_conf_thr = _get_env_float("SAT_CONF_THR", float(args.sat_conf_thr))
@@ -1307,18 +1521,40 @@ def main() -> int:
             for p in inter_polys_final
         ]
 
-        center_lines, center_features, dual_offset_used = _build_centerline_features(
+        center_result = _build_centerline_outputs(
             traj_line=traj_line,
             road_poly=road_poly,
-            width_median=width_median,
-            mode=centerline_mode,
-            dual_width_thresh=dual_width_thresh_m,
-            dual_offset=dual_offset_m,
-            dual_min_len=dual_min_len_m,
+            center_cfg=center_cfg,
             center_offset_default=center_offset_m,
         )
+        center_outputs = center_result["outputs"]
+        for feats in center_outputs.values():
+            for feat in feats:
+                props = feat.get("properties") or {}
+                props["drive_id"] = args.drive
+                props["tile_id"] = args.drive
+                feat["properties"] = props
 
-        _write_geojson(out_dir / "centerlines.geojson", center_features)
+        wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+        _write_centerlines_outputs(out_dir, center_outputs, wgs84)
+        center_features = center_result["active_features"]
+        center_lines = center_result["active_lines"]
+        dual_offset_used = center_result["dual_offset_m"]
+        dual_triggered = bool(center_result["dual_triggered"])
+        center_dual_ratio = float(center_result["dual_sample_ratio"])
+
+        single_feats = center_outputs.get("single") or []
+        dual_feats = center_outputs.get("dual") or []
+        single_lines = [shape(f.get("geometry")) for f in single_feats if f.get("geometry")]
+        dual_lines = [shape(f.get("geometry")) for f in dual_feats if f.get("geometry")]
+        single_len = float(sum(l.length for l in single_lines))
+        dual_len = float(sum(l.length for l in dual_lines))
+        avg_offset = None
+        if dual_feats:
+            offsets = [abs(float(f.get("properties", {}).get("offset_m") or 0.0)) for f in dual_feats]
+            avg_offset = float(sum(offsets) / max(1, len(offsets)))
+        dual_triggered_segments = 1 if dual_triggered else 0
+        total_segments = 1 if center_lines else 0
         _write_geojson(out_dir / "road_polygon.geojson", [{"type": "Feature", "geometry": mapping(road_poly), "properties": {}}])
         _write_geojson(out_dir / "intersections.geojson", inter_features)
         _write_geojson(out_dir / "intersections_algo.geojson", inter_features_algo)
@@ -1390,11 +1626,19 @@ def main() -> int:
             "outputs": {
                 "road_polygon": "road_polygon.geojson",
                 "centerlines": "centerlines.geojson",
+                "centerlines_single": "centerlines_single.geojson",
+                "centerlines_dual": "centerlines_dual.geojson",
+                "centerlines_both": "centerlines_both.geojson",
+                "centerlines_auto": "centerlines_auto.geojson",
                 "intersections": "intersections.geojson",
                 "intersections_algo": "intersections_algo.geojson",
                 "intersections_sat": "intersections_sat.geojson",
                 "road_polygon_wgs84": "road_polygon_wgs84.geojson",
                 "centerlines_wgs84": "centerlines_wgs84.geojson",
+                "centerlines_single_wgs84": "centerlines_single_wgs84.geojson",
+                "centerlines_dual_wgs84": "centerlines_dual_wgs84.geojson",
+                "centerlines_both_wgs84": "centerlines_both_wgs84.geojson",
+                "centerlines_auto_wgs84": "centerlines_auto_wgs84.geojson",
                 "intersections_wgs84": "intersections_wgs84.geojson",
                 "intersections_algo_wgs84": "intersections_algo_wgs84.geojson",
                 "intersections_sat_wgs84": "intersections_sat_wgs84.geojson",
@@ -1414,6 +1658,14 @@ def main() -> int:
             "centerline_1_length_m": round(line_lengths[0], 3) if len(line_lengths) > 0 else 0.0,
             "centerline_2_length_m": round(line_lengths[1], 3) if len(line_lengths) > 1 else 0.0,
             "centerline_total_length_m": round(total_len, 3),
+            "centerlines_single_cnt": int(len(single_lines)),
+            "centerlines_single_len_m": round(single_len, 3),
+            "centerlines_dual_cnt": int(len(dual_lines)),
+            "centerlines_dual_len_m": round(dual_len, 3),
+            "dual_ratio": round((dual_len / max(1e-6, single_len)), 4),
+            "dual_triggered_segments": int(dual_triggered_segments),
+            "centerlines_segments_total": int(total_segments),
+            "centerlines_avg_offset_m": round(avg_offset, 3) if avg_offset is not None else None,
             "centerlines_in_polygon_ratio": round(center_in_poly_ratio, 4),
             "intersections_count": int(len(inter_polys_final)),
             "intersections_area_total_m2": round(inter_area_total_final, 3),
@@ -1466,6 +1718,14 @@ def main() -> int:
                 "centerline_total_len_m": qc["centerline_total_length_m"],
                 "centerline_total_length_m": qc["centerline_total_length_m"],
                 "centerlines_in_polygon_ratio": qc["centerlines_in_polygon_ratio"],
+                "centerlines_single_cnt": qc["centerlines_single_cnt"],
+                "centerlines_single_len_m": qc["centerlines_single_len_m"],
+                "centerlines_dual_cnt": qc["centerlines_dual_cnt"],
+                "centerlines_dual_len_m": qc["centerlines_dual_len_m"],
+                "dual_ratio": qc["dual_ratio"],
+                "dual_triggered_segments": qc["dual_triggered_segments"],
+                "centerlines_segments_total": qc["centerlines_segments_total"],
+                "centerlines_avg_offset_m": qc["centerlines_avg_offset_m"],
                 "road_component_count_before": qc["road_component_count_before"],
                 "road_component_count_after": qc["road_component_count_after"],
                 "intersections_count": qc["intersections_count"],
@@ -1483,8 +1743,9 @@ def main() -> int:
                 "width_p95_m": qc["width_p95_m"],
                 "centerline_mode": centerline_mode,
                 "dual_offset_m": round(dual_offset_used, 3),
-                "dual_width_thresh_m": round(dual_width_thresh_m, 3),
-                "dual_min_len_m": round(dual_min_len_m, 3),
+                "dual_width_thresh_m": round(center_cfg["dual_width_threshold_m"], 3),
+                "dual_min_len_m": round(center_cfg["min_segment_length_m"], 3),
+                "centerline_dual_ratio": round(center_dual_ratio, 4),
                 "post_mask_close_m": round(post_mask_close_m, 3),
                 "post_mask_open_m": round(post_mask_open_m, 3),
                 "post_min_component_m2": round(post_min_component_m2, 3),
@@ -1506,9 +1767,7 @@ def main() -> int:
             }
         )
 
-        wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
         _write_geojson_wgs84(out_dir / "road_polygon_wgs84.geojson", [{"type": "Feature", "geometry": mapping(road_poly), "properties": {}}], wgs84)
-        _write_geojson_wgs84(out_dir / "centerlines_wgs84.geojson", center_features, wgs84)
         _write_geojson_wgs84(out_dir / "intersections_wgs84.geojson", inter_features, wgs84)
         _write_geojson_wgs84(out_dir / "intersections_algo_wgs84.geojson", inter_features_algo, wgs84)
         crs_meta = {
@@ -1524,11 +1783,19 @@ def main() -> int:
         print("outputs:")
         print(f"- {out_dir / 'road_polygon.geojson'}")
         print(f"- {out_dir / 'centerlines.geojson'}")
+        print(f"- {out_dir / 'centerlines_single.geojson'}")
+        print(f"- {out_dir / 'centerlines_dual.geojson'}")
+        print(f"- {out_dir / 'centerlines_both.geojson'}")
+        print(f"- {out_dir / 'centerlines_auto.geojson'}")
         print(f"- {out_dir / 'intersections.geojson'}")
         print(f"- {out_dir / 'intersections_algo.geojson'}")
         print(f"- {out_dir / 'intersections_sat.geojson'}")
         print(f"- {out_dir / 'road_polygon_wgs84.geojson'}")
         print(f"- {out_dir / 'centerlines_wgs84.geojson'}")
+        print(f"- {out_dir / 'centerlines_single_wgs84.geojson'}")
+        print(f"- {out_dir / 'centerlines_dual_wgs84.geojson'}")
+        print(f"- {out_dir / 'centerlines_both_wgs84.geojson'}")
+        print(f"- {out_dir / 'centerlines_auto_wgs84.geojson'}")
         print(f"- {out_dir / 'intersections_wgs84.geojson'}")
         print(f"- {out_dir / 'intersections_algo_wgs84.geojson'}")
         print(f"- {out_dir / 'intersections_sat_wgs84.geojson'}")

@@ -89,6 +89,9 @@ def _read_summary(outputs_dir: Path) -> Dict[str, object]:
 
 def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict) -> None:
     center_frames = []
+    center_single_frames = []
+    center_dual_frames = []
+    center_both_frames = []
     road_frames = []
     inter_frames = []
     inter_algo_frames = []
@@ -106,6 +109,9 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
         sat_conf = summary.get("sat_confidence_avg")
 
         center_path = outputs_dir / f"centerlines{suffix}.geojson"
+        center_single_path = outputs_dir / f"centerlines_single{suffix}.geojson"
+        center_dual_path = outputs_dir / f"centerlines_dual{suffix}.geojson"
+        center_both_path = outputs_dir / f"centerlines_both{suffix}.geojson"
         road_path = outputs_dir / f"road_polygon{suffix}.geojson"
         inter_path = outputs_dir / f"intersections{suffix}.geojson"
         inter_algo_path = outputs_dir / f"intersections_algo{suffix}.geojson"
@@ -119,6 +125,38 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
             gdf["geom_run_id"] = run_id
             gdf["candidate_id"] = candidate_id
             center_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines{suffix}"})
+        if center_single_path.exists():
+            gdf = gpd.read_file(center_single_path)
+            gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
+            gdf["geom_run_id"] = run_id
+            gdf["candidate_id"] = candidate_id
+            center_single_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines_single{suffix}"})
+        if center_dual_path.exists():
+            gdf = gpd.read_file(center_dual_path)
+            gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
+            gdf["geom_run_id"] = run_id
+            gdf["candidate_id"] = candidate_id
+            center_dual_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines_dual{suffix}"})
+        if center_both_path.exists():
+            gdf = gpd.read_file(center_both_path)
+            gdf["drive"] = drive
+            gdf["drive_id"] = drive
+            gdf["tile_id"] = drive
+            gdf["geom_run_id"] = run_id
+            gdf["candidate_id"] = candidate_id
+            center_both_frames.append(gdf)
+        else:
+            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines_both{suffix}"})
         if road_path.exists():
             gdf = gpd.read_file(road_path)
             gdf["drive"] = drive
@@ -178,9 +216,29 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
             report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_final{suffix}"})
 
     if center_frames:
-        gpd.GeoDataFrame(pd.concat(center_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_centerlines{suffix}.geojson", driver="GeoJSON"
-        )
+        merged_center = gpd.GeoDataFrame(pd.concat(center_frames, ignore_index=True))
+        merged_center.to_file(out_dir / f"merged_centerlines{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_centerlines{suffix}"] = int(len(merged_center))
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines{suffix}"})
+    if center_single_frames:
+        merged_center_single = gpd.GeoDataFrame(pd.concat(center_single_frames, ignore_index=True))
+        merged_center_single.to_file(out_dir / f"merged_centerlines_single{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_centerlines_single{suffix}"] = int(len(merged_center_single))
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines_single{suffix}"})
+    if center_dual_frames:
+        merged_center_dual = gpd.GeoDataFrame(pd.concat(center_dual_frames, ignore_index=True))
+        merged_center_dual.to_file(out_dir / f"merged_centerlines_dual{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_centerlines_dual{suffix}"] = int(len(merged_center_dual))
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines_dual{suffix}"})
+    if center_both_frames:
+        merged_center_both = gpd.GeoDataFrame(pd.concat(center_both_frames, ignore_index=True))
+        merged_center_both.to_file(out_dir / f"merged_centerlines_both{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_centerlines_both{suffix}"] = int(len(merged_center_both))
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines_both{suffix}"})
     if road_frames:
         gpd.GeoDataFrame(pd.concat(road_frames, ignore_index=True)).to_file(
             out_dir / f"merged_road_polygon{suffix}.geojson", driver="GeoJSON"
@@ -188,6 +246,7 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
     if inter_frames:
         merged = gpd.GeoDataFrame(pd.concat(inter_frames, ignore_index=True))
         merged.to_file(out_dir / f"merged_intersections{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_intersections{suffix}"] = int(len(merged))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections{suffix}"})
     def _coerce_conf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -209,6 +268,7 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
         merged_final = gpd.GeoDataFrame(pd.concat(inter_final_frames, ignore_index=True))
         merged_final = _coerce_conf(merged_final)
         merged_final.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_intersections_final{suffix}"] = int(len(merged_final))
         _write_filtered(
             merged_final,
             "sat",
@@ -222,18 +282,19 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
     elif inter_frames:
         merged = _coerce_conf(merged)
         merged.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_intersections_final{suffix}"] = int(len(merged))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_final{suffix}"})
     if inter_algo_frames:
-        gpd.GeoDataFrame(pd.concat(inter_algo_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_intersections_algo{suffix}.geojson", driver="GeoJSON"
-        )
+        merged_algo = gpd.GeoDataFrame(pd.concat(inter_algo_frames, ignore_index=True))
+        merged_algo.to_file(out_dir / f"merged_intersections_algo{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_intersections_algo{suffix}"] = int(len(merged_algo))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_algo{suffix}"})
     if inter_sat_frames:
-        gpd.GeoDataFrame(pd.concat(inter_sat_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_intersections_sat{suffix}.geojson", driver="GeoJSON"
-        )
+        merged_sat = gpd.GeoDataFrame(pd.concat(inter_sat_frames, ignore_index=True))
+        merged_sat.to_file(out_dir / f"merged_intersections_sat{suffix}.geojson", driver="GeoJSON")
+        report.setdefault("feature_count", {})[f"merged_intersections_sat{suffix}"] = int(len(merged_sat))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_sat{suffix}"})
 
@@ -269,6 +330,9 @@ def main() -> int:
     report = {}
     _merge_layers(entries, "", out_dir, report)
     _merge_layers(entries, "_wgs84", out_dir, report)
+    report.setdefault("missing_layer", [])
+    report.setdefault("empty_layer", [])
+    report.setdefault("feature_count", {})
     (out_dir / "merge_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 

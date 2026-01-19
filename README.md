@@ -34,6 +34,19 @@ Missing reason enums (per-drive CSV/JSON):
 QGIS layer suggestion:
 - `road_polygon_wgs84.geojson` -> `intersections_algo_wgs84.geojson` -> `intersections_sat_wgs84.geojson` -> `intersections_final_wgs84.geojson`
 
+## Centerlines modes
+- Config: `configs/centerlines.yaml`
+- Modes:
+  - `single`: only base centerline
+  - `dual`: dual offsets only (fallback to single if `dual_fallback_single=true`)
+  - `both`: single + dual if dual can be generated
+  - `auto`: dual when width/ratio/length thresholds pass, otherwise single
+- Dual trigger: `dual_width_threshold_m` + `min_dual_sample_ratio` + `min_segment_length_m`
+- Offset strategy:
+  - `dual_offset_mode=fixed`: use `dual_offset_m`
+  - `dual_offset_mode=half_width`: offset by half width minus `dual_offset_margin_m`, capped by `dual_offset_max_m`
+- QGIS: load `centerlines_single_wgs84.geojson` + `centerlines_dual_wgs84.geojson` + `centerlines_both_wgs84.geojson`
+
 ## DOP20 WMS download (Golden8 AOI)
 - Build AOI:
   - `python tools\\build_golden8_aoi.py --index runs\\sweep_geom_postopt_20260119_061421\\postopt_index.jsonl --out-dir runs\\golden8_aoi --margin-m 2000 --crs-epsg 32632`

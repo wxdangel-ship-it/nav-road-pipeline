@@ -164,7 +164,15 @@ def _agg_qc(qc_list: list[dict]) -> dict:
     if not qc_list:
         return {}
     def _avg(key: str) -> float:
-        vals = [float(q.get(key, 0.0)) for q in qc_list]
+        vals = []
+        for q in qc_list:
+            v = q.get(key, 0.0)
+            if v is None:
+                v = 0.0
+            try:
+                vals.append(float(v))
+            except (TypeError, ValueError):
+                vals.append(0.0)
         return sum(vals) / max(1, len(vals))
     def _min(key: str) -> float:
         return min(float(q.get(key, 0.0)) for q in qc_list)
@@ -175,6 +183,13 @@ def _agg_qc(qc_list: list[dict]) -> dict:
         "road_bbox_diag_m": round(_avg("road_bbox_diag_m"), 3),
         "road_component_count_before": int(_max("road_component_count_before")),
         "centerline_total_length_m": round(_avg("centerline_total_length_m"), 3),
+        "centerlines_single_cnt": int(round(_avg("centerlines_single_cnt"))),
+        "centerlines_single_len_m": round(_avg("centerlines_single_len_m"), 3),
+        "centerlines_dual_cnt": int(round(_avg("centerlines_dual_cnt"))),
+        "centerlines_dual_len_m": round(_avg("centerlines_dual_len_m"), 3),
+        "dual_ratio": round(_avg("dual_ratio"), 4),
+        "dual_triggered_segments": int(round(_avg("dual_triggered_segments"))),
+        "centerlines_avg_offset_m": round(_avg("centerlines_avg_offset_m"), 3),
         "centerlines_in_polygon_ratio": round(_min("centerlines_in_polygon_ratio"), 4),
         "intersections_count": int(round(_avg("intersections_count"))),
         "intersections_area_total_m2": round(_avg("intersections_area_total_m2"), 3),

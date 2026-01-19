@@ -6,5 +6,9 @@ if not exist .venv\Scripts\python.exe (
   call .\scripts\setup.cmd
 )
 
-.venv\Scripts\python.exe -m pipeline.build_geom %*
+set "ARGS=%*"
+if not "%CENTERLINES_CONFIG%"=="" (
+  set "ARGS=%ARGS% --centerlines-config %CENTERLINES_CONFIG%"
+)
+.venv\Scripts\python.exe -m pipeline.build_geom %ARGS%
 endlocal
