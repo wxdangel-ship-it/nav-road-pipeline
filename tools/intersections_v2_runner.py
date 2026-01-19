@@ -61,6 +61,15 @@ def _to_wgs84(features: List[dict], crs_epsg: int) -> List[dict]:
     return out
 
 
+def _geom_to_wgs84(geom):
+    utm = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+    return geom_transform(utm.transform, geom)
+
+
+def _is_wgs84_coords(x: float, y: float) -> bool:
+    return abs(x) <= 180 and abs(y) <= 90
+
+
 def _find_latest_osm_path() -> Optional[Path]:
     candidates = list(Path("runs").rglob("drivable_roads.geojson"))
     if not candidates:
@@ -720,8 +729,10 @@ def main() -> int:
                     is_wgs84 = _is_wgs84_coords(c0[0], c0[1])
                 if is_wgs84:
                     osm_lines_utm = [_to_utm32(line) for line in osm_lines]
+                    seeds_in_utm = True
                 else:
                     osm_lines_utm = osm_lines
+                    seeds_in_utm = False
                 snap_m = float(seeds_cfg.get("osm_snap_m", 2.0))
                 min_degree = int(seeds_cfg.get("osm_min_degree", 3))
                 osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, min_degree, osm_types)
@@ -735,7 +746,7 @@ def main() -> int:
                     if junctions:
                         print(f"[V2][WARN] no osm degree seeds for {drive}, fallback to osm intersections")
                         for pt in junctions:
-                            pt_wgs = _to_wgs84(pt) if not is_wgs84 else pt
+                            pt_wgs = _geom_to_wgs84(pt) if seeds_in_utm else pt
                             bbox = drive_bboxes_wgs84.get(drive)
                             if bbox is not None:
                                 bbox = _expand_bbox(bbox, 50.0)
@@ -752,7 +763,7 @@ def main() -> int:
                             )
                             seed_counts["osm"] += 1
                 for pt, degree, hw_types in osm_seeds:
-                    pt_wgs = _to_wgs84(pt) if not is_wgs84 else pt
+                    pt_wgs = _geom_to_wgs84(pt) if seeds_in_utm else pt
                     bbox = drive_bboxes_wgs84.get(drive)
                     if bbox is not None:
                         bbox = _expand_bbox(bbox, 50.0)
@@ -884,6 +895,10 @@ def main() -> int:
                 gate_fail_counts["other"] += 1
                 if metrics.get("local") is not None:
                     poly = metrics["local"]
+                else:
+                    continue
+            if poly is None or poly.is_empty:
+                continue
             if metrics.get("has_arms") == 0:
                 no_arms_count += 1
 

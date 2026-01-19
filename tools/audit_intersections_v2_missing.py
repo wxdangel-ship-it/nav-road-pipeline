@@ -265,8 +265,8 @@ def main() -> int:
     args = ap.parse_args()
 
     v2_dir = Path(args.v2_dir)
-    outputs_dir = v2_dir / "outputs"
-    audit_dir = outputs_dir / "audit"
+    v2_outputs_dir = v2_dir / "outputs"
+    audit_dir = v2_outputs_dir / "audit"
     audit_dir.mkdir(parents=True, exist_ok=True)
 
     entries = _read_index(Path(args.index))
@@ -280,11 +280,11 @@ def main() -> int:
     road_bboxes: Dict[str, Tuple[float, float, float, float]] = {}
     for entry in entries:
         drive = str(entry.get("drive") or "")
-        outputs_dir = Path(entry.get("outputs_dir") or "")
-        if not drive or not outputs_dir.exists():
+        geom_outputs_dir = Path(entry.get("outputs_dir") or "")
+        if not drive or not geom_outputs_dir.exists():
             continue
-        road_wgs_path = outputs_dir / "road_polygon_wgs84.geojson"
-        road_path = outputs_dir / "road_polygon.geojson"
+        road_wgs_path = geom_outputs_dir / "road_polygon_wgs84.geojson"
+        road_path = geom_outputs_dir / "road_polygon.geojson"
         road_feats = _read_geojson(road_wgs_path) if road_wgs_path.exists() else _read_geojson(road_path)
         polys = _collect_polys(road_feats)
         if not polys:
@@ -301,7 +301,7 @@ def main() -> int:
 
     for entry in entries:
         drive = str(entry.get("drive") or "")
-        drive_out = outputs_dir / drive
+        drive_out = v2_outputs_dir / drive
         seed_path = drive_out / "intersections_seeds.geojson"
         final_path = drive_out / "intersections_final_wgs84.geojson"
         seeds = _read_geojson(seed_path) if seed_path.exists() else []
@@ -388,7 +388,7 @@ def main() -> int:
     final_polys = []
     for entry in entries:
         drive = str(entry.get("drive") or "")
-        final_path = outputs_dir / drive / "intersections_final_wgs84.geojson"
+        final_path = v2_outputs_dir / drive / "intersections_final_wgs84.geojson"
         if not final_path.exists():
             continue
         final_polys.extend(_collect_polys(_read_geojson(final_path)))
