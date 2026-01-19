@@ -149,7 +149,7 @@ def _write_missing_reason_summary(out_csv: Path, expected_drives: List[str], rep
     non_ok = []
     for row in rows:
         reason = (row.get("missing_reason") or "").strip()
-        norm = "" if reason in {"", "N/A"} else reason
+        norm = "" if reason in {"", "N/A", "OK"} else reason
         counts[norm or "OK"] += 1
         if norm:
             non_ok.append({"drive_id": row.get("drive_id"), "reason": norm})

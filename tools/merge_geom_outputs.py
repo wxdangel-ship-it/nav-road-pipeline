@@ -27,6 +27,56 @@ def _load_best_candidate(path: Path) -> str:
     return str(data.get("candidate_id") or "")
 
 
+def _select_best_from_per_drive(per_drive_csv: Path) -> str:
+    if not per_drive_csv.exists():
+        return ""
+    import csv
+
+    rows = []
+    with per_drive_csv.open("r", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return ""
+    scores: Dict[str, List[float]] = {}
+    for row in rows:
+        cid = str(row.get("candidate_id") or "")
+        if not cid:
+            continue
+        try:
+            score = float(row.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        scores.setdefault(cid, []).append(score)
+    if not scores:
+        return ""
+    best = max(scores.items(), key=lambda kv: sum(kv[1]) / max(1, len(kv[1])))
+    return best[0]
+
+
+def _load_candidate_post(candidates_path: Path, candidate_id: str) -> dict:
+    data = yaml.safe_load(candidates_path.read_text(encoding="utf-8")) or {}
+    for cand in data.get("candidates", []) or []:
+        if cand.get("candidate_id") == candidate_id:
+            return {"candidate_id": candidate_id, **(cand.get("post") or {})}
+    return {}
+
+
+def _ensure_best_postopt(best_path: Path, index_path: Path) -> str:
+    if best_path.exists():
+        return _load_best_candidate(best_path)
+    run_dir = index_path.parent
+    per_drive_csv = run_dir / "full_report_per_drive.csv"
+    best_candidate = _select_best_from_per_drive(per_drive_csv)
+    if not best_candidate:
+        return ""
+    candidates_path = Path("configs") / "geom_postopt_candidates.yaml"
+    payload = _load_candidate_post(candidates_path, best_candidate)
+    if not payload:
+        return ""
+    best_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return best_candidate
+
+
 def _read_summary(outputs_dir: Path) -> Dict[str, object]:
     summary_path = outputs_dir / "GeomSummary.json"
     if not summary_path.exists():
@@ -172,7 +222,7 @@ def main() -> int:
     if not index_path.exists():
         raise SystemExit(f"ERROR: index not found: {index_path}")
 
-    best_candidate = _load_best_candidate(Path(args.best_postopt))
+    best_candidate = _ensure_best_postopt(Path(args.best_postopt), index_path)
     if not best_candidate:
         raise SystemExit("ERROR: best_postopt candidate_id not found")
 
