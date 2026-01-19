@@ -90,9 +90,10 @@ def _assign_sat_features_to_drives(
     sat_feats: List[dict],
     entries: List[dict],
     road_polys: Dict[str, Polygon],
-) -> Tuple[Dict[str, List[dict]], dict]:
+) -> Tuple[Dict[str, List[dict]], dict, List[dict]]:
     by_drive: Dict[str, List[dict]] = {}
     unmatched = 0
+    unmatched_feats: List[dict] = []
     for feat in sat_feats:
         geom = feat.get("geometry")
         if not geom:
@@ -120,6 +121,7 @@ def _assign_sat_features_to_drives(
                     best_area = area
         if matched is None:
             unmatched += 1
+            unmatched_feats.append(feat)
             continue
         props = feat.get("properties") or {}
         props["drive_id"] = matched
@@ -131,7 +133,7 @@ def _assign_sat_features_to_drives(
         "sat_matched": sum(len(v) for v in by_drive.values()),
         "sat_unmatched": unmatched,
     }
-    return by_drive, stats
+    return by_drive, stats, unmatched_feats
 
 
 def _collect_lines(features: List[dict]) -> List[LineString]:
@@ -164,6 +166,27 @@ def _collect_polys(features: List[dict]) -> List[Polygon]:
         elif shp.geom_type == "MultiPolygon":
             polys.extend(list(shp.geoms))
     return polys
+
+
+def _filter_osm_features(features: List[dict], allowlist: List[str]) -> List[dict]:
+    if not allowlist:
+        return features
+    allow = {str(a).strip() for a in allowlist if str(a).strip()}
+    if not allow:
+        return features
+    kept = []
+    for feat in features:
+        props = feat.get("properties") or {}
+        hw = props.get("highway")
+        if hw is None:
+            continue
+        if isinstance(hw, (list, tuple)):
+            values = {str(v).strip() for v in hw}
+        else:
+            values = {str(hw).strip()}
+        if values & allow:
+            kept.append(feat)
+    return kept
 
 
 def _snap_point(point: Point, nodes: List[Tuple[float, float]], grid: Dict[Tuple[int, int], List[int]], snap_m: float) -> int:
@@ -472,11 +495,24 @@ def main() -> int:
             sat_feats = _read_geojson(sat_path)
             missing_drive = sum(1 for f in sat_feats if not (f.get("properties") or {}).get("drive_id"))
             if missing_drive:
-                sat_features_by_drive, stats = _assign_sat_features_to_drives(sat_feats, entries, road_polys_by_drive)
+                sat_features_by_drive, stats, unmatched = _assign_sat_features_to_drives(sat_feats, entries, road_polys_by_drive)
                 print(
                     f"[V2] SAT assign: total={stats['sat_total']} matched={stats['sat_matched']} "
                     f"unmatched={stats['sat_unmatched']}"
                 )
+                if unmatched:
+                    sat_unassigned = out_outputs / "sat_unassigned.csv"
+                    rows = []
+                    for feat in unmatched:
+                        props = feat.get("properties") or {}
+                        rows.append(
+                            {
+                                "sat_confidence": props.get("sat_confidence"),
+                                "drive_id": props.get("drive_id"),
+                                "tile_id": props.get("tile_id"),
+                            }
+                        )
+                    _write_csv(sat_unassigned, rows)
             else:
                 for feat in sat_feats:
                     drive_id = str((feat.get("properties") or {}).get("drive_id") or "")
@@ -568,6 +604,8 @@ def main() -> int:
             osm_path = osm_global_path or (outputs_dir / "drivable_roads.geojson")
             if osm_path is not None and osm_path.exists():
                 osm_feats = _read_geojson(osm_path)
+                allowlist = seeds_cfg.get("osm_highway_allowlist") or []
+                osm_feats = _filter_osm_features(osm_feats, allowlist)
                 osm_lines = _collect_lines(osm_feats)
                 snap_m = float(seeds_cfg.get("osm_snap_m", 2.0))
                 min_degree = int(seeds_cfg.get("osm_min_degree", 3))

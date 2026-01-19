@@ -9,6 +9,14 @@ seeds:
   traj_search_radius_m: 30.0
   osm_enabled: true
   osm_roads_path: ""
+  osm_highway_allowlist:
+    - residential
+    - unclassified
+    - tertiary
+    - secondary
+    - primary
+    - trunk
+    - service
   osm_snap_m: 2.0
   osm_min_degree: 3
   sat_enabled: true
