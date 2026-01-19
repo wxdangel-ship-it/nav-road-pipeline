@@ -459,8 +459,13 @@ def main() -> int:
     baseline = _load_baseline(Path(args.baseline))
     candidates, drives = _aggregate(entries, baseline, weights)
 
-    _write_csv(Path(args.out_csv), candidates)
-    _write_md(Path(args.out_md), candidates, drives)
+    out_csv = Path(args.out_csv)
+    out_md = Path(args.out_md)
+    out_drive_csv = out_csv.with_name(out_csv.stem + "_per_drive.csv")
+
+    _write_csv(out_csv, candidates)
+    _write_csv(out_drive_csv, drives)
+    _write_md(out_md, candidates, drives)
 
     if args.out_json:
         ranked = sorted(
