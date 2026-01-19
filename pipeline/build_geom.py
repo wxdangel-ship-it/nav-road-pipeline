@@ -18,6 +18,13 @@ import yaml
 from pipeline._io import ensure_dir, new_run_id
 from pipeline.nn.model_registry import load_model as load_nn_model
 from pipeline.sat_intersections import run_sat_intersections
+from pipeline.intersection_shape import (
+    arm_count as _arm_count,
+    aspect_ratio as _intersection_aspect_ratio,
+    circularity as _intersection_circularity,
+    overlap_with_road as _intersection_overlap_with_road,
+    refine_intersection_polygon as _refine_intersection_polygon,
+)
 
 try:
     from shapely import make_valid as _shapely_make_valid
@@ -335,6 +342,28 @@ def _centerlines_defaults() -> dict:
         "dual_offset_margin_m": 1.0,
         "dual_min_keep_ratio": 0.6,
         "dual_fallback_single": True,
+    }
+
+
+def _load_intersection_refine_cfg(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return data.get("shape_refine") or data
+
+
+def _intersection_refine_defaults() -> dict:
+    return {
+        "radius_m": 18.0,
+        "road_buffer_m": 1.0,
+        "arm_length_m": 25.0,
+        "arm_buffer_m": 6.0,
+        "simplify_m": 0.5,
+        "min_area_m2": 30.0,
+        "min_part_area_m2": 30.0,
+        "min_hole_area_m2": 30.0,
+        "max_circularity": 0.85,
+        "min_overlap_road": 0.7,
     }
 
 
@@ -1175,6 +1204,7 @@ def main() -> int:
     ap.add_argument("--simplify-m", type=float, default=1.2, help="geometry simplify meters")
     ap.add_argument("--centerline-offset-m", type=float, default=3.5, help="centerline offset (m)")
     ap.add_argument("--centerlines-config", default="configs/centerlines.yaml", help="centerlines config yaml")
+    ap.add_argument("--intersection-refine-config", default="configs/intersections_shape_refine.yaml", help="intersection refine config yaml")
     ap.add_argument("--allow-empty-intersections", type=int, default=1, help="allow empty intersections without failing")
     ap.add_argument(
         "--intersection-backend",
@@ -1296,6 +1326,9 @@ def main() -> int:
                 center_cfg["dual_offset_mode"] = "fixed"
 
         centerline_mode = str(center_cfg["mode"]).lower()
+        refine_cfg = _intersection_refine_defaults()
+        refine_cfg_path = Path(os.environ.get("INTERSECTION_REFINE_CONFIG", "") or args.intersection_refine_config)
+        refine_cfg.update(_load_intersection_refine_cfg(refine_cfg_path))
         inter_backend = _get_env_str("INTERSECTION_BACKEND", args.intersection_backend).lower()
         sat_patch_m = _get_env_float("SAT_PATCH_M", float(args.sat_patch_m))
         sat_conf_thr = _get_env_float("SAT_CONF_THR", float(args.sat_conf_thr))
@@ -1410,6 +1443,41 @@ def main() -> int:
         road_after = len(road_keep)
         road_poly = unary_union(road_keep) if road_keep else road_poly
 
+        center_result = _build_centerline_outputs(
+            traj_line=traj_line,
+            road_poly=road_poly,
+            center_cfg=center_cfg,
+            center_offset_default=center_offset_m,
+        )
+        center_outputs = center_result["outputs"]
+        for feats in center_outputs.values():
+            for feat in feats:
+                props = feat.get("properties") or {}
+                props["drive_id"] = args.drive
+                props["tile_id"] = args.drive
+                feat["properties"] = props
+
+        wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+        _write_centerlines_outputs(out_dir, center_outputs, wgs84)
+        center_features = center_result["active_features"]
+        center_lines = center_result["active_lines"]
+        dual_offset_used = center_result["dual_offset_m"]
+        dual_triggered = bool(center_result["dual_triggered"])
+        center_dual_ratio = float(center_result["dual_sample_ratio"])
+
+        single_feats = center_outputs.get("single") or []
+        dual_feats = center_outputs.get("dual") or []
+        single_lines = [shape(f.get("geometry")) for f in single_feats if f.get("geometry")]
+        dual_lines = [shape(f.get("geometry")) for f in dual_feats if f.get("geometry")]
+        single_len = float(sum(l.length for l in single_lines))
+        dual_len = float(sum(l.length for l in dual_lines))
+        avg_offset = None
+        if dual_feats:
+            offsets = [abs(float(f.get("properties", {}).get("offset_m") or 0.0)) for f in dual_feats]
+            avg_offset = float(sum(offsets) / max(1, len(offsets)))
+        dual_triggered_segments = 1 if dual_triggered else 0
+        total_segments = 1 if center_lines else 0
+
         inter_mode = str(args.inter_mode).lower()
         inter_pts: list[Point] = []
         width_median = 0.0
@@ -1466,14 +1534,69 @@ def main() -> int:
             inter_area_total = sum(p.area for p in inter_polys)
             inter_after = len(inter_polys)
         inter_polys_algo = list(inter_polys)
-        inter_features_algo = [
-            {
-                "type": "Feature",
-                "geometry": mapping(p),
-                "properties": {"backend_used": "algo"},
-            }
-            for p in inter_polys_algo
-        ]
+        debug_dir = out_dir / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        seed_features = []
+        local_features = []
+        arms_features = []
+        refined_features = []
+        refined_algo_polys: list[Polygon] = []
+        for idx, poly in enumerate(inter_polys_algo):
+            seed = inter_pts[idx] if idx < len(inter_pts) else poly.centroid
+            seed_features.append(
+                {"type": "Feature", "geometry": mapping(seed), "properties": {"idx": idx}}
+            )
+            refined, meta = _refine_intersection_polygon(
+                seed_pt=seed,
+                poly_candidate=poly,
+                road_polygon=road_poly,
+                centerlines=center_lines,
+                cfg=refine_cfg,
+            )
+            if meta.get("local") is not None:
+                local_features.append(
+                    {"type": "Feature", "geometry": mapping(meta["local"]), "properties": {"idx": idx}}
+                )
+            if meta.get("arms") is not None and not meta["arms"].is_empty:
+                arms_features.append(
+                    {"type": "Feature", "geometry": mapping(meta["arms"]), "properties": {"idx": idx}}
+                )
+            if refined is not None:
+                refined_algo_polys.append(refined)
+                refined_features.append(
+                    {"type": "Feature", "geometry": mapping(refined), "properties": {"idx": idx, "reason": meta.get("reason")}}
+                )
+        if seed_features:
+            _write_geojson(debug_dir / "intersections_seed_points.geojson", seed_features)
+        if local_features:
+            _write_geojson(debug_dir / "intersections_local_clip.geojson", local_features)
+        if arms_features:
+            _write_geojson(debug_dir / "intersections_arms.geojson", arms_features)
+        if refined_features:
+            _write_geojson(debug_dir / "intersections_refined.geojson", refined_features)
+        if refined_algo_polys:
+            inter_polys_algo = refined_algo_polys
+        inter_features_algo = []
+        for p in inter_polys_algo:
+            circ = _intersection_circularity(p)
+            aspect = _intersection_aspect_ratio(p)
+            overlap = _intersection_overlap_with_road(p, road_poly)
+            arms = _arm_count(p, center_lines, float(refine_cfg["arm_buffer_m"]))
+            inter_features_algo.append(
+                {
+                    "type": "Feature",
+                    "geometry": mapping(p),
+                    "properties": {
+                        "backend_used": "algo",
+                        "src": "algo",
+                        "shape_refined": 1,
+                        "circularity": round(circ, 4),
+                        "aspect_ratio": round(aspect, 4),
+                        "overlap_road": round(overlap, 4),
+                        "arm_count": int(arms),
+                    },
+                }
+            )
 
         sat_present = False
         sat_avg_conf = 0.0
@@ -1508,53 +1631,61 @@ def main() -> int:
                 inter_polys_final = inter_polys_sat
                 intersection_backend_used = "sat"
 
-        inter_features = [
-            {
-                "type": "Feature",
-                "geometry": mapping(p),
-                "properties": {
-                    "backend_used": intersection_backend_used,
-                    "sat_present": bool(sat_present),
-                    "sat_confidence": round(sat_avg_conf, 4),
-                },
-            }
-            for p in inter_polys_final
-        ]
+        inter_features = []
+        refined_final_polys: list[Polygon] = []
+        for p in inter_polys_final:
+            seed = p.centroid
+            pre_circ = _intersection_circularity(p)
+            refined, meta = _refine_intersection_polygon(
+                seed_pt=seed,
+                poly_candidate=p,
+                road_polygon=road_poly,
+                centerlines=center_lines,
+                cfg=refine_cfg,
+            )
+            if refined is None:
+                refined = p
+            post_circ = _intersection_circularity(refined)
+            if post_circ > float(refine_cfg["max_circularity"]) and _arm_count(refined, center_lines, float(refine_cfg["arm_buffer_m"])) >= 3:
+                shrink_cfg = dict(refine_cfg)
+                shrink_cfg["radius_m"] = float(refine_cfg["radius_m"]) * 0.7
+                refined2, _ = _refine_intersection_polygon(
+                    seed_pt=seed,
+                    poly_candidate=p,
+                    road_polygon=road_poly,
+                    centerlines=center_lines,
+                    cfg=shrink_cfg,
+                )
+                if refined2 is not None:
+                    refined = refined2
+                    post_circ = _intersection_circularity(refined)
+            refined_final_polys.append(refined)
+            circ = post_circ
+            aspect = _intersection_aspect_ratio(refined)
+            overlap = _intersection_overlap_with_road(refined, road_poly)
+            arms = _arm_count(refined, center_lines, float(refine_cfg["arm_buffer_m"]))
+            inter_features.append(
+                {
+                    "type": "Feature",
+                    "geometry": mapping(refined),
+                    "properties": {
+                        "backend_used": intersection_backend_used,
+                        "src": intersection_backend_used,
+                        "reason": f"backend_{intersection_backend_used}",
+                        "sat_present": bool(sat_present),
+                        "sat_confidence": round(sat_avg_conf, 4),
+                        "shape_refined": 1,
+                        "pre_circularity": round(pre_circ, 4),
+                        "post_circularity": round(post_circ, 4),
+                        "circularity": round(circ, 4),
+                        "aspect_ratio": round(aspect, 4),
+                        "overlap_road": round(overlap, 4),
+                        "arm_count": int(arms),
+                    },
+                }
+            )
+        inter_polys_final = refined_final_polys
 
-        center_result = _build_centerline_outputs(
-            traj_line=traj_line,
-            road_poly=road_poly,
-            center_cfg=center_cfg,
-            center_offset_default=center_offset_m,
-        )
-        center_outputs = center_result["outputs"]
-        for feats in center_outputs.values():
-            for feat in feats:
-                props = feat.get("properties") or {}
-                props["drive_id"] = args.drive
-                props["tile_id"] = args.drive
-                feat["properties"] = props
-
-        wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
-        _write_centerlines_outputs(out_dir, center_outputs, wgs84)
-        center_features = center_result["active_features"]
-        center_lines = center_result["active_lines"]
-        dual_offset_used = center_result["dual_offset_m"]
-        dual_triggered = bool(center_result["dual_triggered"])
-        center_dual_ratio = float(center_result["dual_sample_ratio"])
-
-        single_feats = center_outputs.get("single") or []
-        dual_feats = center_outputs.get("dual") or []
-        single_lines = [shape(f.get("geometry")) for f in single_feats if f.get("geometry")]
-        dual_lines = [shape(f.get("geometry")) for f in dual_feats if f.get("geometry")]
-        single_len = float(sum(l.length for l in single_lines))
-        dual_len = float(sum(l.length for l in dual_lines))
-        avg_offset = None
-        if dual_feats:
-            offsets = [abs(float(f.get("properties", {}).get("offset_m") or 0.0)) for f in dual_feats]
-            avg_offset = float(sum(offsets) / max(1, len(offsets)))
-        dual_triggered_segments = 1 if dual_triggered else 0
-        total_segments = 1 if center_lines else 0
         _write_geojson(out_dir / "road_polygon.geojson", [{"type": "Feature", "geometry": mapping(road_poly), "properties": {}}])
         _write_geojson(out_dir / "intersections.geojson", inter_features)
         _write_geojson(out_dir / "intersections_algo.geojson", inter_features_algo)
@@ -1594,6 +1725,20 @@ def main() -> int:
         inter_vertex_count = _polygon_vertex_count(inter_geom)
         inter_holes_count = _polygon_holes_count(inter_geom)
         inter_roughness = _polygon_roughness(inter_perim_m, inter_area_m2)
+        inter_circularities = [_intersection_circularity(p) for p in inter_polys_final]
+        inter_aspects = [_intersection_aspect_ratio(p) for p in inter_polys_final]
+        inter_overlaps = [_intersection_overlap_with_road(p, road_poly) for p in inter_polys_final]
+        inter_arm_counts = [
+            _arm_count(p, center_lines, float(refine_cfg["arm_buffer_m"])) for p in inter_polys_final
+        ]
+
+        def _mean(vals: list[float]) -> float:
+            return float(sum(vals) / len(vals)) if vals else 0.0
+
+        intersections_circularity = _mean(inter_circularities)
+        intersections_aspect = _mean(inter_aspects)
+        intersections_overlap = _mean(inter_overlaps)
+        intersections_arms = _mean([float(v) for v in inter_arm_counts]) if inter_arm_counts else 0.0
         if total_len < 200.0 or (road_diag > 0 and total_len < 0.2 * road_diag):
             raise SystemExit("ERROR: centerlines too short; check offset/clip/trajectory coverage.")
         if len(inter_polys_final) > max(20, inter_topk):
@@ -1679,6 +1824,10 @@ def main() -> int:
             "intersections_vertex_count": int(inter_vertex_count),
             "intersections_roughness": round(inter_roughness, 6),
             "intersections_holes_count": int(inter_holes_count),
+            "intersections_circularity": round(intersections_circularity, 4),
+            "intersections_aspect_ratio": round(intersections_aspect, 4),
+            "intersections_overlap_road": round(intersections_overlap, 4),
+            "intersections_arm_count": round(intersections_arms, 3),
             "width_median_m": round(width_median, 3),
             "width_p95_m": round(width_p95, 3),
             "peak_point_count": int(peak_point_count),
@@ -1739,6 +1888,10 @@ def main() -> int:
                 "intersections_vertex_count": qc["intersections_vertex_count"],
                 "intersections_roughness": qc["intersections_roughness"],
                 "intersections_holes_count": qc["intersections_holes_count"],
+                "intersections_circularity": qc["intersections_circularity"],
+                "intersections_aspect_ratio": qc["intersections_aspect_ratio"],
+                "intersections_overlap_road": qc["intersections_overlap_road"],
+                "intersections_arm_count": qc["intersections_arm_count"],
                 "width_median_m": qc["width_median_m"],
                 "width_p95_m": qc["width_p95_m"],
                 "centerline_mode": centerline_mode,

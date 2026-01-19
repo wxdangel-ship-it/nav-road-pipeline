@@ -34,6 +34,12 @@ Missing reason enums (per-drive CSV/JSON):
 QGIS layer suggestion:
 - `road_polygon_wgs84.geojson` -> `intersections_algo_wgs84.geojson` -> `intersections_sat_wgs84.geojson` -> `intersections_final_wgs84.geojson`
 
+## Intersection shape refine
+- Config: `configs/intersections_shape_refine.yaml`
+- Refine uses road polygon + centerlines to clip intersection polygons into road-shaped junctions.
+- QC adds: `intersections_circularity`, `intersections_aspect_ratio`, `intersections_overlap_with_road`, `intersections_arm_count`
+- Debug layers (build_geom): `outputs/debug/intersections_seed_points.geojson`, `..._local_clip.geojson`, `..._arms.geojson`, `..._refined.geojson`
+
 ## Centerlines modes
 - Config: `configs/centerlines.yaml`
 - Modes:

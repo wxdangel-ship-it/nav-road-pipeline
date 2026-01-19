@@ -4,6 +4,7 @@ import argparse
 import datetime
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -11,6 +12,21 @@ from shapely.geometry import shape, mapping
 from shapely.ops import unary_union, transform as geom_transform
 from pyproj import Transformer
 import yaml
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from pipeline.intersection_shape import (
+        aspect_ratio as _intersection_aspect_ratio,
+        arm_count as _intersection_arm_count,
+        circularity as _intersection_circularity,
+        overlap_with_road as _intersection_overlap_with_road,
+        refine_intersection_polygon as _refine_intersection_polygon,
+    )
+except Exception as exc:
+    raise SystemExit(f"ERROR: failed to import intersection shape helpers: {exc}") from exc
 
 
 def _load_yaml(path: Path) -> dict:
@@ -62,6 +78,28 @@ def _compactness(area: float, perim: float) -> float:
     if area <= 0 or perim <= 0:
         return 0.0
     return float(4.0 * math.pi * area / (perim * perim))
+
+
+def _load_shape_refine_cfg(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return data.get("shape_refine") or data
+
+
+def _shape_refine_defaults() -> dict:
+    return {
+        "radius_m": 20.0,
+        "road_buffer_m": 1.0,
+        "arm_length_m": 25.0,
+        "arm_buffer_m": 7.0,
+        "simplify_m": 0.5,
+        "min_area_m2": 30.0,
+        "min_part_area_m2": 30.0,
+        "min_hole_area_m2": 30.0,
+        "max_circularity": 0.9,
+        "min_overlap_road": 0.7,
+    }
 
 
 def _aspect_ratio(poly) -> float:
@@ -187,6 +225,78 @@ def _coerce_conf(value) -> Optional[float]:
         return None
 
 
+def _shape_metrics(poly, road_poly, centerlines, cfg: dict, refined: bool) -> dict:
+    if poly is None or poly.is_empty:
+        return {"shape_refined": 0 if not refined else 1}
+    circ = _intersection_circularity(poly)
+    aspect = _intersection_aspect_ratio(poly)
+    overlap = _intersection_overlap_with_road(poly, road_poly) if road_poly is not None else 0.0
+    arms = _intersection_arm_count(poly, centerlines, float(cfg["arm_buffer_m"]))
+    props = {
+        "shape_refined": 1 if refined else 0,
+        "circularity": round(circ, 4),
+        "aspect_ratio": round(aspect, 4),
+        "overlap_road": round(overlap, 4),
+        "arm_count": int(arms),
+    }
+    return props
+
+
+def _refine_choice(poly, road_poly, centerlines, cfg: dict) -> Tuple[object, dict, dict]:
+    if poly is None or poly.is_empty:
+        return poly, {"shape_refined": 0}, {}
+    seed = poly.centroid
+    pre_circ = _intersection_circularity(poly)
+    refined, meta = _refine_intersection_polygon(
+        seed_pt=seed,
+        poly_candidate=poly,
+        road_polygon=road_poly,
+        centerlines=centerlines,
+        cfg=cfg,
+    )
+    debug = {"seed": seed, "local": meta.get("local"), "arms": meta.get("arms"), "refined": refined}
+    if refined is None or refined.is_empty:
+        refined = poly
+    post_circ = _intersection_circularity(refined)
+    arms = _intersection_arm_count(refined, centerlines, float(cfg["arm_buffer_m"]))
+    max_circ = float(cfg.get("max_circularity", 0.9))
+    if post_circ > max_circ and arms >= 3:
+        shrink_cfg = dict(cfg)
+        shrink_cfg["radius_m"] = float(cfg["radius_m"]) * 0.7
+        refined2, meta2 = _refine_intersection_polygon(
+            seed_pt=seed,
+            poly_candidate=poly,
+            road_polygon=road_poly,
+            centerlines=centerlines,
+            cfg=shrink_cfg,
+        )
+        if refined2 is not None and not refined2.is_empty:
+            refined = refined2
+            post_circ = _intersection_circularity(refined)
+            arms = _intersection_arm_count(refined, centerlines, float(cfg["arm_buffer_m"]))
+            debug = {"seed": seed, "local": meta2.get("local"), "arms": meta2.get("arms"), "refined": refined}
+    props = _shape_metrics(refined, road_poly, centerlines, cfg, refined=True)
+    props["pre_circularity"] = round(pre_circ, 4)
+    props["post_circularity"] = round(post_circ, 4)
+    return refined, props, debug
+
+
+def _shape_gate_ok(props: dict, cfg: dict) -> bool:
+    max_circ = float(cfg.get("max_circularity", 0.9))
+    min_overlap = float(cfg.get("min_overlap_road", 0.7))
+    return props.get("circularity", 0.0) <= max_circ and props.get("overlap_road", 0.0) >= min_overlap
+
+
+def _shape_gate_reason(props: dict, cfg: dict) -> Optional[str]:
+    max_circ = float(cfg.get("max_circularity", 0.9))
+    min_overlap = float(cfg.get("min_overlap_road", 0.7))
+    if props.get("circularity", 0.0) > max_circ:
+        return "circularity"
+    if props.get("overlap_road", 0.0) < min_overlap:
+        return "overlap"
+    return None
+
+
 def _write_csv(path: Path, rows: List[dict]) -> None:
     import csv
 
@@ -273,6 +383,10 @@ def main() -> int:
     sat_augment_min_overlap = float(cfg.get("sat_augment_min_overlap", cfg.get("min_overlap_ratio", 0.0)))
     sat_augment_max_dist = float(cfg.get("sat_augment_max_dist", cfg.get("max_centerline_dist_m", 0.0)))
     debug_reject = bool(cfg.get("debug_reject_breakdown", False))
+    shape_refine_cfg = _shape_refine_defaults()
+    refine_path = Path(cfg.get("shape_refine_config", "configs/intersections_shape_refine.yaml"))
+    shape_refine_cfg.update(_load_shape_refine_cfg(refine_path))
+    shape_refine_enabled = bool(cfg.get("shape_refine_enabled", True))
 
     entries = _read_index(Path(args.index))
     entries = [
@@ -352,6 +466,9 @@ def main() -> int:
             "sat_reject_shape": 0,
             "sat_dedup": 0,
         }
+        debug_local = []
+        debug_arms = []
+        debug_refined = []
 
         for algo_geom, algo_props in algo_polys:
             if algo_geom.is_empty:
@@ -409,6 +526,29 @@ def main() -> int:
             if chosen is not None:
                 if src in {"sat", "union"} and sat_props:
                     conf = _coerce_conf(sat_props.get("sat_confidence"))
+                debug = {}
+                if shape_refine_enabled:
+                    chosen, refine_props, debug = _refine_choice(chosen, road_poly, centerlines, shape_refine_cfg)
+                    if src == "sat":
+                        gate_reason = _shape_gate_reason(refine_props, shape_refine_cfg)
+                        if gate_reason is not None:
+                            if gate_reason == "overlap":
+                                reject_counts["sat_reject_overlap"] += 1
+                            else:
+                                reject_counts["sat_reject_shape"] += 1
+                            if debug.get("refined") is not None:
+                                debug_refined.append(
+                                    {"type": "Feature", "geometry": mapping(debug["refined"]), "properties": {"src": src, "reason": "shape_gate"}}
+                                )
+                            continue
+                else:
+                    refine_props = _shape_metrics(chosen, road_poly, centerlines, shape_refine_cfg, refined=False)
+                if debug.get("local") is not None:
+                    debug_local.append({"type": "Feature", "geometry": mapping(debug["local"]), "properties": {"src": src}})
+                if debug.get("arms") is not None and not debug["arms"].is_empty:
+                    debug_arms.append({"type": "Feature", "geometry": mapping(debug["arms"]), "properties": {"src": src}})
+                if debug.get("refined") is not None:
+                    debug_refined.append({"type": "Feature", "geometry": mapping(debug["refined"]), "properties": {"src": src}})
                 props = {
                     "drive_id": drive,
                     "tile_id": drive,
@@ -417,6 +557,7 @@ def main() -> int:
                     "conf": conf,
                 }
                 props.update(algo_qc)
+                props.update(refine_props)
                 final_features.append({"type": "Feature", "geometry": mapping(chosen), "properties": props})
 
         for i, (sat_geom, sat_props) in enumerate(sat_polys):
@@ -449,6 +590,29 @@ def main() -> int:
                     reject_counts["sat_reject_shape"] += 1
                 if not sat_ok:
                     continue
+                chosen = sat_geom
+                debug = {}
+                if shape_refine_enabled:
+                    chosen, refine_props, debug = _refine_choice(sat_geom, road_poly, centerlines, shape_refine_cfg)
+                    gate_reason = _shape_gate_reason(refine_props, shape_refine_cfg)
+                    if gate_reason is not None:
+                        if gate_reason == "overlap":
+                            reject_counts["sat_reject_overlap"] += 1
+                        else:
+                            reject_counts["sat_reject_shape"] += 1
+                        if debug.get("refined") is not None:
+                            debug_refined.append(
+                                {"type": "Feature", "geometry": mapping(debug["refined"]), "properties": {"src": "sat", "reason": "shape_gate"}}
+                            )
+                        continue
+                else:
+                    refine_props = _shape_metrics(chosen, road_poly, centerlines, shape_refine_cfg, refined=False)
+                if debug.get("local") is not None:
+                    debug_local.append({"type": "Feature", "geometry": mapping(debug["local"]), "properties": {"src": "sat"}})
+                if debug.get("arms") is not None and not debug["arms"].is_empty:
+                    debug_arms.append({"type": "Feature", "geometry": mapping(debug["arms"]), "properties": {"src": "sat"}})
+                if debug.get("refined") is not None:
+                    debug_refined.append({"type": "Feature", "geometry": mapping(debug["refined"]), "properties": {"src": "sat"}})
                 props = {
                     "drive_id": drive,
                     "tile_id": drive,
@@ -457,7 +621,8 @@ def main() -> int:
                     "conf": _coerce_conf(sat_conf),
                 }
                 props.update(sat_qc)
-                final_features.append({"type": "Feature", "geometry": mapping(sat_geom), "properties": props})
+                props.update(refine_props)
+                final_features.append({"type": "Feature", "geometry": mapping(chosen), "properties": props})
                 continue
 
             if sat_mode == "fallback_only" and algo_any_valid:
@@ -475,6 +640,29 @@ def main() -> int:
                 reject_counts["sat_reject_shape"] += 1
             if not sat_ok:
                 continue
+            chosen = sat_geom
+            debug = {}
+            if shape_refine_enabled:
+                chosen, refine_props, debug = _refine_choice(sat_geom, road_poly, centerlines, shape_refine_cfg)
+                gate_reason = _shape_gate_reason(refine_props, shape_refine_cfg)
+                if gate_reason is not None:
+                    if gate_reason == "overlap":
+                        reject_counts["sat_reject_overlap"] += 1
+                    else:
+                        reject_counts["sat_reject_shape"] += 1
+                    if debug.get("refined") is not None:
+                        debug_refined.append(
+                            {"type": "Feature", "geometry": mapping(debug["refined"]), "properties": {"src": "sat", "reason": "shape_gate"}}
+                        )
+                    continue
+            else:
+                refine_props = _shape_metrics(chosen, road_poly, centerlines, shape_refine_cfg, refined=False)
+            if debug.get("local") is not None:
+                debug_local.append({"type": "Feature", "geometry": mapping(debug["local"]), "properties": {"src": "sat"}})
+            if debug.get("arms") is not None and not debug["arms"].is_empty:
+                debug_arms.append({"type": "Feature", "geometry": mapping(debug["arms"]), "properties": {"src": "sat"}})
+            if debug.get("refined") is not None:
+                debug_refined.append({"type": "Feature", "geometry": mapping(debug["refined"]), "properties": {"src": "sat"}})
             props = {
                 "drive_id": drive,
                 "tile_id": drive,
@@ -483,10 +671,20 @@ def main() -> int:
                 "conf": _coerce_conf(sat_props.get("sat_confidence")),
             }
             props.update(sat_qc)
-            final_features.append({"type": "Feature", "geometry": mapping(sat_geom), "properties": props})
+            props.update(refine_props)
+            final_features.append({"type": "Feature", "geometry": mapping(chosen), "properties": props})
 
         _write_geojson(final_path, final_features)
         _write_geojson(out_dir / "intersections_final_wgs84.geojson", _to_wgs84(final_features, int(cfg["crs_epsg"])))
+        if debug_local or debug_arms or debug_refined:
+            debug_dir = out_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            if debug_local:
+                _write_geojson(debug_dir / "intersections_local_clip.geojson", debug_local)
+            if debug_arms:
+                _write_geojson(debug_dir / "intersections_arms.geojson", debug_arms)
+            if debug_refined:
+                _write_geojson(debug_dir / "intersections_refined.geojson", debug_refined)
 
         missing_reason = "OK" if final_features else "hybrid_no_valid"
         per_drive_row = {
