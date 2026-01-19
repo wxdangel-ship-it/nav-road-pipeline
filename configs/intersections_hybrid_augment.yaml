@@ -11,10 +11,10 @@ hybrid:
   union_iou_min: 0.35
   prefer_algo: true
   sat_conf_min: 0.35
-  sat_mode: fallback_only
+  sat_mode: augment_unmatched
   dup_iou: 0.2
-  sat_augment_min_conf: 0.35
-  sat_augment_min_overlap: 0.25
-  sat_augment_max_dist: 25.0
-  debug_reject_breakdown: false
+  sat_augment_min_conf: 0.25
+  sat_augment_min_overlap: 0.15
+  sat_augment_max_dist: 40.0
+  debug_reject_breakdown: true
   expected_drives_file: configs/golden_drives.txt

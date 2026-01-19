@@ -82,9 +82,9 @@ def _aspect_ratio(poly) -> float:
     return float(edges[-1] / edges[0])
 
 
-def _validate_poly(poly, road_poly, centerline_union, cfg: dict) -> Tuple[bool, dict]:
+def _poly_metrics(poly, road_poly, centerline_union) -> dict:
     if poly.is_empty:
-        return False, {"reason": "empty"}
+        return {"empty": True}
     area = float(poly.area)
     perim = float(poly.length)
     compact = _compactness(area, perim)
@@ -93,24 +93,72 @@ def _validate_poly(poly, road_poly, centerline_union, cfg: dict) -> Tuple[bool, 
     if road_poly is not None and not road_poly.is_empty:
         overlap = float(poly.intersection(road_poly).area) / max(1e-6, area)
     center_dist = float(poly.centroid.distance(centerline_union)) if centerline_union is not None else 0.0
-    ok = True
-    if area < cfg["min_area_m2"] or area > cfg["max_area_m2"]:
-        ok = False
-    if compact < cfg["min_compactness"]:
-        ok = False
-    if aspect > cfg["max_aspect_ratio"]:
-        ok = False
-    if overlap < cfg["min_overlap_ratio"]:
-        ok = False
-    if center_dist > cfg["max_centerline_dist_m"]:
-        ok = False
-    return ok, {
+    return {
+        "empty": False,
         "area_m2": round(area, 3),
         "compactness": round(compact, 4),
         "aspect_ratio": round(aspect, 4),
         "overlap_ratio": round(overlap, 4),
         "centerline_dist_m": round(center_dist, 3),
     }
+
+
+def _validate_poly(poly, road_poly, centerline_union, cfg: dict) -> Tuple[bool, dict, dict]:
+    metrics = _poly_metrics(poly, road_poly, centerline_union)
+    if metrics.get("empty"):
+        return False, {"reason": "empty"}, {"empty": True}
+    flags = {
+        "area": False,
+        "compactness": False,
+        "aspect": False,
+        "overlap": False,
+        "dist": False,
+    }
+    if metrics["area_m2"] < cfg["min_area_m2"] or metrics["area_m2"] > cfg["max_area_m2"]:
+        flags["area"] = True
+    if metrics["compactness"] < cfg["min_compactness"]:
+        flags["compactness"] = True
+    if metrics["aspect_ratio"] > cfg["max_aspect_ratio"]:
+        flags["aspect"] = True
+    if metrics["overlap_ratio"] < cfg["min_overlap_ratio"]:
+        flags["overlap"] = True
+    if metrics["centerline_dist_m"] > cfg["max_centerline_dist_m"]:
+        flags["dist"] = True
+    ok = not any(flags.values())
+    return ok, {k: v for k, v in metrics.items() if k != "empty"}, flags
+
+
+def _validate_sat_custom(
+    poly,
+    road_poly,
+    centerline_union,
+    cfg: dict,
+    *,
+    min_overlap_ratio: float,
+    max_centerline_dist_m: float,
+) -> Tuple[bool, dict, dict]:
+    metrics = _poly_metrics(poly, road_poly, centerline_union)
+    if metrics.get("empty"):
+        return False, {"reason": "empty"}, {"empty": True}
+    flags = {
+        "area": False,
+        "compactness": False,
+        "aspect": False,
+        "overlap": False,
+        "dist": False,
+    }
+    if metrics["area_m2"] < cfg["min_area_m2"] or metrics["area_m2"] > cfg["max_area_m2"]:
+        flags["area"] = True
+    if metrics["compactness"] < cfg["min_compactness"]:
+        flags["compactness"] = True
+    if metrics["aspect_ratio"] > cfg["max_aspect_ratio"]:
+        flags["aspect"] = True
+    if metrics["overlap_ratio"] < min_overlap_ratio:
+        flags["overlap"] = True
+    if metrics["centerline_dist_m"] > max_centerline_dist_m:
+        flags["dist"] = True
+    ok = not any(flags.values())
+    return ok, {k: v for k, v in metrics.items() if k != "empty"}, flags
 
 
 def _iou(a, b) -> float:
@@ -121,6 +169,13 @@ def _iou(a, b) -> float:
     if union <= 0:
         return 0.0
     return float(inter / union)
+
+
+def _max_iou(poly, polys: List) -> float:
+    best = 0.0
+    for other in polys:
+        best = max(best, _iou(poly, other))
+    return best
 
 
 def _write_csv(path: Path, rows: List[dict]) -> None:
@@ -203,6 +258,12 @@ def main() -> int:
 
     cfg = _load_yaml(Path(args.config)).get("hybrid", {}) or {}
     expected_drives = _read_drives(Path(cfg.get("expected_drives_file", "configs/golden_drives.txt")))
+    sat_mode = cfg.get("sat_mode", "fallback_only")
+    dup_iou = float(cfg.get("dup_iou", cfg.get("match_iou_min", 0.2)))
+    sat_augment_min_conf = float(cfg.get("sat_augment_min_conf", cfg.get("sat_conf_min", 0.0)))
+    sat_augment_min_overlap = float(cfg.get("sat_augment_min_overlap", cfg.get("min_overlap_ratio", 0.0)))
+    sat_augment_max_dist = float(cfg.get("sat_augment_max_dist", cfg.get("max_centerline_dist_m", 0.0)))
+    debug_reject = bool(cfg.get("debug_reject_breakdown", False))
 
     entries = _read_index(Path(args.index))
     entries = [
@@ -243,6 +304,11 @@ def main() -> int:
                     "status": "FAIL",
                     "missing_reason": "missing_inputs",
                     "final_count": 0,
+                    "sat_reject_conf": 0,
+                    "sat_reject_overlap": 0,
+                    "sat_reject_dist": 0,
+                    "sat_reject_shape": 0,
+                    "sat_dedup": 0,
                 }
             )
             continue
@@ -259,10 +325,18 @@ def main() -> int:
         center_union = unary_union(centerlines) if centerlines else None
 
         algo_polys = [(shape(f.get("geometry")), f.get("properties") or {}) for f in algo_feats]
+        algo_geoms = [geom for geom, _ in algo_polys]
         sat_polys = [(shape(f.get("geometry")), f.get("properties") or {}) for f in sat_feats]
 
-        sat_used = set()
         final_features = []
+        algo_any_valid = False
+        reject_counts = {
+            "sat_reject_conf": 0,
+            "sat_reject_overlap": 0,
+            "sat_reject_dist": 0,
+            "sat_reject_shape": 0,
+            "sat_dedup": 0,
+        }
 
         for algo_geom, algo_props in algo_polys:
             if algo_geom.is_empty:
@@ -275,13 +349,15 @@ def main() -> int:
                     best_iou = score
                     best_idx = i
 
-            algo_ok, algo_qc = _validate_poly(algo_geom, road_poly, center_union, cfg)
+            algo_ok, algo_qc, algo_flags = _validate_poly(algo_geom, road_poly, center_union, cfg)
+            if algo_ok:
+                algo_any_valid = True
             sat_geom = None
             sat_props = None
             sat_ok = False
             if best_idx >= 0 and best_iou >= cfg["match_iou_min"]:
                 sat_geom, sat_props = sat_polys[best_idx]
-                sat_ok, _ = _validate_poly(sat_geom, road_poly, center_union, cfg)
+                sat_ok, _, sat_flags = _validate_poly(sat_geom, road_poly, center_union, cfg)
                 sat_conf = sat_props.get("sat_confidence")
                 if isinstance(sat_conf, (int, float)) and sat_conf < cfg.get("sat_conf_min", 0.0):
                     sat_ok = False
@@ -295,7 +371,7 @@ def main() -> int:
                 chosen = algo_geom
                 reason = "algo_keep"
                 src = "algo"
-            elif sat_ok:
+            elif sat_ok and sat_mode in {"fallback_only", "augment_unmatched"}:
                 chosen = sat_geom
                 reason = "sat_fallback"
                 src = "sat"
@@ -329,23 +405,68 @@ def main() -> int:
                 }
                 props.update(algo_qc)
                 final_features.append({"type": "Feature", "geometry": mapping(chosen), "properties": props})
-                if best_idx >= 0:
-                    sat_used.add(best_idx)
 
         for i, (sat_geom, sat_props) in enumerate(sat_polys):
-            if i in sat_used:
+            max_iou = _max_iou(sat_geom, algo_geoms) if algo_geoms else 0.0
+            if max_iou >= dup_iou:
+                reject_counts["sat_dedup"] += 1
                 continue
-            sat_ok, sat_qc = _validate_poly(sat_geom, road_poly, center_union, cfg)
+            if sat_mode == "never":
+                continue
             sat_conf = sat_props.get("sat_confidence")
-            if isinstance(sat_conf, (int, float)) and sat_conf < cfg.get("sat_conf_min", 0.0):
+            sat_conf_val = float(sat_conf) if isinstance(sat_conf, (int, float)) else 0.0
+
+            if sat_mode == "augment_unmatched" and algo_any_valid:
+                sat_ok, sat_qc, sat_flags = _validate_sat_custom(
+                    sat_geom,
+                    road_poly,
+                    center_union,
+                    cfg,
+                    min_overlap_ratio=sat_augment_min_overlap,
+                    max_centerline_dist_m=sat_augment_max_dist,
+                )
+                if sat_conf_val < sat_augment_min_conf:
+                    sat_ok = False
+                    reject_counts["sat_reject_conf"] += 1
+                if sat_flags.get("overlap"):
+                    reject_counts["sat_reject_overlap"] += 1
+                if sat_flags.get("dist"):
+                    reject_counts["sat_reject_dist"] += 1
+                if sat_flags.get("area") or sat_flags.get("compactness") or sat_flags.get("aspect"):
+                    reject_counts["sat_reject_shape"] += 1
+                if not sat_ok:
+                    continue
+                props = {
+                    "drive_id": drive,
+                    "tile_id": drive,
+                    "src": "sat",
+                    "reason": "sat_augment",
+                    "conf": sat_conf if sat_conf is not None else "N/A",
+                }
+                props.update(sat_qc)
+                final_features.append({"type": "Feature", "geometry": mapping(sat_geom), "properties": props})
+                continue
+
+            if sat_mode == "fallback_only" and algo_any_valid:
+                continue
+
+            sat_ok, sat_qc, sat_flags = _validate_poly(sat_geom, road_poly, center_union, cfg)
+            if sat_conf_val < cfg.get("sat_conf_min", 0.0):
                 sat_ok = False
+                reject_counts["sat_reject_conf"] += 1
+            if sat_flags.get("overlap"):
+                reject_counts["sat_reject_overlap"] += 1
+            if sat_flags.get("dist"):
+                reject_counts["sat_reject_dist"] += 1
+            if sat_flags.get("area") or sat_flags.get("compactness") or sat_flags.get("aspect"):
+                reject_counts["sat_reject_shape"] += 1
             if not sat_ok:
                 continue
             props = {
                 "drive_id": drive,
                 "tile_id": drive,
                 "src": "sat",
-                "reason": "sat_only",
+                "reason": "sat_fallback" if not algo_any_valid else "sat_only",
                 "conf": sat_props.get("sat_confidence", "N/A"),
             }
             props.update(sat_qc)
@@ -355,15 +476,22 @@ def main() -> int:
         _write_geojson(out_dir / "intersections_final_wgs84.geojson", _to_wgs84(final_features, int(cfg["crs_epsg"])))
 
         missing_reason = "OK" if final_features else "hybrid_no_valid"
-        per_drive_rows.append(
-            {
-                "drive_id": drive,
-                "tile_id": drive,
-                "status": "OK" if final_features else "EMPTY",
-                "missing_reason": missing_reason,
-                "final_count": len(final_features),
-            }
-        )
+        per_drive_row = {
+            "drive_id": drive,
+            "tile_id": drive,
+            "status": "OK" if final_features else "EMPTY",
+            "missing_reason": missing_reason,
+            "final_count": len(final_features),
+            "sat_reject_conf": reject_counts["sat_reject_conf"],
+            "sat_reject_overlap": reject_counts["sat_reject_overlap"],
+            "sat_reject_dist": reject_counts["sat_reject_dist"],
+            "sat_reject_shape": reject_counts["sat_reject_shape"],
+            "sat_dedup": reject_counts["sat_dedup"],
+        }
+        per_drive_rows.append(per_drive_row)
+        if debug_reject:
+            breakdown_path = out_dir / f"hybrid_reject_breakdown_{drive}.json"
+            breakdown_path.write_text(json.dumps(reject_counts, ensure_ascii=False, indent=2), encoding="utf-8")
 
     for d in expected_drives:
         if d in seen_drives:
@@ -375,6 +503,11 @@ def main() -> int:
                 "status": "FAIL",
                 "missing_reason": "missing_entry",
                 "final_count": 0,
+                "sat_reject_conf": 0,
+                "sat_reject_overlap": 0,
+                "sat_reject_dist": 0,
+                "sat_reject_shape": 0,
+                "sat_dedup": 0,
             }
         )
 
