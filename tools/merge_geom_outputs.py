@@ -190,10 +190,37 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict)
         merged.to_file(out_dir / f"merged_intersections{suffix}.geojson", driver="GeoJSON")
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections{suffix}"})
+    def _coerce_conf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+        if "conf" not in gdf.columns:
+            return gdf
+        gdf = gdf.copy()
+        gdf["conf"] = pd.to_numeric(gdf["conf"], errors="coerce")
+        gdf["conf"] = gdf["conf"].where(pd.notna(gdf["conf"]), None)
+        return gdf
+
+    def _write_filtered(gdf: gpd.GeoDataFrame, src: str, name: str) -> None:
+        if "src" not in gdf.columns:
+            return
+        filtered = gdf[gdf["src"] == src]
+        if not filtered.empty:
+            filtered.to_file(out_dir / name, driver="GeoJSON")
+
     if inter_final_frames:
         merged_final = gpd.GeoDataFrame(pd.concat(inter_final_frames, ignore_index=True))
+        merged_final = _coerce_conf(merged_final)
         merged_final.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+        _write_filtered(
+            merged_final,
+            "sat",
+            f"merged_intersections_final_sat_only{suffix}.geojson",
+        )
+        _write_filtered(
+            merged_final,
+            "algo",
+            f"merged_intersections_final_algo_only{suffix}.geojson",
+        )
     elif inter_frames:
+        merged = _coerce_conf(merged)
         merged.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_final{suffix}"})

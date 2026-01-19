@@ -178,6 +178,15 @@ def _max_iou(poly, polys: List) -> float:
     return best
 
 
+def _coerce_conf(value) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _write_csv(path: Path, rows: List[dict]) -> None:
     import csv
 
@@ -274,6 +283,12 @@ def main() -> int:
     ]
     if args.candidate:
         entries = [e for e in entries if e.get("candidate_id") == args.candidate]
+
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        out_dir = Path(entries[0]["outputs_dir"]).parents[1] if entries else Path("runs")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     per_drive_rows = []
     seen_drives = set()
@@ -392,16 +407,14 @@ def main() -> int:
                     src = "union"
 
             if chosen is not None:
-                if src == "sat" and sat_props:
-                    conf = sat_props.get("sat_confidence")
-                if src == "union" and sat_props:
-                    conf = sat_props.get("sat_confidence")
+                if src in {"sat", "union"} and sat_props:
+                    conf = _coerce_conf(sat_props.get("sat_confidence"))
                 props = {
                     "drive_id": drive,
                     "tile_id": drive,
                     "src": src,
                     "reason": reason,
-                    "conf": conf if conf is not None else "N/A",
+                    "conf": conf,
                 }
                 props.update(algo_qc)
                 final_features.append({"type": "Feature", "geometry": mapping(chosen), "properties": props})
@@ -441,7 +454,7 @@ def main() -> int:
                     "tile_id": drive,
                     "src": "sat",
                     "reason": "sat_augment",
-                    "conf": sat_conf if sat_conf is not None else "N/A",
+                    "conf": _coerce_conf(sat_conf),
                 }
                 props.update(sat_qc)
                 final_features.append({"type": "Feature", "geometry": mapping(sat_geom), "properties": props})
@@ -467,7 +480,7 @@ def main() -> int:
                 "tile_id": drive,
                 "src": "sat",
                 "reason": "sat_fallback" if not algo_any_valid else "sat_only",
-                "conf": sat_props.get("sat_confidence", "N/A"),
+                "conf": _coerce_conf(sat_props.get("sat_confidence")),
             }
             props.update(sat_qc)
             final_features.append({"type": "Feature", "geometry": mapping(sat_geom), "properties": props})
@@ -511,11 +524,6 @@ def main() -> int:
             }
         )
 
-    if args.out_dir:
-        out_dir = Path(args.out_dir)
-    else:
-        out_dir = Path(entries[0]["outputs_dir"]).parents[1] if entries else Path("runs")
-    out_dir.mkdir(parents=True, exist_ok=True)
     report_csv = out_dir / f"{args.stage}_hybrid_report_per_drive.csv"
     report_json = out_dir / f"{args.stage}_hybrid_report_per_drive.json"
     _write_csv(report_csv, per_drive_rows)

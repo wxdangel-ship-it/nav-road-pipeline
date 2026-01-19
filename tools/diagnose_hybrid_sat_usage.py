@@ -103,6 +103,14 @@ def _poly_metrics(poly, road_poly, center_union) -> Dict[str, float]:
     }
 
 
+def _p95(values: List[float]) -> Optional[float]:
+    if not values:
+        return None
+    values = sorted(values)
+    idx = int(max(0, math.ceil(len(values) * 0.95) - 1))
+    return float(values[min(idx, len(values) - 1)])
+
+
 def _iou(a, b) -> float:
     inter = a.intersection(b).area
     if inter <= 0:
@@ -189,11 +197,19 @@ def main() -> int:
         sat_pass_conf_cnt = 0
         sat_kept_as_final_cnt = 0
         reject_counts = Counter()
+        kept_overlap: List[float] = []
+        kept_dist: List[float] = []
 
         for feat in final_feats:
             props = feat.get("properties") or {}
             if props.get("src") == "sat":
                 sat_kept_as_final_cnt += 1
+                overlap_val = props.get("overlap_ratio")
+                dist_val = props.get("centerline_dist_m")
+                if isinstance(overlap_val, (int, float)):
+                    kept_overlap.append(float(overlap_val))
+                if isinstance(dist_val, (int, float)):
+                    kept_dist.append(float(dist_val))
 
         for geom, props in zip(sat_geoms, sat_props):
             if geom.is_empty:
@@ -253,6 +269,8 @@ def main() -> int:
             "sat_pass_dist_cnt": sat_pass_dist_cnt,
             "sat_pass_conf_cnt": sat_pass_conf_cnt,
             "sat_kept_as_final_cnt": sat_kept_as_final_cnt,
+            "sat_add_mean_overlap": round(sum(kept_overlap) / max(1, len(kept_overlap)), 4) if kept_overlap else None,
+            "sat_add_p95_dist": round(_p95(kept_dist), 4) if kept_dist else None,
             "top_reject_reason": top_reject_reason,
         }
         rows.append(row)
@@ -264,6 +282,32 @@ def main() -> int:
     out_json = out_dir / "hybrid_sat_diag_per_drive.json"
     _write_csv(out_csv, rows)
     out_json.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    kept_overlap_all: List[float] = []
+    kept_dist_all: List[float] = []
+    for drive, out_path in sorted(drive_outputs.items()):
+        final_path = out_path / "intersections_final.geojson"
+        final_feats = _read_geojson(final_path)
+        road_path = out_path / "road_polygon.geojson"
+        center_path = out_path / "centerlines.geojson"
+        road_feats = _read_geojson(road_path)
+        center_feats = _read_geojson(center_path)
+        road_poly = unary_union([shape(f.get("geometry")) for f in road_feats]) if road_feats else None
+        center_geoms = [shape(f.get("geometry")) for f in center_feats if f.get("geometry")]
+        center_union = unary_union(center_geoms) if center_geoms else None
+        for feat in final_feats:
+            props = feat.get("properties") or {}
+            if props.get("src") != "sat":
+                continue
+            overlap_val = props.get("overlap_ratio")
+            dist_val = props.get("centerline_dist_m")
+            if not isinstance(overlap_val, (int, float)) or not isinstance(dist_val, (int, float)):
+                geom = shape(feat.get("geometry"))
+                metrics = _poly_metrics(geom, road_poly, center_union)
+                overlap_val = metrics["overlap_ratio"]
+                dist_val = metrics["centerline_dist_m"]
+            kept_overlap_all.append(float(overlap_val))
+            kept_dist_all.append(float(dist_val))
 
     summary = {
         "drives": len(rows),
@@ -277,6 +321,10 @@ def main() -> int:
             "sat_pass_dist_cnt": sum(r["sat_pass_dist_cnt"] for r in rows),
             "sat_pass_conf_cnt": sum(r["sat_pass_conf_cnt"] for r in rows),
             "sat_kept_as_final_cnt": sum(r["sat_kept_as_final_cnt"] for r in rows),
+            "sat_add_mean_overlap": round(sum(kept_overlap_all) / max(1, len(kept_overlap_all)), 4)
+            if kept_overlap_all
+            else None,
+            "sat_add_p95_dist": round(_p95(kept_dist_all), 4) if kept_dist_all else None,
         },
     }
     (out_dir / "hybrid_sat_diag_summary.json").write_text(
