@@ -8,6 +8,7 @@ seeds:
   traj_min_sep_m: 25.0
   traj_search_radius_m: 30.0
   osm_enabled: true
+  osm_roads_path: ""
   osm_snap_m: 2.0
   osm_min_degree: 3
   sat_enabled: true
@@ -38,7 +39,7 @@ gate:
   min_area_m2: 50.0
   max_area_m2: 12000.0
   retry_shrink_ratio: 0.75
-  sat_drop_on_fail: true
+  sat_drop_on_fail: false
   dup_iou: 0.25
 
 debug:

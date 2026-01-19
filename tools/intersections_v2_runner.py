@@ -13,6 +13,12 @@ from shapely.ops import unary_union, transform as geom_transform
 from pyproj import Transformer
 import yaml
 
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 from pipeline.intersection_shape import (
     arm_count as _arm_count,
     aspect_ratio as _aspect_ratio,
@@ -53,6 +59,79 @@ def _to_wgs84(features: List[dict], crs_epsg: int) -> List[dict]:
         geom = geom_transform(wgs84.transform, shape(feat["geometry"]))
         out.append({"type": "Feature", "geometry": mapping(geom), "properties": feat.get("properties") or {}})
     return out
+
+
+def _find_latest_osm_path() -> Optional[Path]:
+    candidates = list(Path("runs").rglob("drivable_roads.geojson"))
+    candidates.extend(Path("runs").rglob("osm_ref_roads.geojson"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _entry_bbox_wgs84(entry: dict) -> Optional[Tuple[float, float, float, float]]:
+    for key in ("bbox_wgs84", "bbox4326", "bbox"):
+        bbox = entry.get(key)
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            return float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+    return None
+
+
+def _infer_bbox_from_road(road_poly: Polygon) -> Optional[Tuple[float, float, float, float]]:
+    if road_poly is None or road_poly.is_empty:
+        return None
+    minx, miny, maxx, maxy = road_poly.bounds
+    wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
+    xs, ys = wgs84.transform([minx, maxx], [miny, maxy])
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _assign_sat_features_to_drives(
+    sat_feats: List[dict],
+    entries: List[dict],
+    road_polys: Dict[str, Polygon],
+) -> Tuple[Dict[str, List[dict]], dict]:
+    by_drive: Dict[str, List[dict]] = {}
+    unmatched = 0
+    for feat in sat_feats:
+        geom = feat.get("geometry")
+        if not geom:
+            unmatched += 1
+            continue
+        shp = shape(geom)
+        if shp.is_empty:
+            unmatched += 1
+            continue
+        c = shp.centroid
+        matched = None
+        best_area = 0.0
+        for entry in entries:
+            drive = str(entry.get("drive") or "")
+            bbox = _entry_bbox_wgs84(entry)
+            if bbox is None:
+                bbox = _infer_bbox_from_road(road_polys.get(drive))
+            if bbox is None:
+                continue
+            minx, miny, maxx, maxy = bbox
+            if minx <= c.x <= maxx and miny <= c.y <= maxy:
+                area = (maxx - minx) * (maxy - miny)
+                if area >= best_area:
+                    matched = drive
+                    best_area = area
+        if matched is None:
+            unmatched += 1
+            continue
+        props = feat.get("properties") or {}
+        props["drive_id"] = matched
+        props["tile_id"] = matched
+        feat["properties"] = props
+        by_drive.setdefault(matched, []).append(feat)
+    stats = {
+        "sat_total": len(sat_feats),
+        "sat_matched": sum(len(v) for v in by_drive.values()),
+        "sat_unmatched": unmatched,
+    }
+    return by_drive, stats
 
 
 def _collect_lines(features: List[dict]) -> List[LineString]:
@@ -105,7 +184,7 @@ def _snap_point(point: Point, nodes: List[Tuple[float, float]], grid: Dict[Tuple
     return idx
 
 
-def _osm_degree_seeds(lines: List[LineString], snap_m: float, min_degree: int) -> List[Point]:
+def _osm_degree_seeds(lines: List[LineString], snap_m: float, min_degree: int) -> List[Tuple[Point, int]]:
     nodes: List[Tuple[float, float]] = []
     grid: Dict[Tuple[int, int], List[int]] = {}
     edges: Dict[int, set] = {}
@@ -122,9 +201,10 @@ def _osm_degree_seeds(lines: List[LineString], snap_m: float, min_degree: int) -
         edges.setdefault(n2, set()).add(n1)
     seeds = []
     for idx, neighbors in edges.items():
-        if len(neighbors) >= min_degree:
+        degree = len(neighbors)
+        if degree >= min_degree:
             x, y = nodes[idx]
-            seeds.append(Point(x, y))
+            seeds.append((Point(x, y), degree))
     return seeds
 
 
@@ -220,6 +300,8 @@ def _shape_from_seed(
     )
     if refined is None or refined.is_empty:
         return None, {"reason": "empty"}
+    local = meta.get("local")
+    arms = meta.get("arms")
     circ = _circularity(refined)
     aspect = _aspect_ratio(refined)
     overlap = _overlap_with_road(refined, road_poly)
@@ -229,7 +311,11 @@ def _shape_from_seed(
         "aspect_ratio": aspect,
         "overlap_road": overlap,
         "arm_count": arms,
-        "local": meta.get("local"),
+        "has_arms": 1 if meta.get("arms") is not None and not meta.get("arms").is_empty else 0,
+        "arms_area": float(meta.get("arms").area) if meta.get("arms") is not None and not meta.get("arms").is_empty else 0.0,
+        "local_area": float(local.area) if local is not None and not local.is_empty else 0.0,
+        "refined_area": float(refined.area),
+        "local": local,
         "arms": meta.get("arms"),
         "reason": meta.get("reason") or "refined",
     }
@@ -362,6 +448,20 @@ def main() -> int:
     out_outputs = out_dir / "outputs"
     out_outputs.mkdir(parents=True, exist_ok=True)
 
+    road_polys_by_drive: Dict[str, Polygon] = {}
+    for entry in entries:
+        drive = str(entry.get("drive") or "")
+        outputs_dir = Path(entry.get("outputs_dir") or "")
+        if not drive or not outputs_dir.exists():
+            continue
+        road_path = outputs_dir / "road_polygon.geojson"
+        if not road_path.exists():
+            continue
+        road_feats = _read_geojson(road_path)
+        road_polys = _collect_polys(road_feats)
+        if road_polys:
+            road_polys_by_drive[drive] = unary_union(road_polys)
+
     sat_features_by_drive: Dict[str, List[dict]] = {}
     sat_outputs_dir = Path(seeds_cfg.get("sat_outputs_dir", ""))
     if seeds_cfg.get("sat_enabled", True) and seeds_cfg.get("sat_seed_input_mode") == "polygons" and sat_outputs_dir.exists():
@@ -370,9 +470,29 @@ def main() -> int:
             sat_path = sat_outputs_dir / "intersections_sat_wgs84.geojson"
         if sat_path.exists():
             sat_feats = _read_geojson(sat_path)
-            for feat in sat_feats:
-                drive_id = str((feat.get("properties") or {}).get("drive_id") or "")
-                sat_features_by_drive.setdefault(drive_id, []).append(feat)
+            missing_drive = sum(1 for f in sat_feats if not (f.get("properties") or {}).get("drive_id"))
+            if missing_drive:
+                sat_features_by_drive, stats = _assign_sat_features_to_drives(sat_feats, entries, road_polys_by_drive)
+                print(
+                    f"[V2] SAT assign: total={stats['sat_total']} matched={stats['sat_matched']} "
+                    f"unmatched={stats['sat_unmatched']}"
+                )
+            else:
+                for feat in sat_feats:
+                    drive_id = str((feat.get("properties") or {}).get("drive_id") or "")
+                    if not drive_id:
+                        continue
+                    sat_features_by_drive.setdefault(drive_id, []).append(feat)
+
+    osm_path_cfg = str(seeds_cfg.get("osm_roads_path") or "")
+    osm_global_path = Path(osm_path_cfg) if osm_path_cfg else None
+    if osm_global_path and not osm_global_path.exists():
+        print(f"[V2][WARN] configured osm_roads_path not found: {osm_global_path}")
+        osm_global_path = None
+    if osm_global_path is None:
+        osm_global_path = _find_latest_osm_path()
+        if osm_global_path:
+            print(f"[V2] using OSM roads from: {osm_global_path}")
 
     rows = []
     seen_drives = set()
@@ -418,6 +538,7 @@ def main() -> int:
         debug_refined = []
 
         seeds: List[dict] = []
+        seed_counts = {"traj": 0, "osm": 0, "sat": 0, "geom": 0}
         if seeds_cfg.get("traj_enabled", True):
             traj_path_tmpl = str(seeds_cfg.get("traj_points_path_template") or "")
             traj_path = Path(traj_path_tmpl.format(drive=drive)) if traj_path_tmpl else Path()
@@ -441,24 +562,48 @@ def main() -> int:
                         "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
                     }
                 )
+                seed_counts["traj"] += 1
 
         if seeds_cfg.get("osm_enabled", True):
-            osm_path = outputs_dir / "osm_ref_roads.geojson"
-            if osm_path.exists():
+            osm_path = osm_global_path or (outputs_dir / "drivable_roads.geojson")
+            if osm_path is not None and osm_path.exists():
                 osm_feats = _read_geojson(osm_path)
                 osm_lines = _collect_lines(osm_feats)
                 snap_m = float(seeds_cfg.get("osm_snap_m", 2.0))
                 min_degree = int(seeds_cfg.get("osm_min_degree", 3))
-                for pt in _osm_degree_seeds(osm_lines, snap_m, min_degree):
+                osm_seeds = _osm_degree_seeds(osm_lines, snap_m, min_degree)
+                if not osm_seeds and min_degree > 2:
+                    osm_seeds = _osm_degree_seeds(osm_lines, snap_m, 2)
+                    if osm_seeds:
+                        print(f"[V2][WARN] no osm degree>={min_degree} seeds for {drive}, fallback to degree>=2")
+                        min_degree = 2
+                if not osm_seeds:
+                    junctions = _centerline_junctions(osm_lines)
+                    if junctions:
+                        print(f"[V2][WARN] no osm degree seeds for {drive}, fallback to osm intersections")
+                        for pt in junctions:
+                            seeds.append(
+                                {
+                                    "seed": pt,
+                                    "src_seed": "osm",
+                                    "reason": "osm_intersection_fallback",
+                                    "conf_prior": 0.5,
+                                    "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
+                                }
+                            )
+                            seed_counts["osm"] += 1
+                for pt, degree in osm_seeds:
+                    conf = min(1.0, 0.4 + 0.1 * float(degree))
                     seeds.append(
                         {
                             "seed": pt,
                             "src_seed": "osm",
                             "reason": f"osm_degree{min_degree}",
-                            "conf_prior": 0.7,
+                            "conf_prior": conf,
                             "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
                         }
                     )
+                    seed_counts["osm"] += 1
             else:
                 missing_reasons.append("missing_osm_inputs")
 
@@ -479,6 +624,7 @@ def main() -> int:
                         "radius_m": float(radius),
                     }
                 )
+                seed_counts["geom"] += 1
 
         if seeds_cfg.get("sat_enabled", True) and seeds_cfg.get("sat_seed_input_mode") == "polygons":
             sat_feats = sat_features_by_drive.get(drive, [])
@@ -498,6 +644,7 @@ def main() -> int:
                         "radius_m": float(radius),
                     }
                 )
+                seed_counts["sat"] += 1
 
         refined_seeds = []
         for item in seeds:
@@ -533,6 +680,7 @@ def main() -> int:
         sat_features = []
         final_candidates = []
         gate_fail_counts = {"sat": 0, "other": 0}
+        no_arms_count = 0
 
         for item in refined_seeds:
             src_seed = item["src_seed"]
@@ -558,13 +706,15 @@ def main() -> int:
                 gate_fail_counts["other"] += 1
                 if metrics.get("local") is not None:
                     poly = metrics["local"]
+            if metrics.get("has_arms") == 0:
+                no_arms_count += 1
 
             props = {
                 "drive_id": drive,
                 "tile_id": drive,
                 "src_seed": src_seed,
                 "refine_src": item.get("refine_src") or "none",
-                "reason": item.get("reason"),
+                "reason": "no_arms" if metrics.get("has_arms") == 0 else item.get("reason"),
                 "conf_prior": item.get("conf_prior"),
                 "conf_refine": item.get("conf_refine"),
                 "arm_count": int(metrics.get("arm_count", 0)),
@@ -572,6 +722,10 @@ def main() -> int:
                 "circularity": round(float(metrics.get("circularity", 0.0)), 4),
                 "aspect_ratio": round(float(metrics.get("aspect_ratio", 0.0)), 4),
                 "shape_gate_pass": 1 if gate_ok else 0,
+                "has_arms": int(metrics.get("has_arms", 0)),
+                "arms_area": round(float(metrics.get("arms_area", 0.0)), 3),
+                "local_area": round(float(metrics.get("local_area", 0.0)), 3),
+                "refined_area": round(float(metrics.get("refined_area", 0.0)), 3),
             }
             feat = {"type": "Feature", "geometry": mapping(poly), "properties": props}
             if src_seed == "sat":
@@ -648,6 +802,11 @@ def main() -> int:
                 "geom_cnt": src_counts["geom"],
                 "sat_gate_drop": gate_fail_counts["sat"],
                 "other_gate_fail": gate_fail_counts["other"],
+                "no_arms": no_arms_count,
+                "seed_traj_cnt": seed_counts["traj"],
+                "seed_osm_cnt": seed_counts["osm"],
+                "seed_sat_cnt": seed_counts["sat"],
+                "seed_geom_cnt": seed_counts["geom"],
                 "sat_circularity_p50": p50,
                 "sat_circularity_p75": p75,
                 "sat_overlap_p50": o50,
