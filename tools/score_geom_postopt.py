@@ -4,6 +4,8 @@ import argparse
 import csv
 import json
 import os
+from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -433,6 +435,64 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_missing_reason_summary(
+    per_drive_csv: Path,
+    expected_drives: List[str],
+    report_type: str,
+    run_id: str,
+) -> None:
+    rows = []
+    if per_drive_csv.exists():
+        with per_drive_csv.open("r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+    counts = Counter()
+    non_ok = []
+    for row in rows:
+        drive = (row.get("drive") or "").strip()
+        reason = (row.get("missing_reason") or "").strip()
+        norm_reason = "" if reason in {"", "N/A"} else reason
+        key = norm_reason if norm_reason else "OK"
+        counts[key] += 1
+        if norm_reason:
+            non_ok.append({"drive_id": drive, "reason": norm_reason})
+
+    payload = {
+        "expected_drives": expected_drives,
+        "missing_reason_counts": dict(counts),
+        "non_ok_drives": non_ok,
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "run_id": run_id,
+        "report_type": report_type,
+    }
+    json_path = per_drive_csv.with_name(per_drive_csv.stem.replace("_per_drive", "") + "_missing_reason_summary.json")
+    md_path = per_drive_csv.with_name(per_drive_csv.stem.replace("_per_drive", "") + "_missing_reason_summary.md")
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    lines = [
+        "# Missing Reason Summary",
+        "",
+        f"- report_type: {report_type}",
+        f"- run_id: {run_id}",
+        f"- generated_at: {payload['generated_at']}",
+        "",
+        "## expected_drives",
+        "```json",
+        json.dumps(expected_drives, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## missing_reason_counts",
+        "```json",
+        json.dumps(payload["missing_reason_counts"], ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "## non_ok_drives",
+        "```json",
+        json.dumps(non_ok, ensure_ascii=False, indent=2),
+        "```",
+        "",
+    ]
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", required=True)
@@ -462,10 +522,14 @@ def main() -> int:
     out_csv = Path(args.out_csv)
     out_md = Path(args.out_md)
     out_drive_csv = out_csv.with_name(out_csv.stem + "_per_drive.csv")
+    report_type = args.stage or ""
+    run_id = out_csv.parent.name
 
     _write_csv(out_csv, candidates)
     _write_csv(out_drive_csv, drives)
     _write_md(out_md, candidates, drives)
+    expected_drives = _baseline_drives(baseline, entries)
+    _write_missing_reason_summary(out_drive_csv, expected_drives, report_type, run_id)
 
     if args.out_json:
         ranked = sorted(
