@@ -41,17 +41,42 @@ def _find_image_dir(data_root: Path, drive: str, camera: str) -> Path:
     raise SystemExit(f"ERROR: image data not found for drive: {drive}, camera: {camera}")
 
 
-def _ensure_cache_env() -> str:
-    cache_root = os.environ.get("HF_HOME") or os.environ.get("TRANSFORMERS_CACHE") or os.environ.get("TORCH_HOME")
-    if cache_root:
-        return cache_root
-    cache_root = r"E:\hf_cache_shared"
-    os.environ["HF_HOME"] = cache_root
-    os.environ["TRANSFORMERS_CACHE"] = cache_root
-    os.environ["TORCH_HOME"] = cache_root
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+def _resolve_cache_env() -> dict:
+    hf_home = os.environ.get("HF_HOME") or os.environ.get("HF_HUB_CACHE")
+    hf_hub_cache = os.environ.get("HF_HUB_CACHE")
+    transformers_cache = os.environ.get("TRANSFORMERS_CACHE")
+    torch_home = os.environ.get("TORCH_HOME")
+    if not hf_home and not hf_hub_cache and not transformers_cache and not torch_home:
+        hf_home = r"E:\hf"
+        hf_hub_cache = r"E:\hf\hub"
+        transformers_cache = r"E:\hf\transformers"
+        torch_home = r"E:\hf\torch"
+        os.environ["HF_HOME"] = hf_home
+        os.environ["HF_HUB_CACHE"] = hf_hub_cache
+        os.environ["TRANSFORMERS_CACHE"] = transformers_cache
+        os.environ["TORCH_HOME"] = torch_home
+    os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-    return cache_root
+    return {
+        "hf_home": hf_home,
+        "hf_hub_cache": hf_hub_cache,
+        "transformers_cache": transformers_cache,
+        "torch_home": torch_home,
+    }
+
+
+def _cache_write_probe(hf_home: str) -> Optional[str]:
+    if not hf_home:
+        return "HF cache root is not set"
+    try:
+        path = Path(hf_home)
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / "write_probe.txt"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except Exception as exc:
+        return f"cache not writable: {hf_home} ({exc})"
+    return None
 
 
 def _download_file(url: str, dst: Path) -> Path:
@@ -77,7 +102,7 @@ def _resolve_sam2_checkpoint(download_cfg: dict, cache_root: str) -> Path:
         try:
             from huggingface_hub import hf_hub_download
 
-            return Path(hf_hub_download(repo_id=repo, filename=ckpt, cache_dir=cache_root))
+            return Path(hf_hub_download(repo_id=repo, filename=ckpt, cache_dir=cache_root, token=False))
         except Exception as exc:
             raise RuntimeError(f"sam2 checkpoint download failed: {exc}") from exc
     raise RuntimeError("sam2 checkpoint not found")
@@ -157,6 +182,10 @@ def _family_yolo_world(
         return report
 
     weights = (model_cfg.get("download") or {}).get("weights") or "yolov8s-worldv2.pt"
+    clip_cache = os.environ.get("CLIP_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME")
+    if not clip_cache:
+        os.environ["CLIP_CACHE_DIR"] = r"E:\clip"
+        os.environ["XDG_CACHE_HOME"] = r"E:\clip"
     model = YOLO(weights)
     prompt_classes = list(class_map.keys()) if class_map else []
     if hasattr(model, "set_classes") and prompt_classes:
@@ -171,6 +200,7 @@ def _family_yolo_world(
             source=str(img_path),
             device=device,
             conf=float((model_cfg.get("runtime") or {}).get("conf_threshold", 0.25)),
+            iou=float((model_cfg.get("runtime") or {}).get("iou_threshold", 0.5)),
             imgsz=int(model_cfg.get("input_size", 1024)),
             verbose=False,
         )
@@ -215,7 +245,7 @@ def _family_grounded_sam2(
     report = {"status": "fail", "reason": ""}
     try:
         import torch
-        from transformers import AutoProcessor, AutoModelForObjectDetection
+        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
     except Exception as exc:
         report["reason"] = f"missing transformers/torch: {exc}"
         return report
@@ -241,14 +271,49 @@ def _family_grounded_sam2(
         report["reason"] = str(exc)
         return report
 
-    processor = AutoProcessor.from_pretrained(dino_repo)
-    model = AutoModelForObjectDetection.from_pretrained(dino_repo).to(device)
+    try:
+        from huggingface_hub import snapshot_download
+        cache_dirs = _resolve_cache_env()
+        snapshot_dir = snapshot_download(
+            repo_id=dino_repo,
+            cache_dir=cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"],
+            token=False,
+        )
+    except Exception as exc:
+        report["reason"] = f"snapshot_download failed: {exc}"
+        return report
+
+    try:
+        processor = AutoProcessor.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            token=False,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        )
+        model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            token=False,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        ).to(device)
+    except TypeError:
+        processor = AutoProcessor.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        )
+        model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        ).to(device)
 
     sam2 = build_sam2(sam2_cfg, str(sam2_ckpt), device=device)
     predictor = SAM2ImagePredictor(sam2)
 
     class_to_id = _class_to_id_map(seg_schema)
     prompts = model_cfg.get("prompts") or list(class_map.keys())
+    prompts = [str(p).strip().lower() for p in prompts if str(p).strip()]
 
     seg_dir = out_dir / "seg_masks"
     det_dir = out_dir / "det_outputs"
@@ -256,26 +321,31 @@ def _family_grounded_sam2(
     det_dir.mkdir(parents=True, exist_ok=True)
 
     counts = {}
+    boxes_total = 0
+    masks_total = 0
+    files_written = 0
     for img_path in images:
         if Image is None:
             report["reason"] = "PIL not available"
             return report
         img = Image.open(img_path).convert("RGB")
         w, h = img.size
-        inputs = processor(images=img, text=prompts, return_tensors="pt").to(device)
+        inputs = processor(images=img, text=[prompts], return_tensors="pt").to(device)
         with torch.no_grad():
             outputs = model(**inputs)
-        target_sizes = torch.tensor([[h, w]], device=device)
+        target_sizes = [(h, w)]
         results = processor.post_process_grounded_object_detection(
             outputs,
-            target_sizes=target_sizes,
+            inputs.input_ids,
             box_threshold=float((model_cfg.get("runtime") or {}).get("conf_threshold", 0.25)),
-            text_threshold=0.25,
+            text_threshold=float((model_cfg.get("runtime") or {}).get("text_threshold", 0.25)),
+            target_sizes=target_sizes,
         )[0]
         boxes = results.get("boxes", [])
         scores = results.get("scores", [])
         labels = results.get("labels", [])
         phrases = results.get("phrases", [])
+        boxes_total += len(boxes)
 
         frame_id = _frame_id_from_path(img_path)
         dets = []
@@ -284,9 +354,13 @@ def _family_grounded_sam2(
 
         predictor.set_image(np.array(img))
         for idx, box in enumerate(boxes):
-            label_idx = int(labels[idx]) if idx < len(labels) else -1
-            phrase = phrases[idx] if idx < len(phrases) else ""
-            prompt = prompts[label_idx] if 0 <= label_idx < len(prompts) else phrase
+            label_val = labels[idx] if idx < len(labels) else -1
+            if isinstance(label_val, int) and 0 <= label_val < len(prompts):
+                prompt = prompts[int(label_val)]
+            elif isinstance(label_val, str):
+                prompt = label_val
+            else:
+                prompt = phrases[idx] if idx < len(phrases) else ""
             mapped = class_map.get(str(prompt).lower(), prompt)
             mapped = str(mapped).lower()
             conf = float(scores[idx]) if idx < len(scores) else None
@@ -312,12 +386,18 @@ def _family_grounded_sam2(
             update = mask_bin & (conf > conf_map)
             mask[update] = class_id
             conf_map[update] = conf
+            masks_total += 1
 
         _save_mask(seg_dir / f"{img_path.stem}_seg.png", mask)
         (det_dir / f"{img_path.stem}_det.json").write_text(json.dumps(dets, indent=2), encoding="utf-8")
+        files_written += 1
+        if len(images) <= 5:
+            print(f"[GROUNDED_SAM2] frame={img_path.stem} boxes={len(boxes)} masks={masks_total} files={files_written}")
 
     report["status"] = "ok"
     report["counts"] = counts
+    if len(images) <= 5:
+        print(f"[GROUNDED_SAM2] total_boxes={boxes_total} total_masks={masks_total} files={files_written}")
     return report
 
 
@@ -348,7 +428,25 @@ def main() -> int:
     ap.add_argument("--seg-schema", default="configs/seg_schema.yaml")
     args = ap.parse_args()
 
-    cache_root = _ensure_cache_env()
+    cache_info = _resolve_cache_env()
+    cache_root = cache_info.get("hf_home") or cache_info.get("hf_hub_cache") or ""
+    cache_probe = _cache_write_probe(cache_info.get("hf_home") or cache_info.get("hf_hub_cache") or "")
+    if cache_probe:
+        out_run = Path(args.out_run) if args.out_run else Path("runs") / f"basemodel_auto_{datetime.datetime.now():%Y%m%d_%H%M%S}"
+        out_run.mkdir(parents=True, exist_ok=True)
+        infer_report = {
+            "drive": args.drive,
+            "model_id": args.model_id,
+            "status": "fail",
+            "reason": cache_probe,
+            "resolved_hf_home": cache_info.get("hf_home"),
+            "resolved_hf_hub_cache": cache_info.get("hf_hub_cache"),
+            "resolved_transformers_cache": cache_info.get("transformers_cache"),
+            "resolved_clip_cache_dir": os.environ.get("CLIP_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME"),
+        }
+        (out_run / "infer_report.json").write_text(json.dumps(infer_report, indent=2), encoding="utf-8")
+        print("[BASEMODEL] infer_report:", infer_report)
+        return 2
     device, has_cuda = _device_auto()
 
     max_frames = int(args.max_frames)
@@ -398,6 +496,10 @@ def main() -> int:
         "max_frames": max_frames,
         "frames_processed": len(images),
         "cache_root": cache_root,
+        "resolved_hf_home": cache_info.get("hf_home"),
+        "resolved_hf_hub_cache": cache_info.get("hf_hub_cache"),
+        "resolved_transformers_cache": cache_info.get("transformers_cache"),
+        "resolved_clip_cache_dir": os.environ.get("CLIP_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME"),
         "model_out_dir": str(model_out_dir),
         "status": report.get("status"),
         "reason": report.get("reason"),
