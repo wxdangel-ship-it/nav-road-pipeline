@@ -44,14 +44,28 @@ QGIS layer suggestion:
 - Config: `configs/centerlines.yaml`
 - Modes:
   - `single`: only base centerline
-  - `dual`: dual offsets only (fallback to single if `dual_fallback_single=true`)
-  - `both`: single + dual if dual can be generated
-  - `auto`: dual when width/ratio/length thresholds pass, otherwise single
-- Dual trigger: `dual_width_threshold_m` + `min_dual_sample_ratio` + `min_segment_length_m`
-- Offset strategy:
-  - `dual_offset_mode=fixed`: use `dual_offset_m`
-  - `dual_offset_mode=half_width`: offset by half width minus `dual_offset_margin_m`, capped by `dual_offset_max_m`
+  - `dual`: split carriageway only (fallback to single if `dual_fallback_single=true`)
+  - `both`: single + dual if divider split succeeds
+  - `auto`: dual when divider split succeeds, otherwise single
+- Dual gating: divider is required; oneway (future) can disable dual
+- Divider sources:
+  - `geom`: use geometry hints (multi-polygon / holes)
+  - `seg`: use divider_median from image feature_store
 - QGIS: load `centerlines_single_wgs84.geojson` + `centerlines_dual_wgs84.geojson` + `centerlines_both_wgs84.geojson`
+
+## Image feature store (V1)
+- Schema config:
+  - `configs/seg_schema.yaml` (class/id/subtype mapping)
+  - `configs/feature_schema.yaml` (geometry types + required fields)
+- Build feature_store:
+  - `scripts\\image_features.cmd --drive <drive_id> --model-out-dir <dir> --out-run-dir runs\\image_feat_v1 --seg-schema configs\\seg_schema.yaml --feature-schema configs\\feature_schema.yaml`
+- Output layout:
+  - `runs\\<run>\\feature_store\\<drive>\\<frame>\\image_features.gpkg`
+  - `runs\\<run>\\feature_store\\<drive>\\<frame>\\traffic_light_dets.json`
+  - `runs\\<run>\\feature_store\\index.json`
+- Centerlines with seg divider:
+  - `set FEATURE_STORE_DIR=runs\\image_feat_v1\\feature_store`
+  - `scripts\\centerlines_v2.cmd --drive <drive_id> --max-frames 200`
 
 ## DOP20 WMS download (Golden8 AOI)
 - Build AOI:

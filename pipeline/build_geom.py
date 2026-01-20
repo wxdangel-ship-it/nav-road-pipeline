@@ -10,6 +10,7 @@ from typing import Iterable, Optional
 
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon, MultiPolygon, box, mapping, shape
+from shapely import affinity as shapely_affinity
 from shapely.ops import unary_union, linemerge, transform as shapely_transform
 from shapely.prepared import prep
 from pyproj import Transformer
@@ -26,6 +27,7 @@ from pipeline.intersection_shape import (
     refine_intersection_polygon as _refine_intersection_polygon,
 )
 from pipeline.centerlines_v2 import build_centerlines_v2
+from pipeline.evidence.image_feature_provider import load_features as load_image_features
 
 try:
     from shapely import make_valid as _shapely_make_valid
@@ -1329,6 +1331,9 @@ def main() -> int:
             if env_dual_offset not in {"auto", ""}:
                 center_cfg["dual_offset_m"] = float(env_dual_offset)
                 center_cfg["dual_offset_mode"] = "fixed"
+        env_feature_store = os.environ.get("FEATURE_STORE_DIR", "").strip()
+        if env_feature_store and not center_cfg.get("seg_divider_feature_store_dir"):
+            center_cfg["seg_divider_feature_store_dir"] = env_feature_store
 
         centerline_mode = str(center_cfg["mode"]).lower()
         refine_cfg = _intersection_refine_defaults()
@@ -1458,11 +1463,62 @@ def main() -> int:
         center_cfg["width_median_m"] = float(width_stats["width_median"])
         center_cfg["width_p95_m"] = float(width_stats["width_p95"])
 
+        divider_lines = []
+        divider_src_hint = None
+        divider_sources = center_cfg.get("divider_sources", ["geom"])
+        if isinstance(divider_sources, str):
+            divider_sources = [divider_sources]
+        use_seg = "seg" in {str(s).lower() for s in divider_sources}
+        feature_store_dir = center_cfg.get("seg_divider_feature_store_dir")
+        if use_seg and feature_store_dir:
+            features = load_image_features(args.drive, None, Path(feature_store_dir))
+            divider_feats = features.get("divider_median") or []
+            if not divider_feats:
+                lane_feats = features.get("lane_marking") or []
+                lane_subtypes = set(
+                    s.lower()
+                    for s in center_cfg.get("seg_divider_lane_subtypes", ["double_yellow", "solid_double"])
+                )
+                divider_feats = [
+                    f for f in lane_feats
+                    if str((f.get("properties") or {}).get("subtype") or "").lower() in lane_subtypes
+                ]
+                if divider_feats:
+                    divider_src_hint = "lane_marking"
+            if divider_feats:
+                divider_src_hint = divider_src_hint or "divider_median"
+                accepted = []
+                for feat in divider_feats:
+                    props = feat.get("properties") or {}
+                    geom = feat.get("geometry")
+                    frame = str(props.get("geometry_frame") or "")
+                    if geom is None or geom.is_empty:
+                        continue
+                    if frame in {"map", "ego"}:
+                        accepted.append(geom)
+                    elif frame == "image_px" and center_cfg.get("accept_image_px", False):
+                        accepted.append(geom)
+                if accepted and center_cfg.get("image_px_to_map") == "fit_road_bbox":
+                    minx, miny, maxx, maxy = road_poly.bounds
+                    geom_bounds = unary_union(accepted).bounds
+                    gx0, gy0, gx1, gy1 = geom_bounds
+                    sx = (maxx - minx) / max(1e-6, gx1 - gx0)
+                    sy = (maxy - miny) / max(1e-6, gy1 - gy0)
+                    scaled = []
+                    for g in accepted:
+                        g2 = shapely_affinity.scale(g, xfact=sx, yfact=sy, origin=(gx0, gy0))
+                        g2 = shapely_affinity.translate(g2, xoff=minx - gx0 * sx, yoff=miny - gy0 * sy)
+                        scaled.append(g2)
+                    accepted = scaled
+                divider_lines = accepted
+
         center_result = build_centerlines_v2(
             traj_line=traj_line,
             road_poly=road_poly,
             center_cfg=center_cfg,
             center_offset_default=center_offset_m,
+            divider_lines=divider_lines,
+            divider_src_hint=divider_src_hint,
         )
         center_outputs = center_result["outputs"]
         for feats in center_outputs.values():
@@ -1500,6 +1556,9 @@ def main() -> int:
                     debug_dir / "carriageway_split_R.geojson",
                     [{"type": "Feature", "geometry": mapping(carriageways[1]), "properties": {}}],
                 )
+            dual_feats = center_outputs.get("dual") or []
+            if dual_feats:
+                _write_geojson(debug_dir / "dual_centerlines_debug.geojson", dual_feats)
         center_features = center_result["active_features"]
         center_lines = center_result["active_lines"]
         dual_offset_used = center_result.get("dual_sep_m")
@@ -1854,6 +1913,9 @@ def main() -> int:
             "centerlines_segments_total": int(total_segments),
             "centerlines_avg_offset_m": round(avg_offset, 3) if avg_offset is not None else None,
             "centerlines_in_polygon_ratio": round(center_in_poly_ratio, 4),
+            "divider_found": 1 if center_result.get("divider_found") else 0,
+            "divider_src": center_result.get("divider_src"),
+            "split_success": 1 if center_result.get("divider_found") and dual_triggered else 0,
             "intersections_count": int(len(inter_polys_final)),
             "intersections_area_total_m2": round(inter_area_total_final, 3),
             "intersections_top5_area_m2": [round(a, 3) for a in top5],
@@ -1943,6 +2005,9 @@ def main() -> int:
                 "dual_min_len_m": round(center_cfg["min_segment_length_m"], 3),
                 "dual_conf_threshold": round(float(center_cfg.get("dual_conf_threshold", 0.0)), 3),
                 "divider_sources": center_cfg.get("divider_sources"),
+                "divider_found": 1 if center_result.get("divider_found") else 0,
+                "divider_src": center_result.get("divider_src"),
+                "split_success": 1 if center_result.get("divider_found") and dual_triggered else 0,
                 "centerline_dual_ratio": round(center_dual_ratio, 4),
                 "post_mask_close_m": round(post_mask_close_m, 3),
                 "post_mask_open_m": round(post_mask_open_m, 3),

@@ -33,6 +33,9 @@ refine:
   enabled: true
   search_radius_m: 25.0
   refine_src_default: geometry
+  markings_enabled: false
+  markings_feature_store_dir: ""
+  markings_max_dist_m: 20.0
 
 shape:
   radius_m: 20.0

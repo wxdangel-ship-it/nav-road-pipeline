@@ -26,6 +26,7 @@ from pipeline.intersection_shape import (
     overlap_with_road as _overlap_with_road,
     refine_intersection_polygon as _refine_intersection_polygon,
 )
+from pipeline.evidence.image_feature_provider import load_features as load_image_features
 
 
 def _load_yaml(path: Path) -> dict:
@@ -426,6 +427,34 @@ def _refine_seed(seed: Point, lines: List[LineString], search_radius: float) -> 
     return seed, "none", 0.0
 
 
+def _refine_seed_markings(
+    seed: Point,
+    features: List[dict],
+    max_dist_m: float,
+) -> Optional[Point]:
+    if not features:
+        return None
+    best_geom = None
+    best_dist = None
+    for feat in features:
+        geom = feat.get("geometry")
+        if geom is None or geom.is_empty:
+            continue
+        dist = seed.distance(geom)
+        if dist <= max_dist_m and (best_dist is None or dist < best_dist):
+            best_dist = dist
+            best_geom = geom
+    if best_geom is None:
+        return None
+    try:
+        from shapely.ops import nearest_points
+
+        _, p2 = nearest_points(seed, best_geom)
+        return p2
+    except Exception:
+        return seed
+
+
 def _shape_from_seed(
     seed: Point,
     road_poly: Polygon,
@@ -779,6 +808,14 @@ def main() -> int:
         center_feats = _read_geojson(center_path)
         center_lines = _collect_lines(center_feats)
 
+        markings_feats: List[dict] = []
+        if refine_cfg.get("markings_enabled"):
+            store_dir = refine_cfg.get("markings_feature_store_dir")
+            if store_dir:
+                feat_map = load_image_features(drive, None, Path(store_dir))
+                for cls in ("stop_line", "crosswalk", "gore_marking", "arrow"):
+                    markings_feats.extend(feat_map.get(cls) or [])
+
         missing_reasons = []
         seed_features = []
         refined_seed_features = []
@@ -860,12 +897,21 @@ def main() -> int:
                 seed_counts["sat"] += 1
 
         refined_seeds = []
+        markings_hits = 0
         for item in seeds:
             seed = item["seed"]
             ref_seed = seed
             refine_src = "none"
             conf_refine = None
-            if refine_cfg.get("enabled", True):
+            if refine_cfg.get("markings_enabled") and markings_feats:
+                max_dist = float(refine_cfg.get("markings_max_dist_m", 20.0))
+                marking_seed = _refine_seed_markings(seed, markings_feats, max_dist)
+                if marking_seed is not None:
+                    ref_seed = marking_seed
+                    refine_src = "markings"
+                    conf_refine = 0.8
+                    markings_hits += 1
+            if refine_cfg.get("enabled", True) and refine_src != "markings":
                 ref_seed, refine_src, conf_refine = _refine_seed(
                     seed,
                     center_lines,
@@ -1035,6 +1081,7 @@ def main() -> int:
                 "seed_osm_cnt": seed_counts["osm"],
                 "seed_sat_cnt": seed_counts["sat"],
                 "seed_geom_cnt": seed_counts["geom"],
+                "refine_markings_hit_rate": round(markings_hits / max(1, len(seeds)), 4),
                 "sat_circularity_p50": p50,
                 "sat_circularity_p75": p75,
                 "sat_overlap_p50": o50,

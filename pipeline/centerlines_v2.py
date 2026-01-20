@@ -82,18 +82,31 @@ def _split_by_line(poly: Polygon, line: LineString) -> list[Polygon]:
     return polys
 
 
+def _polygon_axis_line(poly: Polygon) -> Optional[LineString]:
+    if poly.is_empty:
+        return None
+    minx, miny, maxx, maxy = poly.bounds
+    dx = maxx - minx
+    dy = maxy - miny
+    if dx <= 0 or dy <= 0:
+        return None
+    if dx >= dy:
+        return LineString([(minx, (miny + maxy) * 0.5), (maxx, (miny + maxy) * 0.5)])
+    return LineString([((minx + maxx) * 0.5, miny), ((minx + maxx) * 0.5, maxy)])
+
+
 def _polygon_centerline(poly: Polygon, simplify_m: float = 0.5) -> Optional[LineString]:
     if poly.is_empty:
         return None
     if _medial_axis is None:
-        return None
+        return _polygon_axis_line(poly)
     try:
         skel = _medial_axis(poly)
     except Exception:
-        return None
+        return _polygon_axis_line(poly)
     line = _longest_line(skel)
     if line is None or line.is_empty:
-        return None
+        return _polygon_axis_line(poly)
     if simplify_m and simplify_m > 0:
         line = line.simplify(simplify_m, preserve_topology=True)
     return line
@@ -156,11 +169,38 @@ def _divider_from_geometry(
     return False, "none", [], None
 
 
+def _split_by_divider(
+    road_poly: Polygon | MultiPolygon,
+    divider_lines: list[LineString],
+    buffer_m: float,
+) -> list[Polygon]:
+    if not divider_lines:
+        return []
+    divider_union = divider_lines[0]
+    if len(divider_lines) > 1:
+        from shapely.ops import unary_union
+
+        divider_union = unary_union(divider_lines)
+    try:
+        carved = road_poly.difference(divider_union.buffer(buffer_m))
+    except Exception:
+        return []
+    if carved.is_empty:
+        return []
+    if carved.geom_type == "Polygon":
+        return [carved]
+    if carved.geom_type == "MultiPolygon":
+        return list(carved.geoms)
+    return []
+
+
 def build_centerlines_v2(
     traj_line: LineString,
     road_poly: Polygon | MultiPolygon,
     center_cfg: dict,
     center_offset_default: float,
+    divider_lines: Optional[list[LineString]] = None,
+    divider_src_hint: Optional[str] = None,
 ) -> dict:
     base_line = traj_line.intersection(road_poly) if road_poly is not None else traj_line
     if base_line.is_empty:
@@ -177,10 +217,26 @@ def build_centerlines_v2(
     if isinstance(divider_sources, str):
         divider_sources = [divider_sources]
     use_geom = "geom" in {str(s).lower() for s in divider_sources}
-    if use_geom:
+    divider_found, divider_src, carriageways, divider_line = False, "none", [], None
+    if divider_lines:
+        buffer_m = float(center_cfg.get("divider_buffer_m", 1.5))
+        split_polys = _split_by_divider(road_poly, divider_lines, buffer_m)
+        split_polys = sorted(split_polys, key=lambda g: g.area, reverse=True)
+        if len(split_polys) >= 2:
+            divider_found = True
+            divider_src = divider_src_hint or "seg_divider"
+            carriageways = split_polys[:2]
+            if len(divider_lines) == 1:
+                divider_line = divider_lines[0]
+            else:
+                try:
+                    from shapely.ops import unary_union
+
+                    divider_line = unary_union(divider_lines)
+                except Exception:
+                    divider_line = divider_lines[0]
+    if not divider_found and use_geom:
         divider_found, divider_src, carriageways, divider_line = _divider_from_geometry(road_poly, base_line)
-    else:
-        divider_found, divider_src, carriageways, divider_line = False, "none", [], None
     dual_conf = width_score if divider_found else 0.0
     dual_allowed = divider_found and dual_conf >= float(center_cfg.get("dual_conf_threshold", 0.0))
 
