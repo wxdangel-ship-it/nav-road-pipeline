@@ -202,6 +202,25 @@ def _expand_bbox_wgs84(bbox: Tuple[float, float, float, float], margin_m: float)
     return min(lon), min(lat), max(lon), max(lat)
 
 
+def _bbox_to_utm(bbox: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+    wgs84 = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    xs, ys = wgs84.transform([bbox[0], bbox[2]], [bbox[1], bbox[3]])
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    return minx, miny, maxx, maxy
+
+
+def _dist_point_bbox_m(pt_wgs: Point, bbox_wgs: Tuple[float, float, float, float]) -> float:
+    utm = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    x, y = utm.transform(pt_wgs.x, pt_wgs.y)
+    minx, miny, maxx, maxy = _bbox_to_utm(bbox_wgs)
+    if minx <= x <= maxx and miny <= y <= maxy:
+        return 0.0
+    dx = max(minx - x, 0.0, x - maxx)
+    dy = max(miny - y, 0.0, y - maxy)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 def _assign_sat_features_to_drives(
     sat_feats: List[dict],
     entries: List[dict],
@@ -262,6 +281,9 @@ def main() -> int:
     ap.add_argument("--sat-path", default="runs/sat_intersections_full_golden8/outputs/intersections_sat_wgs84.geojson")
     ap.add_argument("--osm-snap-m", type=float, default=2.0)
     ap.add_argument("--osm-min-degree", type=int, default=3)
+    ap.add_argument("--drive-bbox-buffer-m", type=float, default=150.0)
+    ap.add_argument("--assign-max-dist-m", type=float, default=200.0)
+    ap.add_argument("--multi-assign", type=int, default=1)
     args = ap.parse_args()
 
     v2_dir = Path(args.v2_dir)
@@ -362,25 +384,47 @@ def main() -> int:
         is_wgs84 = _is_wgs84_coords(c0[0], c0[1])
     if not is_wgs84:
         osm_lines_wgs = [_to_wgs84(line) for line in osm_lines_utm]
-    junctions_info = _osm_degree_junctions_info(osm_lines_utm, osm_types, args.osm_snap_m, args.osm_min_degree)
-    if not is_wgs84:
-        junctions_info = [( _to_wgs84(pt), deg, types) for pt, deg, types in junctions_info]
+    junctions_info_utm = _osm_degree_junctions_info(osm_lines_utm, osm_types, args.osm_snap_m, args.osm_min_degree)
+    junctions_info = [(_to_wgs84(pt), deg, types) for pt, deg, types in junctions_info_utm]
     osm_junctions = []
     unassigned = 0
+    fallback_used = 0
+    multi_assign = 0
     for pt, degree, types in junctions_info:
-        assigned = False
+        hits = []
         for drive, bbox in road_bboxes.items():
-            bbox = _expand_bbox_wgs84(bbox, 50.0)
+            bbox = _expand_bbox_wgs84(bbox, float(args.drive_bbox_buffer_m))
             if bbox[0] <= pt.x <= bbox[2] and bbox[1] <= pt.y <= bbox[3]:
-                assigned = True
-                break
-        if not assigned:
-            unassigned += 1
+                hits.append(drive)
+        if hits:
+            if bool(args.multi_assign):
+                if len(hits) > 1:
+                    multi_assign += 1
+            else:
+                hits = hits[:1]
+        else:
+            best_drive = None
+            best_dist = float("inf")
+            for drive, bbox in road_bboxes.items():
+                dist = _dist_point_bbox_m(pt, bbox)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_drive = drive
+            if best_drive is not None and best_dist <= float(args.assign_max_dist_m):
+                hits = [best_drive]
+                fallback_used += 1
+            else:
+                unassigned += 1
         osm_junctions.append(
             {
                 "type": "Feature",
                 "geometry": mapping(pt),
-                "properties": {"degree": degree, "highway_types": types},
+                "properties": {
+                    "degree": degree,
+                    "highway_types": types,
+                    "assigned_drives": hits,
+                    "assign_reason": "bbox_buffer" if hits else "unassigned",
+                },
             }
         )
     _write_geojson(audit_dir / "osm_junctions_wgs84.geojson", osm_junctions)
@@ -402,6 +446,7 @@ def main() -> int:
         if dist > args.radius_m:
             missing_points.append({"type": "Feature", "geometry": mapping(pt), "properties": {"dist_m": round(dist, 3)}})
     _write_geojson(audit_dir / "missing_osm_junctions_wgs84.geojson", missing_points)
+    _write_geojson(audit_dir / "unassigned_drive_points_wgs84.geojson", missing_points)
 
     sat_path = Path(args.sat_path)
     sat_stats = {}
@@ -425,6 +470,9 @@ def main() -> int:
         "osm_junctions_total": len(junctions_info),
         "missing_osm_junctions": len(missing_points),
         "sat_assignment": sat_stats,
+        "unassigned_drive_count": unassigned,
+        "nearest_drive_fallback_used_count": fallback_used,
+        "multi_assign_count": multi_assign,
     }
     (audit_dir / "missing_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0

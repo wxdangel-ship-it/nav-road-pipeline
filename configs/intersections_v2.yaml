@@ -17,6 +17,10 @@ seeds:
     - primary
     - trunk
     - service
+    - living_street
+  drive_bbox_buffer_m: 150
+  assign_max_dist_m: 200
+  multi_assign: true
   osm_snap_m: 2.0
   osm_min_degree: 3
   sat_enabled: true

@@ -114,6 +114,25 @@ def _expand_bbox(bbox: Tuple[float, float, float, float], margin_m: float) -> Tu
     return min(lon), min(lat), max(lon), max(lat)
 
 
+def _bbox_to_utm(bbox: Tuple[float, float, float, float]) -> Tuple[float, float, float, float]:
+    wgs84 = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    xs, ys = wgs84.transform([bbox[0], bbox[2]], [bbox[1], bbox[3]])
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+    return minx, miny, maxx, maxy
+
+
+def _dist_point_bbox_m(pt_wgs: Point, bbox_wgs: Tuple[float, float, float, float]) -> float:
+    utm = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    x, y = utm.transform(pt_wgs.x, pt_wgs.y)
+    minx, miny, maxx, maxy = _bbox_to_utm(bbox_wgs)
+    if minx <= x <= maxx and miny <= y <= maxy:
+        return 0.0
+    dx = max(minx - x, 0.0, x - maxx)
+    dy = max(miny - y, 0.0, y - maxy)
+    return (dx * dx + dy * dy) ** 0.5
+
+
 def _infer_bbox_from_road(road_poly: Polygon) -> Optional[Tuple[float, float, float, float]]:
     if road_poly is None or road_poly.is_empty:
         return None
@@ -636,6 +655,94 @@ def main() -> int:
     if osm_global_path is None:
         raise SystemExit("ERROR: drivable_roads.geojson not found. Set seeds.osm_roads_path to a drivable_roads.geojson path.")
 
+    osm_seeds_by_drive: Dict[str, List[dict]] = {}
+    if seeds_cfg.get("osm_enabled", True) and osm_global_path.exists():
+        osm_feats = _read_geojson(osm_global_path)
+        all_counts = _osm_highway_counts(osm_feats)
+        allowlist = seeds_cfg.get("osm_highway_allowlist") or []
+        osm_feats = _filter_osm_features(osm_feats, allowlist)
+        filt_counts = _osm_highway_counts(osm_feats)
+        if filt_counts:
+            print(f"[V2] OSM highway counts (filtered): {filt_counts}")
+        else:
+            print(f"[V2][WARN] OSM highway counts empty after filter; raw counts: {all_counts}")
+        osm_lines, osm_types = _collect_lines_with_types(osm_feats)
+        if osm_lines:
+            c0 = list(osm_lines[0].coords)[0]
+            is_wgs84 = _is_wgs84_coords(c0[0], c0[1])
+        else:
+            is_wgs84 = False
+        if is_wgs84:
+            osm_lines_utm = [_to_utm32(line) for line in osm_lines]
+            seeds_in_utm = True
+        else:
+            osm_lines_utm = osm_lines
+            seeds_in_utm = False
+        snap_m = float(seeds_cfg.get("osm_snap_m", 2.0))
+        min_degree = int(seeds_cfg.get("osm_min_degree", 3))
+        osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, min_degree, osm_types)
+        if not osm_seeds and min_degree > 2:
+            osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, 2, osm_types)
+            if osm_seeds:
+                print(f"[V2][WARN] no osm degree>={min_degree} seeds, fallback to degree>=2")
+                min_degree = 2
+        if not osm_seeds:
+            junctions = _centerline_junctions(osm_lines_utm)
+            if junctions:
+                print("[V2][WARN] no osm degree seeds, fallback to osm intersections")
+                osm_seeds = [(pt, 2, []) for pt in junctions]
+
+        buffer_m = float(seeds_cfg.get("drive_bbox_buffer_m", 150.0))
+        assign_max_dist_m = float(seeds_cfg.get("assign_max_dist_m", 200.0))
+        multi_assign = bool(seeds_cfg.get("multi_assign", True))
+        for pt, degree, hw_types in osm_seeds:
+            pt_wgs = _geom_to_wgs84(pt) if seeds_in_utm else pt
+            hits = []
+            for drive, bbox in drive_bboxes_wgs84.items():
+                bbox_buf = _expand_bbox(bbox, buffer_m)
+                if bbox_buf[0] <= pt_wgs.x <= bbox_buf[2] and bbox_buf[1] <= pt_wgs.y <= bbox_buf[3]:
+                    hits.append(drive)
+            if hits:
+                if not multi_assign:
+                    hits = hits[:1]
+                for drive in hits:
+                    osm_seeds_by_drive.setdefault(drive, []).append(
+                        {
+                            "seed": pt,
+                            "src_seed": "osm",
+                            "reason": f"osm_degree{min_degree}",
+                            "conf_prior": min(1.0, 0.4 + 0.1 * float(degree)),
+                            "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
+                            "degree": degree,
+                            "highway_types": hw_types,
+                            "assign_reason": "bbox_buffer",
+                            "multi_assign": 1 if len(hits) > 1 else 0,
+                        }
+                    )
+                continue
+            if assign_max_dist_m > 0:
+                best_drive = None
+                best_dist = float("inf")
+                for drive, bbox in drive_bboxes_wgs84.items():
+                    dist = _dist_point_bbox_m(pt_wgs, bbox)
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_drive = drive
+                if best_drive is not None and best_dist <= assign_max_dist_m:
+                    osm_seeds_by_drive.setdefault(best_drive, []).append(
+                        {
+                            "seed": pt,
+                            "src_seed": "osm",
+                            "reason": f"osm_degree{min_degree}",
+                            "conf_prior": min(1.0, 0.4 + 0.1 * float(degree)),
+                            "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
+                            "degree": degree,
+                            "highway_types": hw_types,
+                            "assign_reason": "nearest_drive_fallback",
+                            "multi_assign": 0,
+                        }
+                    )
+
     rows = []
     seen_drives = set()
     for entry in entries:
@@ -707,82 +814,10 @@ def main() -> int:
                 seed_counts["traj"] += 1
 
         if seeds_cfg.get("osm_enabled", True):
-            osm_path = osm_global_path or (outputs_dir / "drivable_roads.geojson")
-            if osm_path is not None and osm_path.exists():
-                osm_feats = _read_geojson(osm_path)
-                all_counts = _osm_highway_counts(osm_feats)
-                allowlist = seeds_cfg.get("osm_highway_allowlist") or []
-                osm_feats = _filter_osm_features(osm_feats, allowlist)
-                filt_counts = _osm_highway_counts(osm_feats)
-                if filt_counts:
-                    print(f"[V2] OSM highway counts (filtered): {filt_counts}")
-                else:
-                    print(f"[V2][WARN] OSM highway counts empty after filter; raw counts: {all_counts}")
-                osm_lines, osm_types = _collect_lines_with_types(osm_feats)
-                if not osm_lines:
-                    missing_reasons.append("filtered_highway")
-                    osm_lines = []
-                    osm_types = []
-                is_wgs84 = False
-                if osm_lines:
-                    c0 = list(osm_lines[0].coords)[0]
-                    is_wgs84 = _is_wgs84_coords(c0[0], c0[1])
-                if is_wgs84:
-                    osm_lines_utm = [_to_utm32(line) for line in osm_lines]
-                    seeds_in_utm = True
-                else:
-                    osm_lines_utm = osm_lines
-                    seeds_in_utm = False
-                snap_m = float(seeds_cfg.get("osm_snap_m", 2.0))
-                min_degree = int(seeds_cfg.get("osm_min_degree", 3))
-                osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, min_degree, osm_types)
-                if not osm_seeds and min_degree > 2:
-                    osm_seeds = _osm_degree_seeds(osm_lines_utm, snap_m, 2, osm_types)
-                    if osm_seeds:
-                        print(f"[V2][WARN] no osm degree>={min_degree} seeds for {drive}, fallback to degree>=2")
-                        min_degree = 2
-                if not osm_seeds:
-                    junctions = _centerline_junctions(osm_lines_utm)
-                    if junctions:
-                        print(f"[V2][WARN] no osm degree seeds for {drive}, fallback to osm intersections")
-                        for pt in junctions:
-                            pt_wgs = _geom_to_wgs84(pt) if seeds_in_utm else pt
-                            bbox = drive_bboxes_wgs84.get(drive)
-                            if bbox is not None:
-                                bbox = _expand_bbox(bbox, 50.0)
-                                if not (bbox[0] <= pt_wgs.x <= bbox[2] and bbox[1] <= pt_wgs.y <= bbox[3]):
-                                    continue
-                            seeds.append(
-                                {
-                                    "seed": pt,
-                                    "src_seed": "osm",
-                                    "reason": "osm_intersection_fallback",
-                                    "conf_prior": 0.5,
-                                    "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
-                                }
-                            )
-                            seed_counts["osm"] += 1
-                for pt, degree, hw_types in osm_seeds:
-                    pt_wgs = _geom_to_wgs84(pt) if seeds_in_utm else pt
-                    bbox = drive_bboxes_wgs84.get(drive)
-                    if bbox is not None:
-                        bbox = _expand_bbox(bbox, 50.0)
-                        if not (bbox[0] <= pt_wgs.x <= bbox[2] and bbox[1] <= pt_wgs.y <= bbox[3]):
-                            continue
-                    conf = min(1.0, 0.4 + 0.1 * float(degree))
-                    seeds.append(
-                        {
-                            "seed": pt,
-                            "src_seed": "osm",
-                            "reason": f"osm_degree{min_degree}",
-                            "conf_prior": conf,
-                            "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
-                            "degree": degree,
-                            "highway_types": hw_types,
-                        }
-                    )
-                    seed_counts["osm"] += 1
-            else:
+            for item in osm_seeds_by_drive.get(drive, []):
+                seeds.append(item)
+                seed_counts["osm"] += 1
+            if drive not in osm_seeds_by_drive:
                 missing_reasons.append("missing_osm_inputs")
 
         if seeds_cfg.get("geom_enabled", True):
