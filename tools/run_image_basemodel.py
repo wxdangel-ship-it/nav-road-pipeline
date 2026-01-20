@@ -281,6 +281,11 @@ def _family_grounded_sam2(
     if not sam2_cfg:
         report["reason"] = "sam2 checkpoint/model_cfg not configured"
         return report
+    sam2_cfg = str(sam2_cfg)
+    if "sam2/configs/" in sam2_cfg:
+        sam2_cfg = "configs/" + sam2_cfg.split("sam2/configs/", 1)[1]
+    elif not sam2_cfg.startswith("configs/"):
+        sam2_cfg = f"configs/{sam2_cfg}"
     try:
         sam2_ckpt = _resolve_sam2_checkpoint(download_cfg, _ensure_cache_env())
     except Exception as exc:
@@ -290,10 +295,18 @@ def _family_grounded_sam2(
     try:
         from huggingface_hub import snapshot_download
         cache_dirs = _resolve_cache_env()
+        local_dir = (
+            Path(cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"] or ".")
+            / "local_snapshots"
+            / dino_repo.replace("/", "--")
+        )
+        local_dir.mkdir(parents=True, exist_ok=True)
         snapshot_dir = snapshot_download(
             repo_id=dino_repo,
             cache_dir=cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"],
             token=False,
+            local_dir=str(local_dir),
+            local_dir_use_symlinks=False,
         )
     except Exception as exc:
         report["reason"] = f"snapshot_download failed: {exc}"
@@ -350,13 +363,24 @@ def _family_grounded_sam2(
         with torch.no_grad():
             outputs = model(**inputs)
         target_sizes = [(h, w)]
-        results = processor.post_process_grounded_object_detection(
-            outputs,
-            inputs.input_ids,
-            box_threshold=float((model_cfg.get("runtime") or {}).get("conf_threshold", 0.25)),
-            text_threshold=float((model_cfg.get("runtime") or {}).get("text_threshold", 0.25)),
-            target_sizes=target_sizes,
-        )[0]
+        box_thresh = float((model_cfg.get("runtime") or {}).get("conf_threshold", 0.25))
+        text_thresh = float((model_cfg.get("runtime") or {}).get("text_threshold", 0.25))
+        try:
+            results = processor.post_process_grounded_object_detection(
+                outputs,
+                inputs.input_ids,
+                box_threshold=box_thresh,
+                text_threshold=text_thresh,
+                target_sizes=target_sizes,
+            )[0]
+        except TypeError:
+            results = processor.post_process_grounded_object_detection(
+                outputs,
+                inputs.input_ids,
+                threshold=box_thresh,
+                text_threshold=text_thresh,
+                target_sizes=target_sizes,
+            )[0]
         boxes = results.get("boxes", [])
         scores = results.get("scores", [])
         labels = results.get("labels", [])
