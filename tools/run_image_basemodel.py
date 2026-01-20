@@ -49,6 +49,8 @@ def _ensure_cache_env() -> str:
     os.environ["HF_HOME"] = cache_root
     os.environ["TRANSFORMERS_CACHE"] = cache_root
     os.environ["TORCH_HOME"] = cache_root
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     return cache_root
 
 

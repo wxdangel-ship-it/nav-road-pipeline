@@ -20,7 +20,7 @@ def _run(cmd: List[str], env: Optional[dict] = None) -> tuple[int, str]:
     if cmd and cmd[0].lower().endswith(".cmd"):
         cmd = ["cmd", "/c"] + cmd
     proc = subprocess.run(cmd, env=env, capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1])
-    return proc.returncode, (proc.stdout + proc.stderr)
+    return proc.returncode, ((proc.stdout or "") + (proc.stderr or ""))
 
 
 def _newest_run(prefix: str) -> Optional[Path]:
@@ -101,6 +101,7 @@ def main() -> int:
 
             env = os.environ.copy()
             env["FEATURE_STORE_DIR"] = str(feat_run / "feature_store")
+            env["GEOM_BACKEND"] = "algo"
             center_cmd = [
                 "scripts\\centerlines_v2.cmd",
                 "--drive",

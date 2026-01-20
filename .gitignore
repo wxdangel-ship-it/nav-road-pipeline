@@ -220,6 +220,7 @@ data/
 *.jpeg
 *.png
 *.mp4
+*.pt
 
 
 # local cache
