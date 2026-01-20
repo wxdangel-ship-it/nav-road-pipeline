@@ -807,6 +807,16 @@ def main() -> int:
 
         center_feats = _read_geojson(center_path)
         center_lines = _collect_lines(center_feats)
+        if not center_lines:
+            rows.append(
+                {
+                    "drive_id": drive,
+                    "status": "FAIL",
+                    "missing_reason": "centerlines_missing_or_empty",
+                    "final_cnt": 0,
+                }
+            )
+            continue
 
         markings_feats: List[dict] = []
         markings_by_class: Dict[str, List[dict]] = {}

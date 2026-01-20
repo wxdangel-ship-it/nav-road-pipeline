@@ -98,6 +98,39 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict,
     inter_sat_frames = []
     inter_final_frames = []
 
+    def _note_missing(drive: str, layer: str, path: Path):
+        report.setdefault("missing_layer_by_drive", []).append({"drive_id": drive, "layer": layer, "path": str(path)})
+
+    def _note_empty(drive: str, layer: str, path: Path):
+        report.setdefault("empty_layer_by_drive", []).append({"drive_id": drive, "layer": layer, "path": str(path)})
+
+    def _resolve_path(outputs_dir: Path, run_id: str, name: str) -> Path:
+        cand = outputs_dir / name
+        if cand.exists():
+            return cand
+        if run_id:
+            alt = Path("runs") / run_id / "outputs" / name
+            if alt.exists():
+                return alt
+        return cand
+
+    def _read_with_fallback(path: Path, fallback: Path, drive: str, layer: str, target_epsg: int | None):
+        if path.exists():
+            return gpd.read_file(path), False
+        if fallback.exists() and target_epsg is not None:
+            gdf = gpd.read_file(fallback)
+            if gdf.crs is None:
+                gdf = gdf.set_crs(32632, allow_override=True)
+            try:
+                gdf = gdf.to_crs(target_epsg)
+            except Exception:
+                return None, False
+            report.setdefault("generated_from_internal", []).append(
+                {"drive_id": drive, "layer": layer, "source": str(fallback)}
+            )
+            return gdf, True
+        return None, False
+
     for entry in entries:
         outputs_dir = Path(entry["outputs_dir"])
         drive = entry.get("drive") or ""
@@ -108,11 +141,11 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict,
         sat_present = bool(summary.get("sat_present"))
         sat_conf = summary.get("sat_confidence_avg")
 
-        center_path = outputs_dir / f"centerlines{suffix}.geojson"
-        center_single_path = outputs_dir / f"centerlines_single{suffix}.geojson"
-        center_dual_path = outputs_dir / f"centerlines_dual{suffix}.geojson"
-        center_both_path = outputs_dir / f"centerlines_both{suffix}.geojson"
-        road_path = outputs_dir / f"road_polygon{suffix}.geojson"
+        center_path = _resolve_path(outputs_dir, run_id, f"centerlines{suffix}.geojson")
+        center_single_path = _resolve_path(outputs_dir, run_id, f"centerlines_single{suffix}.geojson")
+        center_dual_path = _resolve_path(outputs_dir, run_id, f"centerlines_dual{suffix}.geojson")
+        center_both_path = _resolve_path(outputs_dir, run_id, f"centerlines_both{suffix}.geojson")
+        road_path = _resolve_path(outputs_dir, run_id, f"road_polygon{suffix}.geojson")
         inter_dir = outputs_dir
         if intersections_root is not None:
             candidate = intersections_root / "outputs" / drive
@@ -122,103 +155,177 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict,
         inter_algo_path = inter_dir / f"intersections_algo{suffix}.geojson"
         inter_sat_path = inter_dir / f"intersections_sat{suffix}.geojson"
         inter_final_path = inter_dir / f"intersections_final{suffix}.geojson"
-        if center_path.exists():
-            gdf = gpd.read_file(center_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            center_frames.append(gdf)
+        if suffix == "_wgs84":
+            gdf, used_fallback = _read_with_fallback(
+                center_path,
+                _resolve_path(outputs_dir, run_id, "centerlines.geojson"),
+                drive,
+                f"centerlines{suffix}",
+                4326,
+            )
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines{suffix}"})
-        if center_single_path.exists():
-            gdf = gpd.read_file(center_single_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            center_single_frames.append(gdf)
+            gdf, used_fallback = (gpd.read_file(center_path), False) if center_path.exists() else (None, False)
+        if gdf is not None:
+            if gdf.empty:
+                _note_empty(drive, f"centerlines{suffix}", center_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                center_frames.append(gdf)
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines_single{suffix}"})
-        if center_dual_path.exists():
-            gdf = gpd.read_file(center_dual_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            center_dual_frames.append(gdf)
+            _note_missing(drive, f"centerlines{suffix}", center_path)
+        if suffix == "_wgs84":
+            gdf, used_fallback = _read_with_fallback(
+                center_single_path,
+                _resolve_path(outputs_dir, run_id, "centerlines_single.geojson"),
+                drive,
+                f"centerlines_single{suffix}",
+                4326,
+            )
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines_dual{suffix}"})
-        if center_both_path.exists():
-            gdf = gpd.read_file(center_both_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            center_both_frames.append(gdf)
+            gdf, used_fallback = (gpd.read_file(center_single_path), False) if center_single_path.exists() else (None, False)
+        if gdf is not None:
+            if gdf.empty:
+                _note_empty(drive, f"centerlines_single{suffix}", center_single_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                center_single_frames.append(gdf)
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"centerlines_both{suffix}"})
-        if road_path.exists():
-            gdf = gpd.read_file(road_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            road_frames.append(gdf)
+            _note_missing(drive, f"centerlines_single{suffix}", center_single_path)
+        if suffix == "_wgs84":
+            gdf, used_fallback = _read_with_fallback(
+                center_dual_path,
+                _resolve_path(outputs_dir, run_id, "centerlines_dual.geojson"),
+                drive,
+                f"centerlines_dual{suffix}",
+                4326,
+            )
+        else:
+            gdf, used_fallback = (gpd.read_file(center_dual_path), False) if center_dual_path.exists() else (None, False)
+        if gdf is not None:
+            if gdf.empty:
+                _note_empty(drive, f"centerlines_dual{suffix}", center_dual_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                center_dual_frames.append(gdf)
+        else:
+            _note_missing(drive, f"centerlines_dual{suffix}", center_dual_path)
+        if suffix == "_wgs84":
+            gdf, used_fallback = _read_with_fallback(
+                center_both_path,
+                _resolve_path(outputs_dir, run_id, "centerlines_both.geojson"),
+                drive,
+                f"centerlines_both{suffix}",
+                4326,
+            )
+        else:
+            gdf, used_fallback = (gpd.read_file(center_both_path), False) if center_both_path.exists() else (None, False)
+        if gdf is not None:
+            if gdf.empty:
+                _note_empty(drive, f"centerlines_both{suffix}", center_both_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                center_both_frames.append(gdf)
+        else:
+            _note_missing(drive, f"centerlines_both{suffix}", center_both_path)
+        if suffix == "_wgs84":
+            gdf, used_fallback = _read_with_fallback(
+                road_path,
+                _resolve_path(outputs_dir, run_id, "road_polygon.geojson"),
+                drive,
+                f"road_polygon{suffix}",
+                4326,
+            )
+        else:
+            gdf, used_fallback = (gpd.read_file(road_path), False) if road_path.exists() else (None, False)
+        if gdf is not None:
+            if gdf.empty:
+                _note_empty(drive, f"road_polygon{suffix}", road_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                road_frames.append(gdf)
+        else:
+            _note_missing(drive, f"road_polygon{suffix}", road_path)
         if inter_path.exists():
             gdf = gpd.read_file(inter_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            gdf["backend_used"] = backend_used
-            gdf["sat_present"] = sat_present
-            gdf["sat_confidence"] = sat_conf
-            inter_frames.append(gdf)
+            if gdf.empty:
+                _note_empty(drive, f"intersections{suffix}", inter_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                gdf["backend_used"] = backend_used
+                gdf["sat_present"] = sat_present
+                gdf["sat_confidence"] = sat_conf
+                inter_frames.append(gdf)
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections{suffix}"})
+            _note_missing(drive, f"intersections{suffix}", inter_path)
         if inter_algo_path.exists():
             gdf = gpd.read_file(inter_algo_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            gdf["backend_used"] = "algo"
-            gdf["sat_present"] = sat_present
-            gdf["sat_confidence"] = sat_conf
-            inter_algo_frames.append(gdf)
+            if gdf.empty:
+                _note_empty(drive, f"intersections_algo{suffix}", inter_algo_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                gdf["backend_used"] = "algo"
+                gdf["sat_present"] = sat_present
+                gdf["sat_confidence"] = sat_conf
+                inter_algo_frames.append(gdf)
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_algo{suffix}"})
+            _note_missing(drive, f"intersections_algo{suffix}", inter_algo_path)
         if inter_sat_path.exists():
             gdf = gpd.read_file(inter_sat_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            gdf["backend_used"] = "sat"
-            gdf["sat_present"] = sat_present
-            gdf["sat_confidence"] = sat_conf
-            inter_sat_frames.append(gdf)
+            if gdf.empty:
+                _note_empty(drive, f"intersections_sat{suffix}", inter_sat_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                gdf["backend_used"] = "sat"
+                gdf["sat_present"] = sat_present
+                gdf["sat_confidence"] = sat_conf
+                inter_sat_frames.append(gdf)
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_sat{suffix}"})
+            _note_missing(drive, f"intersections_sat{suffix}", inter_sat_path)
         if inter_final_path.exists():
             gdf = gpd.read_file(inter_final_path)
-            gdf["drive"] = drive
-            gdf["drive_id"] = drive
-            gdf["tile_id"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            inter_final_frames.append(gdf)
+            if gdf.empty:
+                _note_empty(drive, f"intersections_final{suffix}", inter_final_path)
+            else:
+                gdf["drive"] = drive
+                gdf["drive_id"] = drive
+                gdf["tile_id"] = drive
+                gdf["geom_run_id"] = run_id
+                gdf["candidate_id"] = candidate_id
+                inter_final_frames.append(gdf)
         else:
-            report.setdefault("missing_layer", []).append({"drive_id": drive, "layer": f"intersections_final{suffix}"})
+            _note_missing(drive, f"intersections_final{suffix}", inter_final_path)
 
     if center_frames:
         merged_center = gpd.GeoDataFrame(pd.concat(center_frames, ignore_index=True))
@@ -340,6 +447,9 @@ def main() -> int:
     report.setdefault("missing_layer", [])
     report.setdefault("empty_layer", [])
     report.setdefault("feature_count", {})
+    report.setdefault("missing_layer_by_drive", [])
+    report.setdefault("empty_layer_by_drive", [])
+    report.setdefault("generated_from_internal", [])
     (out_dir / "merge_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     return 0
 

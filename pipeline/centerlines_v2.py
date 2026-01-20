@@ -299,6 +299,9 @@ def build_centerlines_v2(
         outputs["dual"].extend(dual_features)
         outputs_lines["dual"].extend([line for _, line in dual_pairs])
 
+    outputs["both"] = outputs["single"] + (dual_features if dual_features else [])
+    outputs_lines["both"] = outputs_lines["single"] + (outputs_lines["dual"] if dual_features else [])
+
     mode = str(center_cfg.get("mode", "auto")).lower()
     dual_fallback = False
     if mode == "dual":
@@ -310,8 +313,6 @@ def build_centerlines_v2(
             outputs_lines["auto"] = outputs_lines["single"]
             dual_fallback = True
     elif mode == "both":
-        outputs["both"] = outputs["single"] + (dual_features if dual_features else [])
-        outputs_lines["both"] = outputs_lines["single"] + (outputs_lines["dual"] if dual_features else [])
         outputs["auto"] = outputs["both"]
         outputs_lines["auto"] = outputs_lines["both"]
     elif mode == "auto":
