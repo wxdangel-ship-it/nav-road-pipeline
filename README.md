@@ -58,7 +58,7 @@ QGIS layer suggestion:
   - `configs/seg_schema.yaml` (class/id/subtype mapping)
   - `configs/feature_schema.yaml` (geometry types + required fields)
 - Build feature_store:
-  - `scripts\\image_features.cmd --drive <drive_id> --model-out-dir <dir> --out-run-dir runs\\image_feat_v1 --seg-schema configs\\seg_schema.yaml --feature-schema configs\\feature_schema.yaml`
+  - `scripts\\image_features.cmd --drive <drive_id> --model-out-dir <dir> --out-run-dir runs\\image_feat_v1 --seg-schema configs\\seg_schema.yaml --feature-schema configs\\feature_schema.yaml --max-frames 200`
 - Output layout:
   - `runs\\<run>\\feature_store\\<drive>\\<frame>\\image_features.gpkg`
   - `runs\\<run>\\feature_store\\<drive>\\<frame>\\traffic_light_dets.json`
@@ -66,6 +66,9 @@ QGIS layer suggestion:
 - Centerlines with seg divider:
   - `set FEATURE_STORE_DIR=runs\\image_feat_v1\\feature_store`
   - `scripts\\centerlines_v2.cmd --drive <drive_id> --max-frames 200`
+ - Optional meta:
+  - `<MODEL_OUT_DIR>\\meta.json` can define resize/letterbox for bbox/mask back-projection.
+  - Use `tools\\scan_seg_unique_ids.py --seg-dir <MODEL_OUT_DIR>\\seg_masks --max-frames 50` to inspect class ids.
 
 ## DOP20 WMS download (Golden8 AOI)
 - Build AOI:

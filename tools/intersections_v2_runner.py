@@ -809,12 +809,15 @@ def main() -> int:
         center_lines = _collect_lines(center_feats)
 
         markings_feats: List[dict] = []
+        markings_by_class: Dict[str, List[dict]] = {}
         if refine_cfg.get("markings_enabled"):
             store_dir = refine_cfg.get("markings_feature_store_dir")
             if store_dir:
                 feat_map = load_image_features(drive, None, Path(store_dir))
                 for cls in ("stop_line", "crosswalk", "gore_marking", "arrow"):
-                    markings_feats.extend(feat_map.get(cls) or [])
+                    feats = feat_map.get(cls) or []
+                    markings_feats.extend(feats)
+                    markings_by_class[cls] = feats
 
         missing_reasons = []
         seed_features = []
@@ -898,6 +901,7 @@ def main() -> int:
 
         refined_seeds = []
         markings_hits = 0
+        markings_query_counts = {k: 0 for k in ("stop_line", "crosswalk", "gore_marking", "arrow")}
         for item in seeds:
             seed = item["seed"]
             ref_seed = seed
@@ -905,6 +909,12 @@ def main() -> int:
             conf_refine = None
             if refine_cfg.get("markings_enabled") and markings_feats:
                 max_dist = float(refine_cfg.get("markings_max_dist_m", 20.0))
+                for cls, feats in markings_by_class.items():
+                    if not feats:
+                        continue
+                    hit = _refine_seed_markings(seed, feats, max_dist)
+                    if hit is not None:
+                        markings_query_counts[cls] += 1
                 marking_seed = _refine_seed_markings(seed, markings_feats, max_dist)
                 if marking_seed is not None:
                     ref_seed = marking_seed
@@ -1082,11 +1092,20 @@ def main() -> int:
                 "seed_sat_cnt": seed_counts["sat"],
                 "seed_geom_cnt": seed_counts["geom"],
                 "refine_markings_hit_rate": round(markings_hits / max(1, len(seeds)), 4),
+                "markings_hit_stop_line": markings_query_counts.get("stop_line", 0),
+                "markings_hit_crosswalk": markings_query_counts.get("crosswalk", 0),
+                "markings_hit_gore_marking": markings_query_counts.get("gore_marking", 0),
+                "markings_hit_arrow": markings_query_counts.get("arrow", 0),
                 "sat_circularity_p50": p50,
                 "sat_circularity_p75": p75,
                 "sat_overlap_p50": o50,
             }
         )
+        if refine_cfg.get("markings_enabled") and markings_hits == 0:
+            print(
+                "[V2][MARKINGS] no hits within radius; counts:",
+                {k: markings_query_counts.get(k, 0) for k in markings_query_counts},
+            )
 
     for drive in expected_drives:
         if drive in seen_drives:

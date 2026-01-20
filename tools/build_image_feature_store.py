@@ -67,6 +67,63 @@ def _find_candidates(root: Path) -> Tuple[List[Path], List[Path], List[Path]]:
     return seg, det, other
 
 
+def _load_meta(path: Path) -> tuple[Optional[dict], Optional[str]]:
+    if not path.exists():
+        return None, "meta.json not found; assume outputs already in original image px"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, "meta.json parse failed; assume outputs already in original image px"
+    return data, None
+
+
+def _build_transform(meta: dict | None):
+    if not meta:
+        return None
+    resize_mode = str(meta.get("resize_mode") or "none").lower()
+    if resize_mode == "none":
+        return None
+    if resize_mode == "letterbox":
+        scale = float(meta.get("scale") or meta.get("letterbox", {}).get("scale") or 1.0)
+        pad = meta.get("pad") or meta.get("letterbox", {}).get("pad") or [0.0, 0.0]
+        pad_x, pad_y = float(pad[0]), float(pad[1])
+
+        def _transform_xy(x: float, y: float) -> tuple[float, float]:
+            return (x - pad_x) / max(1e-6, scale), (y - pad_y) / max(1e-6, scale)
+
+        return _transform_xy
+    if resize_mode == "resize":
+        scale = meta.get("scale") or meta.get("resize", {}).get("scale")
+        if scale and isinstance(scale, (int, float)):
+            sx = sy = float(scale)
+        else:
+            sx = float(meta.get("scale_x") or meta.get("resize", {}).get("scale_x") or 1.0)
+            sy = float(meta.get("scale_y") or meta.get("resize", {}).get("scale_y") or 1.0)
+
+        def _transform_xy(x: float, y: float) -> tuple[float, float]:
+            return x / max(1e-6, sx), y / max(1e-6, sy)
+
+        return _transform_xy
+    return None
+
+
+def _apply_transform_geom(geom, transform_xy):
+    if transform_xy is None or geom is None or geom.is_empty:
+        return geom
+    from shapely.ops import transform as shapely_transform
+
+    return shapely_transform(lambda x, y, z=None: transform_xy(x, y), geom)
+
+
+def _apply_transform_bbox(bbox: Iterable[float], transform_xy):
+    if transform_xy is None:
+        return bbox
+    x1, y1, x2, y2 = [float(v) for v in bbox]
+    nx1, ny1 = transform_xy(x1, y1)
+    nx2, ny2 = transform_xy(x2, y2)
+    return [nx1, ny1, nx2, ny2]
+
+
 def _read_mask(path: Path) -> np.ndarray:
     if path.suffix.lower() == ".npy":
         return np.load(path)
@@ -173,6 +230,7 @@ def main() -> int:
     ap.add_argument("--geometry-frame", default="image_px", choices=["image_px", "cam", "ego", "map"])
     ap.add_argument("--write-geojson", type=int, default=0)
     ap.add_argument("--resume", type=int, default=1)
+    ap.add_argument("--max-frames", type=int, default=0)
     args = ap.parse_args()
 
     drive_id = args.drive
@@ -192,6 +250,9 @@ def main() -> int:
     elif args.adapter == "det":
         seg_files = []
 
+    meta, meta_note = _load_meta(model_out_dir / "meta.json")
+    transform_xy = _build_transform(meta)
+
     if not seg_files and not det_files:
         out_dir = out_run_dir / "feature_store"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -203,6 +264,8 @@ def main() -> int:
             "frames_with_class": {},
             "conf_stats": {},
             "note": "no recognizable model outputs found",
+            "meta": meta,
+            "meta_note": meta_note,
             "probe_paths": {
                 "seg_candidates": [str(p) for p in seg_files],
                 "det_candidates": [str(p) for p in det_files],
@@ -213,6 +276,7 @@ def main() -> int:
         print("[FEATURES] no recognizable model outputs found.")
         return 0
 
+    det_cache: Dict[Path, List[dict]] = {}
     frame_map: Dict[str, Dict[str, List[Path]]] = {}
     for p in seg_files:
         fid = _extract_frame_id(p, args.frame_regex)
@@ -220,6 +284,10 @@ def main() -> int:
     for p in det_files:
         fid = _extract_frame_id(p, args.frame_regex)
         frame_map.setdefault(fid, {}).setdefault("det", []).append(p)
+
+    if args.max_frames and args.max_frames > 0:
+        selected = sorted(frame_map.keys())[: args.max_frames]
+        frame_map = {k: frame_map[k] for k in selected}
 
     out_root = out_run_dir / "feature_store" / drive_id
     out_root.mkdir(parents=True, exist_ok=True)
@@ -284,6 +352,7 @@ def main() -> int:
                 geom_type = feature_schema.get(cls, {}).get("geometry_type", "LineString")
                 geoms = _vectorize_mask(mask, int(cid), geom_type)
                 for geom in geoms:
+                    geom = _apply_transform_geom(geom, transform_xy)
                     props = {
                         "drive_id": drive_id,
                         "frame_id": frame_id,
@@ -309,25 +378,32 @@ def main() -> int:
 
         det_records: List[dict] = []
         for det_path in sources.get("det", []):
-            if det_path.suffix.lower() == ".jsonl":
-                lines = det_path.read_text(encoding="utf-8").splitlines()
-                for line in lines:
-                    if not line.strip():
-                        continue
-                    rec = json.loads(line)
-                    if isinstance(rec, list):
-                        det_records.extend(rec)
-                    else:
-                        det_records.append(rec)
+            if det_path in det_cache:
+                det_records = det_cache[det_path]
             else:
-                data = json.loads(det_path.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and "detections" in data:
-                    det_records.extend(data["detections"])
-                elif isinstance(data, list):
-                    det_records.extend(data)
+                if det_path.suffix.lower() == ".jsonl":
+                    lines = det_path.read_text(encoding="utf-8").splitlines()
+                    for line in lines:
+                        if not line.strip():
+                            continue
+                        rec = json.loads(line)
+                        if isinstance(rec, list):
+                            det_records.extend(rec)
+                        else:
+                            det_records.append(rec)
+                else:
+                    data = json.loads(det_path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and "detections" in data:
+                        det_records.extend(data["detections"])
+                    elif isinstance(data, list):
+                        det_records.extend(data)
+                det_cache[det_path] = det_records
 
         det_out: List[dict] = []
         for det in det_records:
+            det_frame = det.get("frame_id")
+            if det_frame is not None and str(det_frame) != str(frame_id):
+                continue
             cls_raw = det.get("class") or det.get("class_name")
             cls = _class_from_name(str(cls_raw).lower(), seg_schema) if cls_raw else None
             if cls is None:
@@ -335,6 +411,7 @@ def main() -> int:
             bbox = det.get("bbox")
             if not bbox or len(bbox) != 4:
                 continue
+            bbox = _apply_transform_bbox(bbox, transform_xy)
             geom = box(float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
             conf = _to_float(det.get("conf") or det.get("score"))
             props = {
@@ -374,6 +451,8 @@ def main() -> int:
         "conf_stats": conf_stats,
         "model_id": args.model_id,
         "model_version": args.model_version,
+        "meta": meta,
+        "meta_note": meta_note,
     }
     (out_run_dir / "feature_store" / "index.json").write_text(
         json.dumps(index, indent=2), encoding="utf-8"

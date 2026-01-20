@@ -315,6 +315,10 @@ def _get_env_str(key: str, default: str) -> str:
     return raw.strip() if raw else default
 
 
+def _parse_bool(raw: str) -> bool:
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _load_nn_best_cfg(path: Path) -> dict:
     if not path.exists():
         raise SystemExit(f"ERROR: nn best config not found: {path}")
@@ -1211,6 +1215,7 @@ def main() -> int:
     ap.add_argument("--simplify-m", type=float, default=1.2, help="geometry simplify meters")
     ap.add_argument("--centerline-offset-m", type=float, default=3.5, help="centerline offset (m)")
     ap.add_argument("--centerlines-config", default="configs/centerlines.yaml", help="centerlines config yaml")
+    ap.add_argument("--debug-dividers", default="", help="enable divider debug outputs (true/false)")
     ap.add_argument("--intersection-refine-config", default="configs/intersections_shape_refine.yaml", help="intersection refine config yaml")
     ap.add_argument("--allow-empty-intersections", type=int, default=1, help="allow empty intersections without failing")
     ap.add_argument(
@@ -1320,6 +1325,8 @@ def main() -> int:
         env_mode = os.environ.get("CENTERLINE_MODE", "").strip()
         if env_mode:
             center_cfg["mode"] = env_mode
+        if args.debug_dividers:
+            center_cfg["debug_divider_layers"] = _parse_bool(args.debug_dividers)
         env_dual_width = os.environ.get("DUAL_WIDTH_THRESH_M", "").strip()
         if env_dual_width:
             center_cfg["dual_width_threshold_m"] = float(env_dual_width)
