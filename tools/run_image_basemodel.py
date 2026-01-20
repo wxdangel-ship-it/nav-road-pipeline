@@ -56,6 +56,7 @@ def _resolve_cache_env() -> dict:
         os.environ["TRANSFORMERS_CACHE"] = transformers_cache
         os.environ["TORCH_HOME"] = torch_home
     os.environ.setdefault("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     return {
         "hf_home": hf_home,
@@ -63,6 +64,21 @@ def _resolve_cache_env() -> dict:
         "transformers_cache": transformers_cache,
         "torch_home": torch_home,
     }
+
+
+def _ensure_cache_env() -> str:
+    cache_dirs = _resolve_cache_env()
+    for key in ("hf_home", "hf_hub_cache", "transformers_cache", "torch_home"):
+        val = cache_dirs.get(key)
+        if val:
+            Path(val).mkdir(parents=True, exist_ok=True)
+    clip_cache = os.environ.get("CLIP_CACHE_DIR") or os.environ.get("XDG_CACHE_HOME")
+    if not clip_cache:
+        clip_cache = r"E:\clip"
+        os.environ["CLIP_CACHE_DIR"] = clip_cache
+        os.environ["XDG_CACHE_HOME"] = clip_cache
+    Path(clip_cache).mkdir(parents=True, exist_ok=True)
+    return cache_dirs.get("hf_home") or cache_dirs.get("hf_hub_cache") or ""
 
 
 def _cache_write_probe(hf_home: str) -> Optional[str]:
