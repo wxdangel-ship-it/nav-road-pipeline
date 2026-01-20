@@ -25,6 +25,7 @@ from pipeline.intersection_shape import (
     overlap_with_road as _intersection_overlap_with_road,
     refine_intersection_polygon as _refine_intersection_polygon,
 )
+from pipeline.centerlines_v2 import build_centerlines_v2
 
 try:
     from shapely import make_valid as _shapely_make_valid
@@ -342,6 +343,10 @@ def _centerlines_defaults() -> dict:
         "dual_offset_margin_m": 1.0,
         "dual_min_keep_ratio": 0.6,
         "dual_fallback_single": True,
+        "dual_conf_threshold": 0.0,
+        "divider_sources": ["geom"],
+        "simplify_m": 0.5,
+        "debug_divider_layers": False,
     }
 
 
@@ -1443,7 +1448,17 @@ def main() -> int:
         road_after = len(road_keep)
         road_poly = unary_union(road_keep) if road_keep else road_poly
 
-        center_result = _build_centerline_outputs(
+        base_centerline = _merge_lines(traj_line.intersection(road_poly)) or traj_line
+        width_stats = _centerline_width_stats(
+            base_centerline,
+            road_poly,
+            float(center_cfg["step_m"]),
+            float(center_cfg["probe_m"]),
+        )
+        center_cfg["width_median_m"] = float(width_stats["width_median"])
+        center_cfg["width_p95_m"] = float(width_stats["width_p95"])
+
+        center_result = build_centerlines_v2(
             traj_line=traj_line,
             road_poly=road_poly,
             center_cfg=center_cfg,
@@ -1459,11 +1474,37 @@ def main() -> int:
 
         wgs84 = Transformer.from_crs("EPSG:32632", "EPSG:4326", always_xy=True)
         _write_centerlines_outputs(out_dir, center_outputs, wgs84)
+        if center_cfg.get("debug_divider_layers", False):
+            debug_dir = out_dir / "debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            divider_line = center_result.get("divider_line")
+            if divider_line is not None and not divider_line.is_empty:
+                _write_geojson(
+                    debug_dir / "divider_debug.geojson",
+                    [
+                        {
+                            "type": "Feature",
+                            "geometry": mapping(divider_line),
+                            "properties": {"divider_src": center_result.get("divider_src")},
+                        }
+                    ],
+                )
+            carriageways = center_result.get("carriageways") or []
+            if len(carriageways) >= 1:
+                _write_geojson(
+                    debug_dir / "carriageway_split_L.geojson",
+                    [{"type": "Feature", "geometry": mapping(carriageways[0]), "properties": {}}],
+                )
+            if len(carriageways) >= 2:
+                _write_geojson(
+                    debug_dir / "carriageway_split_R.geojson",
+                    [{"type": "Feature", "geometry": mapping(carriageways[1]), "properties": {}}],
+                )
         center_features = center_result["active_features"]
         center_lines = center_result["active_lines"]
-        dual_offset_used = center_result["dual_offset_m"]
+        dual_offset_used = center_result.get("dual_sep_m")
         dual_triggered = bool(center_result["dual_triggered"])
-        center_dual_ratio = float(center_result["dual_sample_ratio"])
+        center_dual_ratio = 0.0
 
         single_feats = center_outputs.get("single") or []
         dual_feats = center_outputs.get("dual") or []
@@ -1472,9 +1513,10 @@ def main() -> int:
         single_len = float(sum(l.length for l in single_lines))
         dual_len = float(sum(l.length for l in dual_lines))
         avg_offset = None
-        if dual_feats:
-            offsets = [abs(float(f.get("properties", {}).get("offset_m") or 0.0)) for f in dual_feats]
-            avg_offset = float(sum(offsets) / max(1, len(offsets)))
+        if dual_offset_used is not None:
+            avg_offset = float(dual_offset_used)
+        if single_len > 0:
+            center_dual_ratio = float(dual_len / max(1e-6, single_len))
         dual_triggered_segments = 1 if dual_triggered else 0
         total_segments = 1 if center_lines else 0
 
@@ -1895,9 +1937,12 @@ def main() -> int:
                 "width_median_m": qc["width_median_m"],
                 "width_p95_m": qc["width_p95_m"],
                 "centerline_mode": centerline_mode,
-                "dual_offset_m": round(dual_offset_used, 3),
+                "dual_offset_m": round(dual_offset_used, 3) if dual_offset_used is not None else None,
+                "dual_sep_m": round(dual_offset_used, 3) if dual_offset_used is not None else None,
                 "dual_width_thresh_m": round(center_cfg["dual_width_threshold_m"], 3),
                 "dual_min_len_m": round(center_cfg["min_segment_length_m"], 3),
+                "dual_conf_threshold": round(float(center_cfg.get("dual_conf_threshold", 0.0)), 3),
+                "divider_sources": center_cfg.get("divider_sources"),
                 "centerline_dual_ratio": round(center_dual_ratio, 4),
                 "post_mask_close_m": round(post_mask_close_m, 3),
                 "post_mask_open_m": round(post_mask_open_m, 3),
