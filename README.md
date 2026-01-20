@@ -76,3 +76,15 @@ QGIS layer suggestion:
 - Download tiles (WMS -> jpg+jgw):
   - `scripts\\download_dop20.cmd`
   - Or override AOI: `scripts\\download_dop20.cmd runs\\golden8_aoi\\golden8_aoi.json`
+
+## Auto-select image basemodel (V0)
+- Model zoo: `configs\\image_model_zoo.yaml`
+- Run selection (auto download + infer + feature_store + centerlines):
+  - `scripts\\auto_select_basemodel.cmd --drive 2013_05_28_drive_0007_sync --max-frames 200`
+- Outputs:
+  - `runs\\basemodel_select_<ts>\\report.json`
+  - `runs\\basemodel_select_<ts>\\report.md`
+- Notes:
+  - Requires `POC_DATA_ROOT` pointing to KITTI-360 root.
+  - Cache uses `HF_HOME/TRANSFORMERS_CACHE/TORCH_HOME` or defaults to `E:\\hf_cache_shared`.
+  - CPU mode auto-reduces frames to 50 and records it in report.
