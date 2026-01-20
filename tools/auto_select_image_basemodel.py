@@ -19,7 +19,7 @@ def _load_yaml(path: Path) -> dict:
 def _run(cmd: List[str], env: Optional[dict] = None) -> tuple[int, str]:
     if cmd and cmd[0].lower().endswith(".cmd"):
         cmd = ["cmd", "/c"] + cmd
-    proc = subprocess.run(cmd, env=env, capture_output=True, text=True)
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1])
     return proc.returncode, (proc.stdout + proc.stderr)
 
 
@@ -59,123 +59,139 @@ def main() -> int:
         model_id = model.get("model_id")
         print(f"[SELECT] candidate: {model_id}")
 
-        cmd = [
-            sys.executable,
-            "tools/run_image_basemodel.py",
-            "--drive",
-            args.drive,
-            "--max-frames",
-            str(args.max_frames),
-            "--model-id",
-            model_id,
-            "--out-run",
-            str(out_run),
-            "--seg-schema",
-            "configs/seg_schema.yaml",
-        ]
-        code, out = _run(cmd, env=os.environ.copy())
-        infer_report = _read_json(out_run / "infer_report.json")
-        status = "ok" if code == 0 else "fail"
+        try:
+            cmd = [
+                sys.executable,
+                "tools/run_image_basemodel.py",
+                "--drive",
+                args.drive,
+                "--max-frames",
+                str(args.max_frames),
+                "--model-id",
+                model_id,
+                "--out-run",
+                str(out_run),
+                "--seg-schema",
+                "configs/seg_schema.yaml",
+            ]
+            code, out = _run(cmd, env=os.environ.copy())
+            infer_report = _read_json(out_run / "infer_report.json")
+            status = "ok" if code == 0 else "fail"
 
-        model_out_dir = Path(out_run) / "model_outputs" / model_id / args.drive
-        feat_run = out_run / f"feature_store_{model_id}"
-        feat_run.mkdir(parents=True, exist_ok=True)
-        feat_cmd = [
-            "scripts/image_features.cmd",
-            "--drive",
-            args.drive,
-            "--max-frames",
-            str(args.max_frames),
-            "--model-out-dir",
-            str(model_out_dir),
-            "--out-run-dir",
-            str(feat_run),
-            "--seg-schema",
-            "configs/seg_schema.yaml",
-            "--feature-schema",
-            "configs/feature_schema.yaml",
-        ]
-        feat_code, feat_out = _run(feat_cmd, env=os.environ.copy())
-        feat_index = _read_json(feat_run / "feature_store" / "index.json")
+            model_out_dir = Path(out_run) / "model_outputs" / model_id / args.drive
+            feat_run = out_run / f"feature_store_{model_id}"
+            feat_run.mkdir(parents=True, exist_ok=True)
+            feat_cmd = [
+                "scripts\\image_features.cmd",
+                "--drive",
+                args.drive,
+                "--max-frames",
+                str(args.max_frames),
+                "--model-out-dir",
+                str(model_out_dir),
+                "--out-run-dir",
+                str(feat_run),
+                "--seg-schema",
+                "configs/seg_schema.yaml",
+                "--feature-schema",
+                "configs/feature_schema.yaml",
+            ]
+            feat_code, feat_out = _run(feat_cmd, env=os.environ.copy())
+            feat_index = _read_json(feat_run / "feature_store" / "index.json")
 
-        env = os.environ.copy()
-        env["FEATURE_STORE_DIR"] = str(feat_run / "feature_store")
-        center_cmd = [
-            "scripts/centerlines_v2.cmd",
-            "--drive",
-            args.drive,
-            "--max-frames",
-            str(args.max_frames),
-            "--debug-dividers",
-            "true",
-        ]
-        before = _newest_run("geom")
-        center_code, center_out = _run(center_cmd, env=env)
-        after = _newest_run("geom")
-        geom_run = after if after and after != before else after
-        qc = _read_json(geom_run / "outputs" / "qc.json") if geom_run else {}
+            env = os.environ.copy()
+            env["FEATURE_STORE_DIR"] = str(feat_run / "feature_store")
+            center_cmd = [
+                "scripts\\centerlines_v2.cmd",
+                "--drive",
+                args.drive,
+                "--max-frames",
+                str(args.max_frames),
+                "--debug-dividers",
+                "true",
+            ]
+            before = _newest_run("geom")
+            center_code, center_out = _run(center_cmd, env=env)
+            after = _newest_run("geom")
+            geom_run = after if after and after != before else after
+            qc = _read_json(geom_run / "outputs" / "qc.json") if geom_run else {}
 
-        # intersections v2 (markings)
-        temp_index = out_run / f"postopt_index_{model_id}.jsonl"
-        temp_index.write_text(
-            json.dumps(
-                {
-                    "drive": args.drive,
-                    "drive_id": args.drive,
-                    "tile_id": args.drive,
-                    "stage": "full",
-                    "status": "PASS",
-                    "outputs_dir": str(geom_run / "outputs") if geom_run else "",
-                    "candidate_id": "auto",
-                }
+            # intersections v2 (markings)
+            temp_index = out_run / f"postopt_index_{model_id}.jsonl"
+            temp_index.write_text(
+                json.dumps(
+                    {
+                        "drive": args.drive,
+                        "drive_id": args.drive,
+                        "tile_id": args.drive,
+                        "stage": "full",
+                        "status": "PASS",
+                        "outputs_dir": str(geom_run / "outputs") if geom_run else "",
+                        "candidate_id": "auto",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
-        temp_cfg = out_run / f"intersections_v2_{model_id}.yaml"
-        cfg = _load_yaml(Path("configs/intersections_v2.yaml"))
-        cfg.setdefault("refine", {})
-        cfg["refine"]["markings_enabled"] = True
-        cfg["refine"]["markings_feature_store_dir"] = str(feat_run / "feature_store")
-        import yaml
+            temp_cfg = out_run / f"intersections_v2_{model_id}.yaml"
+            cfg = _load_yaml(Path("configs/intersections_v2.yaml"))
+            cfg.setdefault("refine", {})
+            cfg["refine"]["markings_enabled"] = True
+            cfg["refine"]["markings_feature_store_dir"] = str(feat_run / "feature_store")
+            import yaml
 
-        temp_cfg.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
-        inter_cmd = [
-            "scripts/intersections_v2.cmd",
-            "--index",
-            str(temp_index),
-            "--stage",
-            "full",
-            "--config",
-            str(temp_cfg),
-            "--out-dir",
-            str(out_run / f"intersections_{model_id}"),
-            "--resume",
-        ]
-        inter_code, inter_out = _run(inter_cmd, env=os.environ.copy())
-        report_path = out_run / f"intersections_{model_id}" / "full_report_per_drive.json"
-        report_rows = _read_json(report_path) if report_path.exists() else []
-        hit_rate = None
-        if report_rows:
-            hit_rate = report_rows[0].get("refine_markings_hit_rate")
+            temp_cfg.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+            inter_cmd = [
+                "scripts\\intersections_v2.cmd",
+                "--index",
+                str(temp_index),
+                "--stage",
+                "full",
+                "--config",
+                str(temp_cfg),
+                "--out-dir",
+                str(out_run / f"intersections_{model_id}"),
+                "--resume",
+            ]
+            inter_code, inter_out = _run(inter_cmd, env=os.environ.copy())
+            report_path = out_run / f"intersections_{model_id}" / "full_report_per_drive.json"
+            report_rows_local = _read_json(report_path) if report_path.exists() else []
+            hit_rate = None
+            if report_rows_local:
+                hit_rate = report_rows_local[0].get("refine_markings_hit_rate")
 
-        row = {
-            "model_id": model_id,
-            "status": status,
-            "infer_report": infer_report,
-            "feature_store_counts": feat_index.get("counts"),
-            "feature_store_frames": feat_index.get("frames_with_class"),
-            "divider_found": qc.get("divider_found"),
-            "split_success": qc.get("split_success"),
-            "dual_ratio": qc.get("dual_ratio"),
-            "dual_len_m": qc.get("centerlines_dual_len_m"),
-            "refine_markings_hit_rate": hit_rate,
-            "geom_run": str(geom_run) if geom_run else None,
-            "stdout": out,
-            "feature_store_log": feat_out,
-            "centerlines_log": center_out,
-            "intersections_log": inter_out,
-        }
+            row = {
+                "model_id": model_id,
+                "status": status,
+                "infer_report": infer_report,
+                "feature_store_counts": feat_index.get("counts") if feat_index else None,
+                "feature_store_frames": feat_index.get("frames_with_class") if feat_index else None,
+                "divider_found": qc.get("divider_found"),
+                "split_success": qc.get("split_success"),
+                "dual_ratio": qc.get("dual_ratio"),
+                "dual_len_m": qc.get("centerlines_dual_len_m"),
+                "refine_markings_hit_rate": hit_rate,
+                "geom_run": str(geom_run) if geom_run else None,
+                "stdout": out,
+                "feature_store_log": feat_out,
+                "centerlines_log": center_out,
+                "intersections_log": inter_out,
+            }
+        except Exception as exc:
+            row = {
+                "model_id": model_id,
+                "status": "fail",
+                "infer_report": {},
+                "feature_store_counts": None,
+                "feature_store_frames": None,
+                "divider_found": None,
+                "split_success": None,
+                "dual_ratio": None,
+                "dual_len_m": None,
+                "refine_markings_hit_rate": None,
+                "geom_run": None,
+                "stdout": f"[ERROR] {exc}",
+            }
         report_rows.append(row)
 
     report_path = out_run / "report.json"

@@ -28,8 +28,9 @@ models:
       source: huggingface
       repo: IDEA-Research/grounding-dino-base
       sam2_repo: facebookresearch/sam2
-      sam2_checkpoint: sam2_hiera_tiny.pt
-      sam2_model_cfg: sam2_hiera_t.yaml
+      sam2_checkpoint: sam2.1_hiera_base_plus.pt
+      sam2_checkpoint_url: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt
+      sam2_model_cfg: "sam2/configs/sam2.1/sam2.1_hiera_b+.yaml"
     runtime:
       batch: 1
       conf_threshold: 0.25
