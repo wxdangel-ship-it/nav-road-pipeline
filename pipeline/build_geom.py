@@ -1477,6 +1477,9 @@ def main() -> int:
             divider_sources = [divider_sources]
         use_seg = "seg" in {str(s).lower() for s in divider_sources}
         feature_store_dir = center_cfg.get("seg_divider_feature_store_dir")
+        print(f"[CENTERLINES] divider_sources={divider_sources} feature_store_dir={feature_store_dir}")
+        if use_seg and not feature_store_dir:
+            print("[CENTERLINES][WARN] divider_sources includes seg but FEATURE_STORE_DIR is not set.")
         if use_seg and feature_store_dir:
             features = load_image_features(args.drive, None, Path(feature_store_dir))
             divider_feats = features.get("divider_median") or []

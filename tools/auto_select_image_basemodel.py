@@ -34,6 +34,12 @@ def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _write_yaml(path: Path, data: dict) -> None:
+    import yaml
+
+    path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drive", required=True)
@@ -99,9 +105,30 @@ def main() -> int:
             feat_code, feat_out = _run(feat_cmd, env=os.environ.copy())
             feat_index = _read_json(feat_run / "feature_store" / "index.json")
 
+            feature_store_map = feat_run / "feature_store_map"
+            proj_cmd = [
+                sys.executable,
+                "tools/project_feature_store_to_map.py",
+                "--drive",
+                args.drive,
+                "--feature-store",
+                str(feat_run / "feature_store"),
+                "--out-store",
+                str(feature_store_map),
+            ]
+            proj_code, proj_out = _run(proj_cmd, env=os.environ.copy())
+            map_index = _read_json(feature_store_map / "index.json")
+
             env = os.environ.copy()
-            env["FEATURE_STORE_DIR"] = str(feat_run / "feature_store")
+            env["FEATURE_STORE_DIR"] = str(feature_store_map)
             env["GEOM_BACKEND"] = "algo"
+            center_cfg_path = out_run / f"centerlines_{model_id}.yaml"
+            center_cfg = _load_yaml(Path("configs/centerlines.yaml"))
+            center_cfg.setdefault("centerlines", {})
+            center_cfg["centerlines"]["divider_sources"] = ["seg", "geom"]
+            center_cfg["centerlines"]["seg_divider_feature_store_dir"] = str(feature_store_map)
+            _write_yaml(center_cfg_path, center_cfg)
+            env["CENTERLINES_CONFIG"] = str(center_cfg_path)
             center_cmd = [
                 "scripts\\centerlines_v2.cmd",
                 "--drive",
@@ -138,10 +165,8 @@ def main() -> int:
             cfg = _load_yaml(Path("configs/intersections_v2.yaml"))
             cfg.setdefault("refine", {})
             cfg["refine"]["markings_enabled"] = True
-            cfg["refine"]["markings_feature_store_dir"] = str(feat_run / "feature_store")
-            import yaml
-
-            temp_cfg.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
+            cfg["refine"]["markings_feature_store_dir"] = str(feature_store_map)
+            _write_yaml(temp_cfg, cfg)
             inter_cmd = [
                 "scripts\\intersections_v2.cmd",
                 "--index",
@@ -167,6 +192,8 @@ def main() -> int:
                 "infer_report": infer_report,
                 "feature_store_counts": feat_index.get("counts") if feat_index else None,
                 "feature_store_frames": feat_index.get("frames_with_class") if feat_index else None,
+                "feature_store_map_counts": map_index.get("counts") if map_index else None,
+                "feature_store_map_frames": map_index.get("frames") if map_index else None,
                 "divider_found": qc.get("divider_found"),
                 "split_success": qc.get("split_success"),
                 "dual_ratio": qc.get("dual_ratio"),
@@ -211,6 +238,8 @@ def main() -> int:
                 f"- refine_markings_hit_rate: {row.get('refine_markings_hit_rate')}",
                 f"- feature_store_counts: {row.get('feature_store_counts')}",
                 f"- feature_store_frames: {row.get('feature_store_frames')}",
+                f"- feature_store_map_counts: {row.get('feature_store_map_counts')}",
+                f"- feature_store_map_frames: {row.get('feature_store_map_frames')}",
                 "",
             ]
         )

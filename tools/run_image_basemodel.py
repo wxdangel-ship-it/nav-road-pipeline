@@ -343,6 +343,7 @@ def _family_grounded_sam2(
     class_to_id = _class_to_id_map(seg_schema)
     prompts = model_cfg.get("prompts") or list(class_map.keys())
     prompts = [str(p).strip().lower() for p in prompts if str(p).strip()]
+    allowed = set(class_to_id.keys()) | set(class_map.values())
 
     seg_dir = out_dir / "seg_masks"
     det_dir = out_dir / "det_outputs"
@@ -385,6 +386,7 @@ def _family_grounded_sam2(
         scores = results.get("scores", [])
         labels = results.get("labels", [])
         phrases = results.get("phrases", [])
+        text_labels = results.get("text_labels", [])
         boxes_total += len(boxes)
 
         frame_id = _frame_id_from_path(img_path)
@@ -395,14 +397,19 @@ def _family_grounded_sam2(
         predictor.set_image(np.array(img))
         for idx, box in enumerate(boxes):
             label_val = labels[idx] if idx < len(labels) else -1
-            if isinstance(label_val, int) and 0 <= label_val < len(prompts):
+            if idx < len(text_labels):
+                prompt = text_labels[idx]
+            elif isinstance(label_val, int) and 0 <= label_val < len(prompts):
                 prompt = prompts[int(label_val)]
             elif isinstance(label_val, str):
                 prompt = label_val
             else:
                 prompt = phrases[idx] if idx < len(phrases) else ""
+            prompt = _norm_name(prompt)
             mapped = class_map.get(str(prompt).lower(), prompt)
             mapped = str(mapped).lower()
+            if mapped not in allowed:
+                continue
             conf = float(scores[idx]) if idx < len(scores) else None
 
             bbox = [float(x) for x in box.tolist()]
