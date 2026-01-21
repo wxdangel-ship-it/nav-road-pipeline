@@ -12,6 +12,7 @@ from shapely.geometry import LineString, Point, Polygon, shape, mapping
 from shapely.ops import unary_union, transform as geom_transform
 from pyproj import Transformer
 import yaml
+import geopandas as gpd
 
 import sys
 
@@ -27,6 +28,39 @@ from pipeline.intersection_shape import (
     refine_intersection_polygon as _refine_intersection_polygon,
 )
 from pipeline.evidence.image_feature_provider import load_features as load_image_features
+
+
+def _load_clean_evidence(drive: str, store_dir: Path) -> Dict[str, List[dict]]:
+    gpkg = store_dir / drive / f"evidence_clean_{drive}.gpkg"
+    if not gpkg.exists():
+        return {}
+    layers = []
+    try:
+        import pyogrio
+
+        layers = [name for name, _ in pyogrio.list_layers(gpkg)]
+    except Exception:
+        try:
+            layers = gpd.io.file.fiona.listlayers(str(gpkg))
+        except Exception:
+            layers = []
+    out: Dict[str, List[dict]] = {}
+    for layer in layers:
+        if layer.endswith("_wgs84"):
+            continue
+        try:
+            gdf = gpd.read_file(gpkg, layer=layer)
+        except Exception:
+            continue
+        if gdf.empty:
+            continue
+        records = []
+        for _, row in gdf.iterrows():
+            props = dict(row.drop(labels=["geometry"], errors="ignore"))
+            props["class"] = props.get("class") or layer
+            records.append({"geometry": row.geometry, "properties": props})
+        out[str(layer)] = records
+    return out
 
 
 def _load_yaml(path: Path) -> dict:
@@ -823,7 +857,12 @@ def main() -> int:
         if refine_cfg.get("markings_enabled"):
             store_dir = refine_cfg.get("markings_feature_store_dir")
             if store_dir:
-                feat_map = load_image_features(drive, None, Path(store_dir))
+                store_path = Path(store_dir)
+                feat_map = _load_clean_evidence(drive, store_path)
+                if feat_map:
+                    print(f"[V2][MARKINGS] using evidence_clean for {drive}")
+                else:
+                    feat_map = load_image_features(drive, None, store_path)
                 for cls in ("stop_line", "crosswalk", "gore_marking", "arrow"):
                     feats = feat_map.get(cls) or []
                     markings_feats.extend(feats)
