@@ -181,21 +181,3 @@ candidates:
       INTER_SMOOTH_BUF_M: 2.5
       INTER_SIMPLIFY_M: 1.2
       CENTERLINE_MODE: auto
-
-  - candidate_id: postopt_strong
-    post:
-      SMOOTH_PROFILE: strong
-      STRONG_MIN_PART_AREA_M2: 150
-      STRONG_CLOSE_M: 2.8
-      STRONG_OPEN_M: 1.4
-      STRONG_SIMPLIFY_M: 1.5
-      STRONG_MIN_HOLE_AREA_M2: 450
-      POLY_SMOOTH_BUF_M: 1.5
-      POLY_SIMPLIFY_M: 0.6
-      POST_MASK_CLOSE_M: 1.2
-      POST_MASK_OPEN_M: 0.6
-      POST_MIN_COMPONENT_M2: 80
-      POST_FILL_HOLES_M2: 300
-      INTER_SMOOTH_BUF_M: 1.2
-      INTER_SIMPLIFY_M: 0.6
-      CENTERLINE_MODE: auto

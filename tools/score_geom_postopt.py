@@ -3,9 +3,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import os
-from collections import Counter
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -46,13 +43,6 @@ def _load_baseline(path: Path) -> Dict[str, Dict[str, Any]]:
         if drive:
             out[str(drive)] = item
     return out
-
-
-def _baseline_drives(baseline: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]]) -> List[str]:
-    if baseline:
-        return sorted(baseline.keys())
-    drives = sorted({e.get("drive") for e in entries if e.get("drive")})
-    return drives
 
 
 def _polygon_metrics(road_path: Path) -> Tuple[Optional[float], Optional[int], Optional[float]]:
@@ -138,13 +128,7 @@ def _score_drive(
     dist_p95 = osm.get("dist_p95_m") if metrics_valid and coverage_ok else None
 
     roughness, vertex_count, area_m2 = _polygon_metrics(outputs_dir / "road_polygon.geojson")
-    if summary.get("roughness") is not None:
-        roughness = summary.get("roughness")
-    elif summary.get("polygon_roughness") is not None:
         roughness = summary.get("polygon_roughness")
-    if summary.get("vertex_count") is not None:
-        vertex_count = summary.get("vertex_count")
-    elif summary.get("polygon_vertex_count") is not None:
         vertex_count = summary.get("polygon_vertex_count")
     if summary.get("polygon_area_m2") is not None:
         area_m2 = summary.get("polygon_area_m2")
@@ -159,21 +143,6 @@ def _score_drive(
             area_penalty = area_ratio
         else:
             area_penalty = area_ratio * 2.0
-
-    max_rough = os.environ.get("POSTOPT_MAX_ROUGHNESS", "").strip()
-    max_vertex = os.environ.get("POSTOPT_MAX_VERTEX_COUNT", "").strip()
-    if max_rough:
-        try:
-            if roughness is not None and float(roughness) > float(max_rough):
-                return "FAIL", {"reason": "roughness_cap"}
-        except ValueError:
-            pass
-    if max_vertex:
-        try:
-            if vertex_count is not None and float(vertex_count) > float(max_vertex):
-                return "FAIL", {"reason": "vertex_count_cap"}
-        except ValueError:
-            pass
 
     return "PASS", {
         "match_ratio": match_ratio,
@@ -208,55 +177,14 @@ def _aggregate(
         pass_count = fail_count = skipped_count = 0
         scores: List[float] = []
         reasons: List[str] = []
-        drive_list = _baseline_drives(baseline, items)
-        entry_map = {(e.get("drive") or ""): e for e in items}
-        for drive in drive_list:
-            entry = entry_map.get(drive)
-            if entry is None:
-                fail_count += 1
-                reasons.append("missing_entry")
-                drive_rows.append(
-                    {
-                        "candidate_id": cid,
-                        "drive": drive,
-                        "status": "FAIL",
-                        "score": None,
-                        "match_ratio": None,
-                        "dist_p95_m": None,
-                        "roughness": None,
-                        "vertex_count": None,
-                        "polygon_area_m2": None,
-                        "area_ratio": None,
-                        "area_penalty": None,
-                        "dual_ratio": None,
-                        "center_feat_count": None,
-                        "centerlines_in_polygon_ratio": None,
-                        "missing_reason": "missing_entry",
-                    }
-                )
-                continue
-
             if entry.get("status") != "PASS":
                 fail_count += 1
-                reason = entry.get("reason") or "build_geom_failed"
-                reasons.append(reason)
                 drive_rows.append(
                     {
                         "candidate_id": cid,
                         "drive": entry.get("drive"),
                         "status": "FAIL",
                         "score": None,
-                        "match_ratio": None,
-                        "dist_p95_m": None,
-                        "roughness": None,
-                        "vertex_count": None,
-                        "polygon_area_m2": None,
-                        "area_ratio": None,
-                        "area_penalty": None,
-                        "dual_ratio": None,
-                        "center_feat_count": None,
-                        "centerlines_in_polygon_ratio": None,
-                        "missing_reason": reason,
                     }
                 )
                 continue
@@ -271,24 +199,11 @@ def _aggregate(
                         "drive": entry.get("drive"),
                         "status": "FAIL",
                         "score": None,
-                        "match_ratio": None,
-                        "dist_p95_m": None,
-                        "roughness": None,
-                        "vertex_count": None,
-                        "polygon_area_m2": None,
-                        "area_ratio": None,
-                        "area_penalty": None,
-                        "dual_ratio": None,
-                        "center_feat_count": None,
-                        "centerlines_in_polygon_ratio": None,
-                        "missing_reason": "missing_outputs_dir",
                     }
                 )
                 continue
 
             status, meta = _score_drive(Path(outputs_dir), drive, baseline)
-            score = None
-            missing_reason = None
             if status == "PASS":
                 pass_count += 1
                 score = 0.0
@@ -308,15 +223,12 @@ def _aggregate(
                 scores.append(score)
             else:
                 fail_count += 1
-                missing_reason = meta.get("reason") or "qc_failed"
-                reasons.append(missing_reason)
 
             drive_rows.append(
                 {
                     "candidate_id": cid,
                     "drive": drive,
                     "status": status,
-                    "score": score,
                     "match_ratio": meta.get("match_ratio"),
                     "dist_p95_m": meta.get("dist_p95_m"),
                     "roughness": meta.get("roughness"),
@@ -327,7 +239,6 @@ def _aggregate(
                     "dual_ratio": meta.get("dual_ratio"),
                     "center_feat_count": meta.get("center_feat_count"),
                     "centerlines_in_polygon_ratio": meta.get("centerlines_in_polygon_ratio"),
-                    "missing_reason": missing_reason,
                 }
             )
 
@@ -363,18 +274,6 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: ("N/A" if row.get(k) is None else row.get(k, "")) for k in fieldnames})
-
-
-def _fmt(val: Any, fmt: str) -> str:
-    if val is None or val == "":
-        return "N/A"
-    try:
-        if fmt:
-            return format(float(val), fmt)
-    except (ValueError, TypeError):
-        return str(val)
-    return str(val)
 
 
 def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[str, Any]]) -> None:
@@ -413,7 +312,6 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
     lines.append("## Per-Drive")
     lines.append("")
     lines.append(
-        "| candidate_id | drive | status | score | match_ratio | dist_p95_m | roughness | vertex_count | area_ratio | dual_ratio | missing_reason |"
     )
     lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     for row in drives:
@@ -422,75 +320,9 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
                 cid=row.get("candidate_id") or "",
                 drive=row.get("drive") or "",
                 status=row.get("status") or "",
-                score=_fmt(row.get("score"), ".4f"),
-                mr=_fmt(row.get("match_ratio"), ".4f"),
-                dp=_fmt(row.get("dist_p95_m"), ".2f"),
-                r=_fmt(row.get("roughness"), ".2f"),
-                v=_fmt(row.get("vertex_count"), ""),
-                ar=_fmt(row.get("area_ratio"), ".3f"),
-                dr=_fmt(row.get("dual_ratio"), ".2f"),
-                reason=row.get("missing_reason") or "",
             )
         )
     path.write_text("\n".join(lines), encoding="utf-8")
-
-
-def _write_missing_reason_summary(
-    per_drive_csv: Path,
-    expected_drives: List[str],
-    report_type: str,
-    run_id: str,
-) -> None:
-    rows = []
-    if per_drive_csv.exists():
-        with per_drive_csv.open("r", encoding="utf-8") as f:
-            rows = list(csv.DictReader(f))
-    counts = Counter()
-    non_ok = []
-    for row in rows:
-        drive = (row.get("drive") or "").strip()
-        reason = (row.get("missing_reason") or "").strip()
-        norm_reason = "" if reason in {"", "N/A"} else reason
-        key = norm_reason if norm_reason else "OK"
-        counts[key] += 1
-        if norm_reason:
-            non_ok.append({"drive_id": drive, "reason": norm_reason})
-
-    payload = {
-        "expected_drives": expected_drives,
-        "missing_reason_counts": dict(counts),
-        "non_ok_drives": non_ok,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "run_id": run_id,
-        "report_type": report_type,
-    }
-    json_path = per_drive_csv.with_name(per_drive_csv.stem.replace("_per_drive", "") + "_missing_reason_summary.json")
-    md_path = per_drive_csv.with_name(per_drive_csv.stem.replace("_per_drive", "") + "_missing_reason_summary.md")
-    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    lines = [
-        "# Missing Reason Summary",
-        "",
-        f"- report_type: {report_type}",
-        f"- run_id: {run_id}",
-        f"- generated_at: {payload['generated_at']}",
-        "",
-        "## expected_drives",
-        "```json",
-        json.dumps(expected_drives, ensure_ascii=False, indent=2),
-        "```",
-        "",
-        "## missing_reason_counts",
-        "```json",
-        json.dumps(payload["missing_reason_counts"], ensure_ascii=False, indent=2),
-        "```",
-        "",
-        "## non_ok_drives",
-        "```json",
-        json.dumps(non_ok, ensure_ascii=False, indent=2),
-        "```",
-        "",
-    ]
-    md_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> int:
@@ -507,8 +339,6 @@ def main() -> int:
     weights = {
         "osm_match_ratio": 1.0,
         "dist_p95_m": -0.05,
-        "roughness": -0.6,
-        "vertex_count": -0.01,
         "area_penalty": -0.3,
         "dual_ratio": 0.2,
         "center_feat_gap": 0.2,
@@ -519,17 +349,6 @@ def main() -> int:
     baseline = _load_baseline(Path(args.baseline))
     candidates, drives = _aggregate(entries, baseline, weights)
 
-    out_csv = Path(args.out_csv)
-    out_md = Path(args.out_md)
-    out_drive_csv = out_csv.with_name(out_csv.stem + "_per_drive.csv")
-    report_type = args.stage or ""
-    run_id = out_csv.parent.name
-
-    _write_csv(out_csv, candidates)
-    _write_csv(out_drive_csv, drives)
-    _write_md(out_md, candidates, drives)
-    expected_drives = _baseline_drives(baseline, entries)
-    _write_missing_reason_summary(out_drive_csv, expected_drives, report_type, run_id)
 
     if args.out_json:
         ranked = sorted(
