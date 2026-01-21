@@ -4,6 +4,7 @@ models:
     output_mode: seg+det
     device: auto
     input_size: 1024
+    model_version: v1
     prompts:
       - divider
       - median
@@ -37,11 +38,85 @@ models:
       text_threshold: 0.25
     license_note: "TBD"
 
+  - model_id: gdino_sam2_v1
+    family: gdino_sam2
+    output_mode: seg+det
+    device: auto
+    input_size: 1024
+    model_version: v1
+    prompts:
+      - divider
+      - median
+      - lane marking
+      - road edge
+      - stop line
+      - crosswalk
+      - gore marking
+      - arrow
+      - traffic light
+    class_map:
+      divider: divider_median
+      median: divider_median
+      lane marking: lane_marking
+      road edge: road_edge
+      stop line: stop_line
+      crosswalk: crosswalk
+      gore marking: gore_marking
+      arrow: arrow
+      traffic light: traffic_light
+    download:
+      source: huggingface
+      repo: IDEA-Research/grounding-dino-base
+      sam2_repo: facebookresearch/sam2
+      sam2_checkpoint: sam2.1_hiera_base_plus.pt
+      sam2_checkpoint_url: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt
+      sam2_model_cfg: "sam2/configs/sam2.1/sam2.1_hiera_b+.yaml"
+    runtime:
+      batch: 1
+      conf_threshold: 0.25
+      text_threshold: 0.25
+    tile_size: 1024
+    tile_overlap: 128
+    tile_nms_iou: 0.5
+    license_note: "TBD"
+
+  - model_id: sam3_v1
+    family: sam3
+    output_mode: seg+det
+    device: auto
+    input_size: 1024
+    model_version: v1
+    prompts:
+      - divider
+      - lane marking
+      - stop line
+      - crosswalk
+      - traffic light
+    class_map:
+      divider: divider_median
+      lane marking: lane_marking
+      stop line: stop_line
+      crosswalk: crosswalk
+      traffic light: traffic_light
+    download:
+      source: placeholder
+      repo: IDEA-Research/grounding-dino-base
+      sam2_repo: facebookresearch/sam2
+      sam2_checkpoint: sam2.1_hiera_base_plus.pt
+      sam2_checkpoint_url: https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt
+      sam2_model_cfg: "sam2/configs/sam2.1/sam2.1_hiera_b+.yaml"
+    runtime:
+      batch: 1
+      conf_threshold: 0.25
+      text_threshold: 0.25
+    license_note: "TBD"
+
   - model_id: yolo_world_v1
     family: yolo_world
     output_mode: det
     device: auto
     input_size: 1024
+    model_version: v1
     class_map:
       traffic light: traffic_light
       arrow: arrow
