@@ -438,8 +438,8 @@ def _compute_metrics(
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--baseline-final", required=True)
-    ap.add_argument("--cand-final-off", required=True)
-    ap.add_argument("--cand-final-on", required=True)
+    ap.add_argument("--cand-final-s1", required=True)
+    ap.add_argument("--cand-final-s2", required=True)
     ap.add_argument("--index", required=True)
     ap.add_argument("--osm-path", default="")
     ap.add_argument("--out-dir", required=True)
@@ -482,17 +482,17 @@ def main() -> int:
         args.drive_bbox_buffer_m,
         args.missing_dist_m,
     )
-    cand_off = _compute_metrics(
-        "nomarkings",
-        Path(args.cand_final_off),
+    cand_s1 = _compute_metrics(
+        "s1",
+        Path(args.cand_final_s1),
         bboxes,
         junctions,
         args.drive_bbox_buffer_m,
         args.missing_dist_m,
     )
-    cand_on = _compute_metrics(
-        "markings_clean",
-        Path(args.cand_final_on),
+    cand_s2 = _compute_metrics(
+        "s2",
+        Path(args.cand_final_s2),
         bboxes,
         junctions,
         args.drive_bbox_buffer_m,
@@ -508,13 +508,13 @@ def main() -> int:
         overlap = float(totals.get("overlap_road_p50") or 0.0)
         return (missing, arm_ratio + 0.01 * no_arms, circ, overlap)
 
-    cand_list = [cand_off, cand_on]
+    cand_list = [cand_s1, cand_s2]
     winner = max(cand_list, key=_rank_key)
     winner_name = winner["name"]
 
     report = {
         "baseline": baseline,
-        "candidates": {"nomarkings": cand_off, "markings_clean": cand_on},
+        "candidates": {"s1": cand_s1, "s2": cand_s2},
         "winner": winner_name,
         "selection_rule": [
             "priority_1: missing_osm_junctions_count lower is better",
@@ -551,18 +551,32 @@ def main() -> int:
     lines.append("## Baseline")
     lines.extend(_summary_block(baseline))
     lines.append("")
-    lines.append("## Candidate OFF (nomarkings)")
-    lines.extend(_summary_block(cand_off))
+    lines.append("## Candidate S1")
+    lines.extend(_summary_block(cand_s1))
     lines.append("")
-    lines.append("## Candidate ON (markings_clean)")
-    lines.extend(_summary_block(cand_on))
+    lines.append("## Candidate S2")
+    lines.extend(_summary_block(cand_s2))
     lines.append("")
     lines.append(f"## Winner: {winner_name}")
+    lines.append("")
+    lines.append("## Compare Table")
+    lines.append("| name | arm_span_p50 | arm_span_p75 | coverage_p50 | coverage_p25 | coverage_fallback_road_local | arm_ge3_ratio | missing_osm_junctions |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
+    def _fallback_cnt(item: Dict[str, object]) -> int:
+        counts = item["totals"].get("reason_counts") or {}
+        return int(counts.get("coverage_fallback_road_local", 0))
+    for item in [baseline, cand_s1, cand_s2]:
+        t = item["totals"]
+        lines.append(
+            f"| {item['name']} | {t.get('arm_span_p50')} | {t.get('arm_span_p75')} | "
+            f"{t.get('coverage_local_p50')} | {t.get('coverage_local_p25')} | "
+            f"{_fallback_cnt(item)} | {t.get('arm_count_ge3_ratio')} | {t.get('missing_osm_junctions_count')} |"
+        )
 
     drive_007 = "2013_05_28_drive_0007_sync"
     lines.append("")
     lines.append("## Drive 0007 Details")
-    for label, item in [("baseline", baseline), ("nomarkings", cand_off), ("markings_clean", cand_on)]:
+    for label, item in [("baseline", baseline), ("s1", cand_s1), ("s2", cand_s2)]:
         d = item["per_drive"].get(drive_007, {})
         lines.append(
             f"- {label}: missing_osm_junctions={d.get('missing_osm_junctions_count')}, "

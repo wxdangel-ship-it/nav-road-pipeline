@@ -958,6 +958,7 @@ def _shape_from_seed(
         if road_local is not None and not road_local.is_empty and refined is not None and not refined.is_empty:
             coverage_local = float(refined.intersection(road_local).area) / max(1e-6, float(road_local.area))
 
+        retry_used = False
         if coverage_local < coverage_min:
             arm_buffer_retry = float(arms_meta.get("arm_buffer_m_used", cfg.get("arm_buffer_m", 5.0))) + float(
                 cfg.get("coverage_retry_buffer_add_m", 0.5)
@@ -983,12 +984,15 @@ def _shape_from_seed(
                         arms_meta["arms_mask"] = arms_mask_retry
                         arms_meta["arm_buffer_m_used"] = arm_buffer_retry
                         coverage_local = cov_retry
+                        retry_used = True
 
         quality_low = False
+        if retry_used:
+            reason = "coverage_expand_retry"
         if coverage_local < coverage_min and road_local is not None and not road_local.is_empty:
             refined = road_local
             quality_low = True
-            reason = "coverage_fallback"
+            reason = "coverage_fallback_road_local"
             coverage_local = 1.0
 
         meta = {
