@@ -552,6 +552,108 @@ def _spur_prune(poly: Polygon, seed: Point, radius_used: float, cfg: dict) -> Tu
     }
 
 
+def _make_valid(geom):
+    if geom is None or geom.is_empty:
+        return geom
+    try:
+        return geom.buffer(0)
+    except Exception:
+        return geom
+
+
+def _explode_lines(geom) -> List[LineString]:
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "LineString":
+        return [geom]
+    if geom.geom_type == "MultiLineString":
+        return [g for g in geom.geoms if not g.is_empty]
+    if geom.geom_type == "GeometryCollection":
+        lines: List[LineString] = []
+        for g in geom.geoms:
+            lines.extend(_explode_lines(g))
+        return lines
+    return []
+
+
+def _arms_lines_from_source(seed: Point, lines: List[LineString], arm_cap_m: float) -> List[LineString]:
+    if not lines:
+        return []
+    clip = seed.buffer(max(arm_cap_m, 1.0))
+    out = []
+    for line in lines:
+        if line is None or line.is_empty:
+            continue
+        seg = line.intersection(clip)
+        out.extend(_explode_lines(seg))
+    return [l for l in out if l.length > 0]
+
+
+def _build_arms_v3(
+    seed: Point,
+    road_poly: Polygon,
+    centerlines: List[LineString],
+    osm_lines: List[LineString],
+    cfg: dict,
+) -> Tuple[dict, dict]:
+    arm_cap_m = float(cfg.get("arm_cap_m", 25.0))
+    center_search = float(cfg.get("seed_search_radius_m_centerlines", 45.0))
+    min_center = int(cfg.get("min_arms_lines_centerlines", 2))
+    center_use = []
+    if centerlines:
+        center_use = [ln for ln in centerlines if ln is not None and ln.intersects(seed.buffer(center_search))]
+    arms_src = "none"
+    arms_lines = []
+    arm_buffer_m = float(cfg.get("arm_buffer_m", 5.0))
+    osm_links_used_count = 0
+    if center_use and len(center_use) >= min_center:
+        arms_src = "centerlines"
+        arms_lines = _arms_lines_from_source(seed, center_use, arm_cap_m)
+        arm_buffer_m = float(cfg.get("arm_buffer_m_centerlines", 5.0))
+    else:
+        osm_search = float(cfg.get("seed_search_radius_m_osm", 45.0))
+        osm_use = [ln for ln in osm_lines if ln is not None and ln.intersects(seed.buffer(osm_search))]
+        if len(osm_use) <= 1:
+            osm_search += float(cfg.get("seed_search_radius_m_osm_expand", 10.0))
+            osm_use = [ln for ln in osm_lines if ln is not None and ln.intersects(seed.buffer(osm_search))]
+        if osm_use:
+            arms_src = "osm"
+            arms_lines = _arms_lines_from_source(seed, osm_use, arm_cap_m)
+            arm_buffer_m = float(cfg.get("arm_buffer_m_osm", 3.5))
+            osm_links_used_count = len(osm_use)
+        else:
+            try:
+                local = road_poly.buffer(float(cfg.get("road_buffer_m", 1.0))).intersection(seed.buffer(arm_cap_m))
+                local = local.buffer(0)
+                skeleton = _polygon_centerline(local) if local is not None and not local.is_empty else None
+            except Exception:
+                skeleton = None
+            if skeleton is not None and not skeleton.is_empty:
+                arms_src = "skeleton"
+                arms_lines = _arms_lines_from_source(seed, [skeleton], arm_cap_m)
+                arm_buffer_m = float(cfg.get("arm_buffer_m_skeleton", 3.5))
+    arms_mask = None
+    if arms_lines:
+        corridors = [ln.buffer(arm_buffer_m, cap_style=2, join_style=2) for ln in arms_lines]
+        arms_mask = unary_union(corridors) if corridors else None
+    meta = {
+        "arms_src": arms_src,
+        "arms_lines": arms_lines,
+        "arms_mask": arms_mask,
+        "arm_cap_m": arm_cap_m,
+        "arm_buffer_m_used": arm_buffer_m,
+        "osm_links_used_count": osm_links_used_count,
+    }
+    return meta, {
+        "arms_lines": arms_lines,
+        "arms_mask": arms_mask,
+        "arms_src": arms_src,
+        "arm_cap_m": arm_cap_m,
+        "arm_buffer_m_used": arm_buffer_m,
+        "osm_links_used_count": osm_links_used_count,
+    }
+
+
 def _shape_metrics(
     seed: Point,
     refined: Polygon,
@@ -589,6 +691,12 @@ def _shape_metrics(
         "arms": arms_geom,
         "arms_lines": arms_lines,
         "arms_src": arms_src,
+        "arms_mask": meta.get("arms_mask"),
+        "arm_cap_m": meta.get("arm_cap_m"),
+        "arm_buffer_m_used": meta.get("arm_buffer_m_used"),
+        "core_radius_m": meta.get("core_radius_m"),
+        "coverage_local": meta.get("coverage_local"),
+        "quality_low": meta.get("quality_low", 0),
         "reason": meta.get("reason") or "refined",
     }
 
@@ -822,6 +930,82 @@ def _shape_from_seed(
             if line.intersects(area):
                 out.append(line)
         return out
+
+    if bool(cfg.get("arm_shape_v3_enabled", False)):
+        arms_meta, _ = _build_arms_v3(seed, road_poly, centerlines, osm_lines, cfg)
+        arm_cap_m = float(arms_meta.get("arm_cap_m", cfg.get("arm_cap_m", 25.0)))
+        core_radius = float(cfg.get("core_radius_m", 0.0))
+        if core_radius <= 0:
+            core_ratio = float(cfg.get("core_radius_ratio", 0.6))
+            core_min = float(cfg.get("core_radius_min_m", 12.0))
+            core_max = float(cfg.get("core_radius_max_m", 22.0))
+            core_radius = _clamp(core_ratio * arm_cap_m, core_min, core_max)
+        road_local = road_poly.intersection(seed.buffer(arm_cap_m))
+        road_local = _make_valid(road_local)
+        core = road_poly.intersection(seed.buffer(core_radius))
+        core = _make_valid(core)
+        arms_mask = arms_meta.get("arms_mask")
+        shape_arms = road_poly.intersection(arms_mask) if arms_mask is not None and not arms_mask.is_empty else None
+        if shape_arms is not None and not shape_arms.is_empty:
+            refined = _make_valid(shape_arms.union(core))
+            reason = "refined_arms"
+        else:
+            refined = _make_valid(core)
+            reason = "core_only"
+
+        coverage_min = float(cfg.get("coverage_local_min", 0.9))
+        coverage_local = 0.0
+        if road_local is not None and not road_local.is_empty and refined is not None and not refined.is_empty:
+            coverage_local = float(refined.intersection(road_local).area) / max(1e-6, float(road_local.area))
+
+        if coverage_local < coverage_min:
+            arm_buffer_retry = float(arms_meta.get("arm_buffer_m_used", cfg.get("arm_buffer_m", 5.0))) + float(
+                cfg.get("coverage_retry_buffer_add_m", 0.5)
+            )
+            arms_lines = arms_meta.get("arms_lines") or []
+            if arms_lines:
+                corridors = [ln.buffer(arm_buffer_retry, cap_style=2, join_style=2) for ln in arms_lines]
+                arms_mask_retry = unary_union(corridors) if corridors else None
+                shape_arms_retry = (
+                    road_poly.intersection(arms_mask_retry)
+                    if arms_mask_retry is not None and not arms_mask_retry.is_empty
+                    else None
+                )
+                if shape_arms_retry is not None and not shape_arms_retry.is_empty:
+                    refined_retry = _make_valid(shape_arms_retry.union(core))
+                    cov_retry = (
+                        float(refined_retry.intersection(road_local).area) / max(1e-6, float(road_local.area))
+                        if road_local is not None and not road_local.is_empty
+                        else 0.0
+                    )
+                    if cov_retry >= coverage_min:
+                        refined = refined_retry
+                        arms_meta["arms_mask"] = arms_mask_retry
+                        arms_meta["arm_buffer_m_used"] = arm_buffer_retry
+                        coverage_local = cov_retry
+
+        quality_low = False
+        if coverage_local < coverage_min and road_local is not None and not road_local.is_empty:
+            refined = road_local
+            quality_low = True
+            reason = "coverage_fallback"
+            coverage_local = 1.0
+
+        meta = {
+            "local": road_local,
+            "arms": arms_meta.get("arms_mask"),
+            "arms_lines": arms_meta.get("arms_lines"),
+            "arms_mask": arms_meta.get("arms_mask"),
+            "arms_src": arms_meta.get("arms_src"),
+            "arm_cap_m": arm_cap_m,
+            "arm_buffer_m_used": float(arms_meta.get("arm_buffer_m_used", cfg.get("arm_buffer_m", 5.0))),
+            "core_radius_m": core_radius,
+            "coverage_local": coverage_local,
+            "quality_low": 1 if quality_low else 0,
+            "reason": reason,
+            "osm_links_used_count": arms_meta.get("osm_links_used_count", 0),
+        }
+        return refined, _shape_metrics(seed, refined, road_poly, meta, cfg, meta.get("arms_src") or "none")
 
     min_src_arm_count = int(cfg.get("min_arm_count_for_src", 2))
 
@@ -1252,6 +1436,7 @@ def main() -> int:
         refined_seed_features = []
         debug_local = []
         debug_arms = []
+        debug_arms_mask = []
         debug_arms_lines = []
         debug_refined = []
         debug_pruned = []
@@ -1414,19 +1599,24 @@ def main() -> int:
             shape_cfg_use = dict(shape_cfg)
             radius_m = float(item["radius_m"])
             width_lines = center_lines if center_lines else osm_lines
-            if bool(shape_cfg_use.get("adaptive_radius_enabled", True)):
-                radius_m, width_est, osm_degree, radius_src = _adaptive_radius(
-                    seed,
-                    road_poly,
-                    width_lines,
-                    osm_seed_items,
-                    shape_cfg_use,
-                )
+            if not bool(shape_cfg_use.get("arm_shape_v3_enabled", False)):
+                if bool(shape_cfg_use.get("adaptive_radius_enabled", True)):
+                    radius_m, width_est, osm_degree, radius_src = _adaptive_radius(
+                        seed,
+                        road_poly,
+                        width_lines,
+                        osm_seed_items,
+                        shape_cfg_use,
+                    )
+                else:
+                    width_est = float(shape_cfg_use.get("width_default_m", 12.0))
+                    osm_degree = int(item.get("degree") or 2)
+                    radius_src = "fixed"
+                shape_cfg_use["radius_m"] = radius_m
             else:
                 width_est = float(shape_cfg_use.get("width_default_m", 12.0))
                 osm_degree = int(item.get("degree") or 2)
-                radius_src = "fixed"
-            shape_cfg_use["radius_m"] = radius_m
+                radius_src = "arms_v3"
             poly, metrics = _shape_from_seed(seed, road_poly, center_lines, osm_lines, shape_cfg_use)
             if poly is None or poly.is_empty:
                 continue
@@ -1438,6 +1628,12 @@ def main() -> int:
                         "local": metrics.get("local"),
                         "arms": metrics.get("arms"),
                         "arms_lines": metrics.get("arms_lines"),
+                        "arms_mask": metrics.get("arms_mask"),
+                        "arm_cap_m": metrics.get("arm_cap_m"),
+                        "arm_buffer_m_used": metrics.get("arm_buffer_m_used"),
+                        "core_radius_m": metrics.get("core_radius_m"),
+                        "coverage_local": metrics.get("coverage_local"),
+                        "quality_low": metrics.get("quality_low", 0),
                         "reason": metrics.get("reason"),
                     }
                     metrics = _shape_metrics(seed, pruned, road_poly, meta, shape_cfg_use, metrics.get("arms_src") or "none")
@@ -1475,7 +1671,7 @@ def main() -> int:
                     markings_gate_pass = 1
             area = float(poly.area)
             gate_ok_geom = _shape_gate_ok(metrics, gate_cfg, area)
-            if not gate_ok_geom and gate_cfg.get("retry_shrink_ratio", 0.0):
+            if not gate_ok_geom and gate_cfg.get("retry_shrink_ratio", 0.0) and not bool(shape_cfg_use.get("arm_shape_v3_enabled", False)):
                 shrink_cfg = dict(shape_cfg_use)
                 shrink_cfg["radius_m"] = float(shape_cfg_use["radius_m"]) * float(gate_cfg["retry_shrink_ratio"])
                 poly, metrics = _shape_from_seed(seed, road_poly, center_lines, osm_lines, shrink_cfg)
@@ -1512,15 +1708,20 @@ def main() -> int:
                 "reason": metrics.get("reason") or item.get("reason"),
                 "conf_prior": item.get("conf_prior"),
                 "conf_refine": conf_refine,
-                "radius_m_used": round(float(radius_m), 3),
+                "radius_m_used": round(float(metrics.get("arm_cap_m", radius_m) or radius_m), 3),
                 "road_width_local_est": round(float(width_est), 3),
-                "osm_degree": int(osm_degree),
+                "osm_degree": int(metrics.get("osm_degree", osm_degree) or osm_degree),
                 "radius_src": radius_src,
                 "arm_count": arm_count_heading,
                 "arm_count_heading": arm_count_heading,
                 "arm_count_legacy": int(metrics.get("arm_count_legacy", 0) or 0),
                 "arms_src": metrics.get("arms_src") or "none",
                 "quality_flag": quality_flag,
+                "arm_cap_m": float(metrics.get("arm_cap_m", 0.0) or 0.0),
+                "arm_buffer_m_used": float(metrics.get("arm_buffer_m_used", 0.0) or 0.0),
+                "core_radius_m": float(metrics.get("core_radius_m", 0.0) or 0.0),
+                "coverage_local": round(float(metrics.get("coverage_local", 0.0) or 0.0), 4),
+                "quality_low": int(metrics.get("quality_low", 0)),
                 "overlap_road": round(float(metrics.get("overlap_road", 0.0)), 4),
                 "circularity": round(float(metrics.get("circularity", 0.0)), 4),
                 "aspect_ratio": round(float(metrics.get("aspect_ratio", 0.0)), 4),
@@ -1554,14 +1755,28 @@ def main() -> int:
                             "properties": {"src_seed": src_seed, "arms_src": metrics.get("arms_src") or "none"},
                         }
                     )
-                if metrics.get("arms_lines") is not None and not metrics["arms_lines"].is_empty:
-                    debug_arms_lines.append(
+                if metrics.get("arms_mask") is not None and not metrics["arms_mask"].is_empty:
+                    debug_arms_mask.append(
                         {
                             "type": "Feature",
-                            "geometry": mapping(metrics["arms_lines"]),
+                            "geometry": mapping(metrics["arms_mask"]),
                             "properties": {"src_seed": src_seed, "arms_src": metrics.get("arms_src") or "none"},
                         }
                     )
+                if metrics.get("arms_lines"):
+                    arms_lines_geom = metrics.get("arms_lines")
+                    if isinstance(arms_lines_geom, list):
+                        line_items = arms_lines_geom
+                    else:
+                        line_items = _explode_lines(arms_lines_geom)
+                    for line in line_items:
+                        debug_arms_lines.append(
+                            {
+                                "type": "Feature",
+                                "geometry": mapping(line),
+                                "properties": {"src_seed": src_seed, "arms_src": metrics.get("arms_src") or "none"},
+                            }
+                        )
                 debug_refined.append({"type": "Feature", "geometry": mapping(poly), "properties": {"src_seed": src_seed}})
                 if metrics.get("refined_pruned") is not None and not metrics["refined_pruned"].is_empty:
                     debug_pruned.append({"type": "Feature", "geometry": mapping(metrics["refined_pruned"]), "properties": {"src_seed": src_seed}})
@@ -1616,14 +1831,17 @@ def main() -> int:
         _write_geojson(drive_dir / "intersections_seeds_refined.geojson", refined_seed_features)
         _write_geojson(drive_dir / "intersections_shape_debug_local.geojson", debug_local)
         _write_geojson(drive_dir / "intersections_shape_debug_arms.geojson", debug_arms)
+        _write_geojson(drive_dir / "intersections_shape_debug_arms_mask.geojson", debug_arms_mask)
         _write_geojson(drive_dir / "intersections_shape_debug_arms_lines.geojson", debug_arms_lines)
         _write_geojson(drive_dir / "intersections_shape_debug_refined.geojson", debug_refined)
         _write_geojson(drive_dir / "intersections_shape_debug_refined_pruned.geojson", debug_pruned)
         _write_geojson(drive_dir / "arms_lines.geojson", debug_arms_lines)
         _write_geojson(drive_dir / "local_wgs84.geojson", _to_wgs84(debug_local, 32632))
         _write_geojson(drive_dir / "arms_wgs84.geojson", _to_wgs84(debug_arms, 32632))
+        _write_geojson(drive_dir / "arms_mask_wgs84.geojson", _to_wgs84(debug_arms_mask, 32632))
         _write_geojson(drive_dir / "refined_wgs84.geojson", _to_wgs84(debug_refined, 32632))
         _write_geojson(drive_dir / "refined_pruned_wgs84.geojson", _to_wgs84(debug_pruned, 32632))
+        _write_geojson(drive_dir / "road_local_wgs84.geojson", _to_wgs84(debug_local, 32632))
         _write_geojson(drive_dir / "missing_osm_junctions.geojson", missing_osm_feats)
         _write_geojson(drive_dir / "missing_osm_junctions_wgs84.geojson", _to_wgs84(missing_osm_feats, 32632))
 

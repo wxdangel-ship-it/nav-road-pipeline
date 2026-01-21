@@ -272,6 +272,11 @@ def _compute_metrics(
         "spur_removed_cnt": 0,
         "spur_removed_len_sum": 0.0,
         "area_m2_p50": None,
+        "coverage_local_p25": None,
+        "coverage_local_p50": None,
+        "arm_cap_m_p50": None,
+        "arm_span_p50": None,
+        "arm_span_p75": None,
         "circularity_p50": None,
         "circularity_p75": None,
         "overlap_road_p25": None,
@@ -283,6 +288,9 @@ def _compute_metrics(
     arm_all = []
     radius_all = []
     area_all = []
+    coverage_all = []
+    arm_cap_all = []
+    arm_span_all = []
     reason_all = Counter()
     for drive, feats in grouped.items():
         polys = _collect_polys(feats)
@@ -307,6 +315,9 @@ def _compute_metrics(
         overlap = []
         radius_used = []
         areas = []
+        coverage_vals = []
+        arm_cap_vals = []
+        arm_span_vals = []
         spur_removed_cnt = 0
         spur_removed_len_sum = 0.0
         reason_counts = Counter()
@@ -319,6 +330,10 @@ def _compute_metrics(
                 overlap.append(float(props.get("overlap_road")))
             if props.get("radius_m_used") is not None:
                 radius_used.append(float(props.get("radius_m_used")))
+            if props.get("coverage_local") is not None:
+                coverage_vals.append(float(props.get("coverage_local")))
+            if props.get("arm_cap_m") is not None:
+                arm_cap_vals.append(float(props.get("arm_cap_m")))
             if props.get("spur_removed_cnt") is not None:
                 spur_removed_cnt += int(props.get("spur_removed_cnt") or 0)
             if props.get("spur_removed_len_sum") is not None:
@@ -327,7 +342,10 @@ def _compute_metrics(
             if geom:
                 poly = shape(geom)
                 if not poly.is_empty:
-                    areas.append(float(_to_utm32(poly).area))
+                    poly_utm = _to_utm32(poly)
+                    areas.append(float(poly_utm.area))
+                    minx, miny, maxx, maxy = poly_utm.bounds
+                    arm_span_vals.append(max(maxx - minx, maxy - miny))
             if props.get("reason"):
                 reason_counts[str(props.get("reason"))] += 1
         arm_dist = _arm_distribution(arm_counts)
@@ -342,6 +360,14 @@ def _compute_metrics(
         radius_p75 = radius_used_sorted[int(len(radius_used_sorted) * 0.75)] if radius_used_sorted else None
         areas_sorted = sorted(areas)
         area_p50 = areas_sorted[len(areas_sorted) // 2] if areas_sorted else None
+        coverage_sorted = sorted(coverage_vals)
+        coverage_p25 = coverage_sorted[int(len(coverage_sorted) * 0.25)] if coverage_sorted else None
+        coverage_p50 = coverage_sorted[len(coverage_sorted) // 2] if coverage_sorted else None
+        arm_cap_sorted = sorted(arm_cap_vals)
+        arm_cap_p50 = arm_cap_sorted[len(arm_cap_sorted) // 2] if arm_cap_sorted else None
+        arm_span_sorted = sorted(arm_span_vals)
+        arm_span_p50 = arm_span_sorted[len(arm_span_sorted) // 2] if arm_span_sorted else None
+        arm_span_p75 = arm_span_sorted[int(len(arm_span_sorted) * 0.75)] if arm_span_sorted else None
         per_drive[drive] = {
             "drive_id": drive,
             "junction_total": junction_count,
@@ -357,6 +383,11 @@ def _compute_metrics(
             "spur_removed_cnt": spur_removed_cnt,
             "spur_removed_len_sum": round(spur_removed_len_sum, 3),
             "area_m2_p50": area_p50,
+            "coverage_local_p25": coverage_p25,
+            "coverage_local_p50": coverage_p50,
+            "arm_cap_m_p50": arm_cap_p50,
+            "arm_span_p50": arm_span_p50,
+            "arm_span_p75": arm_span_p75,
             "circularity_p50": _percentile(circularity, 0.5),
             "circularity_p75": _percentile(circularity, 0.75),
             "overlap_road_p25": _percentile(overlap, 0.25),
@@ -375,6 +406,9 @@ def _compute_metrics(
         arm_all.extend(arm_counts)
         radius_all.extend(radius_used)
         area_all.extend(areas)
+        coverage_all.extend(coverage_vals)
+        arm_cap_all.extend(arm_cap_vals)
+        arm_span_all.extend(arm_span_vals)
         reason_all.update(reason_counts)
     totals["arm_count_ge3_ratio"] = round(totals["arm_count_dist"]["3+"] / max(1, sum(totals["arm_count_dist"].values())), 4)
     arm_all_sorted = sorted(arm_all)
@@ -385,6 +419,14 @@ def _compute_metrics(
     totals["radius_m_used_p75"] = radius_all_sorted[int(len(radius_all_sorted) * 0.75)] if radius_all_sorted else None
     area_all_sorted = sorted(area_all)
     totals["area_m2_p50"] = area_all_sorted[len(area_all_sorted) // 2] if area_all_sorted else None
+    coverage_all_sorted = sorted(coverage_all)
+    totals["coverage_local_p25"] = coverage_all_sorted[int(len(coverage_all_sorted) * 0.25)] if coverage_all_sorted else None
+    totals["coverage_local_p50"] = coverage_all_sorted[len(coverage_all_sorted) // 2] if coverage_all_sorted else None
+    arm_cap_all_sorted = sorted(arm_cap_all)
+    totals["arm_cap_m_p50"] = arm_cap_all_sorted[len(arm_cap_all_sorted) // 2] if arm_cap_all_sorted else None
+    arm_span_all_sorted = sorted(arm_span_all)
+    totals["arm_span_p50"] = arm_span_all_sorted[len(arm_span_all_sorted) // 2] if arm_span_all_sorted else None
+    totals["arm_span_p75"] = arm_span_all_sorted[int(len(arm_span_all_sorted) * 0.75)] if arm_span_all_sorted else None
     totals["circularity_p50"] = _percentile(circ_all, 0.5)
     totals["circularity_p75"] = _percentile(circ_all, 0.75)
     totals["overlap_road_p25"] = _percentile(overlap_all, 0.25)
@@ -497,6 +539,9 @@ def main() -> int:
             f"- radius_m_used_p50/p75: {t.get('radius_m_used_p50')} / {t.get('radius_m_used_p75')}",
             f"- spur_removed_cnt/len_sum: {t.get('spur_removed_cnt')} / {t.get('spur_removed_len_sum')}",
             f"- area_m2_p50: {t.get('area_m2_p50')}",
+            f"- coverage_local_p25/p50: {t.get('coverage_local_p25')} / {t.get('coverage_local_p50')}",
+            f"- arm_cap_m_p50: {t.get('arm_cap_m_p50')}",
+            f"- arm_span_p50/p75: {t.get('arm_span_p50')} / {t.get('arm_span_p75')}",
             f"- circularity_p50/p75: {_fmt(t.get('circularity_p50'))} / {_fmt(t.get('circularity_p75'))}",
             f"- overlap_road_p25/p50: {_fmt(t.get('overlap_road_p25'))} / {_fmt(t.get('overlap_road_p50'))}",
             f"- reason_counts: {t.get('reason_counts')}",
@@ -523,7 +568,8 @@ def main() -> int:
             f"- {label}: missing_osm_junctions={d.get('missing_osm_junctions_count')}, "
             f"arm_count_dist={d.get('arm_count_dist')}, "
             f"weak_arms_cnt={d.get('weak_arms_cnt')}, "
-            f"radius_p50={d.get('radius_m_used_p50')}, "
+            f"coverage_p50={d.get('coverage_local_p50')}, "
+            f"arm_span_p50={d.get('arm_span_p50')}, "
             f"spur_removed_cnt={d.get('spur_removed_cnt')}"
         )
 
