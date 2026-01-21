@@ -128,9 +128,7 @@ def _score_drive(
     dist_p95 = osm.get("dist_p95_m") if metrics_valid and coverage_ok else None
 
     roughness, vertex_count, area_m2 = _polygon_metrics(outputs_dir / "road_polygon.geojson")
-    if summary.get("polygon_roughness") is not None:
         roughness = summary.get("polygon_roughness")
-    if summary.get("polygon_vertex_count") is not None:
         vertex_count = summary.get("polygon_vertex_count")
     if summary.get("polygon_area_m2") is not None:
         area_m2 = summary.get("polygon_area_m2")
@@ -179,17 +177,14 @@ def _aggregate(
         pass_count = fail_count = skipped_count = 0
         scores: List[float] = []
         reasons: List[str] = []
-        for entry in items:
             if entry.get("status") != "PASS":
                 fail_count += 1
-                reasons.append(entry.get("reason") or "build_geom_failed")
                 drive_rows.append(
                     {
                         "candidate_id": cid,
                         "drive": entry.get("drive"),
                         "status": "FAIL",
                         "score": None,
-                        "reason": entry.get("reason") or "build_geom_failed",
                     }
                 )
                 continue
@@ -204,12 +199,10 @@ def _aggregate(
                         "drive": entry.get("drive"),
                         "status": "FAIL",
                         "score": None,
-                        "reason": "missing_outputs_dir",
                     }
                 )
                 continue
 
-            drive = entry.get("drive") or ""
             status, meta = _score_drive(Path(outputs_dir), drive, baseline)
             if status == "PASS":
                 pass_count += 1
@@ -230,27 +223,24 @@ def _aggregate(
                 scores.append(score)
             else:
                 fail_count += 1
-                reasons.append(meta.get("reason") or "qc_failed")
 
-                drive_rows.append(
-                    {
-                        "candidate_id": cid,
-                        "drive": drive,
-                        "status": status,
-                        "score": scores[-1] if scores and status == "PASS" else None,
-                        "match_ratio": meta.get("match_ratio"),
-                        "dist_p95_m": meta.get("dist_p95_m"),
-                        "roughness": meta.get("roughness"),
-                        "vertex_count": meta.get("vertex_count"),
-                        "polygon_area_m2": meta.get("polygon_area_m2"),
-                        "area_ratio": meta.get("area_ratio"),
-                        "area_penalty": meta.get("area_penalty"),
-                        "dual_ratio": meta.get("dual_ratio"),
-                        "center_feat_count": meta.get("center_feat_count"),
-                        "centerlines_in_polygon_ratio": meta.get("centerlines_in_polygon_ratio"),
-                        "reason": meta.get("reason") or "",
-                    }
-                )
+            drive_rows.append(
+                {
+                    "candidate_id": cid,
+                    "drive": drive,
+                    "status": status,
+                    "match_ratio": meta.get("match_ratio"),
+                    "dist_p95_m": meta.get("dist_p95_m"),
+                    "roughness": meta.get("roughness"),
+                    "vertex_count": meta.get("vertex_count"),
+                    "polygon_area_m2": meta.get("polygon_area_m2"),
+                    "area_ratio": meta.get("area_ratio"),
+                    "area_penalty": meta.get("area_penalty"),
+                    "dual_ratio": meta.get("dual_ratio"),
+                    "center_feat_count": meta.get("center_feat_count"),
+                    "centerlines_in_polygon_ratio": meta.get("centerlines_in_polygon_ratio"),
+                }
+            )
 
         if fail_count > 0:
             status = "FAIL"
@@ -284,7 +274,6 @@ def _write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow({k: row.get(k, "") for k in fieldnames})
 
 
 def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[str, Any]]) -> None:
@@ -323,7 +312,6 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
     lines.append("## Per-Drive")
     lines.append("")
     lines.append(
-        "| candidate_id | drive | status | score | match_ratio | dist_p95_m | roughness | vertex_count | area_ratio | dual_ratio | reason |"
     )
     lines.append("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     for row in drives:
@@ -332,14 +320,6 @@ def _write_md(path: Path, candidates: List[Dict[str, Any]], drives: List[Dict[st
                 cid=row.get("candidate_id") or "",
                 drive=row.get("drive") or "",
                 status=row.get("status") or "",
-                score="" if row.get("score") is None else f"{row.get('score'):.4f}",
-                mr="" if row.get("match_ratio") is None else f"{row.get('match_ratio'):.4f}",
-                dp="" if row.get("dist_p95_m") is None else f"{row.get('dist_p95_m'):.2f}",
-                r="" if row.get("roughness") is None else f"{row.get('roughness'):.2f}",
-                v=row.get("vertex_count") or "",
-                ar="" if row.get("area_ratio") is None else f"{row.get('area_ratio'):.3f}",
-                dr="" if row.get("dual_ratio") is None else f"{row.get('dual_ratio'):.2f}",
-                reason=row.get("reason") or "",
             )
         )
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -359,8 +339,6 @@ def main() -> int:
     weights = {
         "osm_match_ratio": 1.0,
         "dist_p95_m": -0.05,
-        "roughness": -0.2,
-        "vertex_count": -0.002,
         "area_penalty": -0.3,
         "dual_ratio": 0.2,
         "center_feat_gap": 0.2,
@@ -371,8 +349,6 @@ def main() -> int:
     baseline = _load_baseline(Path(args.baseline))
     candidates, drives = _aggregate(entries, baseline, weights)
 
-    _write_csv(Path(args.out_csv), candidates)
-    _write_md(Path(args.out_md), candidates, drives)
 
     if args.out_json:
         ranked = sorted(

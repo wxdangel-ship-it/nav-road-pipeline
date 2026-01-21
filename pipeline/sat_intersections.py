@@ -61,17 +61,12 @@ def _scan_tiles(tiles_dir: Path) -> RasterIndex:
     return items
 
 
-def _load_index_cache(cache_path: Path) -> Optional[RasterIndex]:
     if not cache_path.exists():
-        return None
     try:
-        return json.loads(cache_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
 
 
-def _save_index_cache(cache_path: Path, items: RasterIndex) -> None:
-    cache_path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _cache_path(dop20_root: Path) -> Path:
@@ -81,19 +76,13 @@ def _cache_path(dop20_root: Path) -> Path:
     return dop20_root / "dop20_tiles_index.json"
 
 
-def load_tile_index(dop20_root: Path, tiles_dir: Path) -> RasterIndex:
     cache_path = _cache_path(dop20_root)
-    cached = _load_index_cache(cache_path)
     if cached is not None:
-        return cached
     items = _scan_tiles(tiles_dir)
     try:
-        _save_index_cache(cache_path, items)
     except PermissionError:
         fallback = Path("cache") / "dop20_tiles_index.json"
         fallback.parent.mkdir(parents=True, exist_ok=True)
-        _save_index_cache(fallback, items)
-    return items
 
 
 def _find_tile_for_point(items: RasterIndex, x: float, y: float) -> Optional[str]:
@@ -157,25 +146,17 @@ def run_sat_intersections(
     dop20_root: Optional[Path] = None,
 ) -> Dict[str, object]:
     if np is None or rasterio is None:
-        return {"present": False, "reason": "missing_dependencies"}
     if dop20_root is None or not dop20_root.exists():
-        return {"present": False, "reason": "dop20_root_missing"}
     tiles_dir = dop20_root / "tiles_utm32"
     if not tiles_dir.exists():
-        return {"present": False, "reason": "tiles_dir_missing"}
     if not candidates:
-        return {"present": False, "reason": "no_candidates"}
 
     try:
-        index_items = load_tile_index(dop20_root, tiles_dir)
     except Exception as exc:
-        return {"present": False, "reason": f"index_failed:{exc}"}
     if not index_items:
-        return {"present": False, "reason": "no_tiles"}
 
     features = []
     metrics = []
-    polys = []
     traj_pts = [Point(xy) for xy in traj_points]
 
     for idx, pt in enumerate(candidates):
@@ -191,7 +172,6 @@ def run_sat_intersections(
             continue
         radius = 12.0 + 20.0 * conf
         poly = pt.buffer(radius)
-        polys.append(poly)
         traj_support = sum(1 for p in traj_pts if poly.contains(p))
         area = float(poly.area)
         perim = float(poly.length)
@@ -237,14 +217,3 @@ def run_sat_intersections(
             "items": metrics,
         },
     )
-
-    avg_conf = 0.0
-    if metrics:
-        avg_conf = sum(m.get("sat_confidence", 0.0) for m in metrics) / len(metrics)
-    return {
-        "present": bool(features),
-        "count": len(features),
-        "metrics_path": str(metrics_path),
-        "polys": polys,
-        "avg_confidence": round(float(avg_conf), 4),
-    }

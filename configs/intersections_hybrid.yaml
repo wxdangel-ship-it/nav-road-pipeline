@@ -1,0 +1,20 @@
+hybrid:
+  crs_epsg: 32632
+  min_overlap_ratio: 0.25
+  max_centerline_dist_m: 25.0
+  min_area_m2: 60.0
+  max_area_m2: 12000.0
+  min_compactness: 0.05
+  max_aspect_ratio: 6.0
+  match_iou_min: 0.2
+  union_enabled: true
+  union_iou_min: 0.35
+  prefer_algo: true
+  sat_conf_min: 0.35
+  sat_mode: fallback_only
+  dup_iou: 0.2
+  sat_augment_min_conf: 0.35
+  sat_augment_min_overlap: 0.25
+  sat_augment_max_dist: 25.0
+  debug_reject_breakdown: false
+  expected_drives_file: configs/golden_drives.txt

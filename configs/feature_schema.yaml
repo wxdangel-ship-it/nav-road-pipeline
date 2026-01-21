@@ -1,0 +1,34 @@
+feature_schema:
+  divider_median:
+    geometry_type: LineString
+  lane_marking:
+    geometry_type: LineString
+  road_edge:
+    geometry_type: LineString
+  stop_line:
+    geometry_type: LineString
+  crosswalk:
+    geometry_type: Polygon
+  gore_marking:
+    geometry_type: Polygon
+  arrow:
+    geometry_type: Polygon
+  traffic_light:
+    geometry_type: BBox
+  traffic_sign:
+    geometry_type: BBox
+  curb:
+    geometry_type: LineString
+
+required_fields:
+  - drive_id
+  - frame_id
+  - timestamp
+  - src_modality
+  - model_id
+  - model_version
+  - class
+  - subtype
+  - conf
+  - geometry_frame
+  - notes

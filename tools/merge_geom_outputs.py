@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-import geopandas as gpd
-import pandas as pd
 import yaml
 
 
@@ -37,7 +35,6 @@ def _read_summary(outputs_dir: Path) -> Dict[str, object]:
         return {}
 
 
-def _merge_layers(entries: List[dict], suffix: str, out_dir: Path) -> None:
     center_frames = []
     road_frames = []
     inter_frames = []
@@ -54,71 +51,12 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path) -> None:
         sat_present = bool(summary.get("sat_present"))
         sat_conf = summary.get("sat_confidence_avg")
 
-        center_path = outputs_dir / f"centerlines{suffix}.geojson"
-        road_path = outputs_dir / f"road_polygon{suffix}.geojson"
-        inter_path = outputs_dir / f"intersections{suffix}.geojson"
-        inter_algo_path = outputs_dir / f"intersections_algo{suffix}.geojson"
-        inter_sat_path = outputs_dir / f"intersections_sat{suffix}.geojson"
-        if center_path.exists():
-            gdf = gpd.read_file(center_path)
-            gdf["drive"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            center_frames.append(gdf)
-        if road_path.exists():
-            gdf = gpd.read_file(road_path)
-            gdf["drive"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            road_frames.append(gdf)
-        if inter_path.exists():
-            gdf = gpd.read_file(inter_path)
-            gdf["drive"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            gdf["backend_used"] = backend_used
-            gdf["sat_present"] = sat_present
-            gdf["sat_confidence"] = sat_conf
-            inter_frames.append(gdf)
-        if inter_algo_path.exists():
-            gdf = gpd.read_file(inter_algo_path)
-            gdf["drive"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            gdf["backend_used"] = "algo"
-            gdf["sat_present"] = sat_present
-            gdf["sat_confidence"] = sat_conf
-            inter_algo_frames.append(gdf)
-        if inter_sat_path.exists():
-            gdf = gpd.read_file(inter_sat_path)
-            gdf["drive"] = drive
-            gdf["geom_run_id"] = run_id
-            gdf["candidate_id"] = candidate_id
-            gdf["backend_used"] = "sat"
-            gdf["sat_present"] = sat_present
-            gdf["sat_confidence"] = sat_conf
-            inter_sat_frames.append(gdf)
 
     if center_frames:
-        gpd.GeoDataFrame(pd.concat(center_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_centerlines{suffix}.geojson", driver="GeoJSON"
-        )
     if road_frames:
-        gpd.GeoDataFrame(pd.concat(road_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_road_polygon{suffix}.geojson", driver="GeoJSON"
-        )
     if inter_frames:
-        merged = gpd.GeoDataFrame(pd.concat(inter_frames, ignore_index=True))
-        merged.to_file(out_dir / f"merged_intersections{suffix}.geojson", driver="GeoJSON")
-        merged.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
     if inter_algo_frames:
-        gpd.GeoDataFrame(pd.concat(inter_algo_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_intersections_algo{suffix}.geojson", driver="GeoJSON"
-        )
     if inter_sat_frames:
-        gpd.GeoDataFrame(pd.concat(inter_sat_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_intersections_sat{suffix}.geojson", driver="GeoJSON"
-        )
 
 
 def main() -> int:
@@ -132,7 +70,6 @@ def main() -> int:
     if not index_path.exists():
         raise SystemExit(f"ERROR: index not found: {index_path}")
 
-    best_candidate = _load_best_candidate(Path(args.best_postopt))
     if not best_candidate:
         raise SystemExit("ERROR: best_postopt candidate_id not found")
 
@@ -149,8 +86,6 @@ def main() -> int:
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    _merge_layers(entries, "", out_dir)
-    _merge_layers(entries, "_wgs84", out_dir)
     return 0
 
 

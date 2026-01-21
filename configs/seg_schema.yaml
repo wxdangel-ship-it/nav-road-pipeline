@@ -1,0 +1,54 @@
+class_map:
+  divider_median: []
+  lane_marking: []
+  road_edge: []
+  stop_line: []
+  crosswalk: []
+  gore_marking: []
+  arrow: []
+  traffic_light: []
+  traffic_sign: []
+  curb: []
+
+id_to_class:
+  0: background
+  1: lane_marking
+  2: divider_median
+  3: road_edge
+  4: stop_line
+  5: crosswalk
+  6: gore_marking
+  7: arrow
+
+name_to_class:
+  divider: divider_median
+  median: divider_median
+  lane: lane_marking
+  lane_marking: lane_marking
+  road_edge: road_edge
+  edge: road_edge
+  stop_line: stop_line
+  stopline: stop_line
+  crosswalk: crosswalk
+  gore: gore_marking
+  gore_marking: gore_marking
+  arrow: arrow
+  traffic_light: traffic_light
+  traffic_sign: traffic_sign
+  curb: curb
+
+subtype_map:
+  lane_marking:
+    solid: solid
+    dashed: dashed
+    double_yellow: double_yellow
+    solid_double: solid_double
+    guidance: guidance
+  arrow:
+    left: left
+    right: right
+    straight: straight
+    u_turn: u_turn
+  gore_marking:
+    hatched: hatched
+    gore: gore

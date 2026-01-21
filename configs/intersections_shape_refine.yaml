@@ -1,0 +1,11 @@
+shape_refine:
+  radius_m: 20.0
+  road_buffer_m: 1.0
+  arm_length_m: 25.0
+  arm_buffer_m: 7.0
+  simplify_m: 0.5
+  min_area_m2: 30.0
+  min_part_area_m2: 30.0
+  min_hole_area_m2: 30.0
+  max_circularity: 0.90
+  min_overlap_road: 0.70

@@ -1,0 +1,22 @@
+centerlines:
+  mode: both
+  step_m: 5.0
+  probe_m: 25.0
+  dual_width_threshold_m: 12.0
+  min_dual_sample_ratio: 0.6
+  min_segment_length_m: 30.0
+  dual_conf_threshold: 0.0
+  divider_sources: [geom]
+  divider_buffer_m: 1.5
+  seg_divider_feature_store_dir: ""
+  seg_divider_lane_subtypes: [double_yellow, solid_double]
+  accept_image_px: false
+  image_px_to_map: none
+  simplify_m: 0.5
+  dual_offset_mode: fixed
+  dual_offset_m: 3.5
+  dual_offset_max_m: 8.0
+  dual_offset_margin_m: 1.0
+  dual_min_keep_ratio: 0.6
+  dual_fallback_single: true
+  debug_divider_layers: false
