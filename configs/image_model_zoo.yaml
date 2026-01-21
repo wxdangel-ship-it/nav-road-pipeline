@@ -86,6 +86,12 @@ models:
     device: auto
     input_size: 1024
     model_version: v1
+    backend: auto
+    sam3_builder: sam3.build_sam:build_sam3
+    sam3_predictor: sam3.sam3_image_predictor:SAM3ImagePredictor
+    sam3_model_cfg: "sam3/configs/sam3_hiera_b+.yaml"
+    weights_path: cache/model_weights/sam3/sam3_v1.pt
+    weights_url: ""
     prompts:
       - divider
       - lane marking

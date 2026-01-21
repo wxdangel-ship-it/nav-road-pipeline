@@ -245,6 +245,87 @@ class YoloWorldProvider(ImageProvider):
         return {"status": "ok", "counts": counts}
 
 
+def _load_dino_components(ctx: ProviderContext) -> tuple[Any, Any, List[str], Dict[str, str], Dict[str, int]]:
+    try:
+        import torch
+        from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
+    except Exception as exc:
+        raise RuntimeError(f"missing transformers/torch: {exc}") from exc
+
+    download_cfg = ctx.model_cfg.get("download") or {}
+    dino_repo = download_cfg.get("repo")
+    if not dino_repo:
+        raise RuntimeError("grounding_dino repo not configured")
+
+    from huggingface_hub import snapshot_download
+
+    cache_dirs = _resolve_cache_env()
+    local_dir = (
+        Path(cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"] or ".")
+        / "local_snapshots"
+        / dino_repo.replace("/", "--")
+    )
+    local_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = snapshot_download(
+        repo_id=dino_repo,
+        cache_dir=cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"],
+        token=False,
+        local_dir=str(local_dir),
+        local_dir_use_symlinks=False,
+    )
+
+    try:
+        processor = AutoProcessor.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            token=False,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        )
+        model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            token=False,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        ).to(ctx.device)
+    except TypeError:
+        processor = AutoProcessor.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        )
+        model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            snapshot_dir,
+            local_files_only=True,
+            cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
+        ).to(ctx.device)
+
+    class_map = {str(k).lower(): str(v) for k, v in (ctx.model_cfg.get("class_map") or {}).items()}
+    class_to_id = _class_to_id_map(ctx.seg_schema)
+    prompts = ctx.model_cfg.get("prompts") or list(class_map.keys())
+    prompts = [str(p).strip().lower() for p in prompts if str(p).strip()]
+    return processor, model, prompts, class_map, class_to_id
+
+
+def _resolve_weight_path(path_str: Optional[str], url: Optional[str], cache_root: str, tag: str) -> Path:
+    if path_str:
+        path = Path(path_str)
+        if path.exists():
+            return path
+    if url:
+        return _download_file(url, Path(cache_root) / tag / Path(url).name)
+    raise RuntimeError(f"{tag} weights not found")
+
+
+def _import_from_string(path: str):
+    parts = path.split(":")
+    module_name = parts[0]
+    attr = parts[1] if len(parts) > 1 else None
+    module = __import__(module_name, fromlist=[attr] if attr else [])
+    if not attr:
+        return module
+    return getattr(module, attr)
+
+
 class _DinoSam2Base(ImageProvider):
     def __init__(self, ctx: ProviderContext) -> None:
         super().__init__(ctx)
@@ -257,20 +338,12 @@ class _DinoSam2Base(ImageProvider):
 
     def load(self) -> None:
         try:
-            import torch
-            from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
-        except Exception as exc:
-            raise RuntimeError(f"missing transformers/torch: {exc}") from exc
-        try:
             from sam2.build_sam import build_sam2
             from sam2.sam2_image_predictor import SAM2ImagePredictor
         except Exception as exc:
             raise RuntimeError(f"missing sam2: {exc}") from exc
 
         download_cfg = self.ctx.model_cfg.get("download") or {}
-        dino_repo = download_cfg.get("repo")
-        if not dino_repo:
-            raise RuntimeError("grounding_dino repo not configured")
         sam2_cfg = download_cfg.get("sam2_model_cfg")
         if not sam2_cfg:
             raise RuntimeError("sam2 checkpoint/model_cfg not configured")
@@ -280,56 +353,10 @@ class _DinoSam2Base(ImageProvider):
         elif not sam2_cfg.startswith("configs/"):
             sam2_cfg = f"configs/{sam2_cfg}"
         sam2_ckpt = _resolve_sam2_checkpoint(download_cfg, _ensure_cache_env())
-
-        from huggingface_hub import snapshot_download
-
-        cache_dirs = _resolve_cache_env()
-        local_dir = (
-            Path(cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"] or ".")
-            / "local_snapshots"
-            / dino_repo.replace("/", "--")
-        )
-        local_dir.mkdir(parents=True, exist_ok=True)
-        snapshot_dir = snapshot_download(
-            repo_id=dino_repo,
-            cache_dir=cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"],
-            token=False,
-            local_dir=str(local_dir),
-            local_dir_use_symlinks=False,
-        )
-
-        try:
-            self.processor = AutoProcessor.from_pretrained(
-                snapshot_dir,
-                local_files_only=True,
-                token=False,
-                cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
-            )
-            self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                snapshot_dir,
-                local_files_only=True,
-                token=False,
-                cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
-            ).to(self.ctx.device)
-        except TypeError:
-            self.processor = AutoProcessor.from_pretrained(
-                snapshot_dir,
-                local_files_only=True,
-                cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
-            )
-            self.model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                snapshot_dir,
-                local_files_only=True,
-                cache_dir=cache_dirs["transformers_cache"] or cache_dirs["hf_home"],
-            ).to(self.ctx.device)
+        self.processor, self.model, self.prompts, self.class_map, self.class_to_id = _load_dino_components(self.ctx)
 
         sam2 = build_sam2(sam2_cfg, str(sam2_ckpt), device=self.ctx.device)
         self.predictor = SAM2ImagePredictor(sam2)
-
-        self.class_map = {str(k).lower(): str(v) for k, v in (self.ctx.model_cfg.get("class_map") or {}).items()}
-        self.class_to_id = _class_to_id_map(self.ctx.seg_schema)
-        prompts = self.ctx.model_cfg.get("prompts") or list(self.class_map.keys())
-        self.prompts = [str(p).strip().lower() for p in prompts if str(p).strip()]
 
     def _run_dino(self, img: "Image.Image", prompts: List[str]) -> dict:
         import torch
@@ -501,11 +528,88 @@ class GdinoSam2Provider(_DinoSam2Base):
 
 @register_provider("sam3")
 class Sam3Provider(_DinoSam2Base):
+    def __init__(self, ctx: ProviderContext) -> None:
+        super().__init__(ctx)
+        self.backend_status = "fallback"
+        self.fallback_used = True
+        self.fallback_from = "sam3_v1"
+        self.fallback_to = "gdino_sam2_v1"
+        self.backend_reason = "missing_backend"
+        self.use_sam3 = False
+
     def load(self) -> None:
+        backend_mode = str(self.ctx.model_cfg.get("backend") or "auto").lower()
+        if backend_mode in {"real", "auto"}:
+            try:
+                builder_path = str(self.ctx.model_cfg.get("sam3_builder") or "sam3.build_sam:build_sam3")
+                predictor_path = str(
+                    self.ctx.model_cfg.get("sam3_predictor") or "sam3.sam3_image_predictor:SAM3ImagePredictor"
+                )
+                build_sam3 = _import_from_string(builder_path)
+                predictor_cls = _import_from_string(predictor_path)
+
+                download_cfg = self.ctx.model_cfg.get("download") or {}
+                sam3_cfg = self.ctx.model_cfg.get("sam3_model_cfg") or download_cfg.get("sam3_model_cfg")
+                if not sam3_cfg:
+                    raise RuntimeError("sam3_model_cfg not configured")
+                sam3_cfg = str(sam3_cfg)
+                if "sam3/configs/" in sam3_cfg:
+                    sam3_cfg = "configs/" + sam3_cfg.split("sam3/configs/", 1)[1]
+                elif not sam3_cfg.startswith("configs/"):
+                    sam3_cfg = f"configs/{sam3_cfg}"
+
+                cache_root = _ensure_cache_env()
+                weights_path = _resolve_weight_path(
+                    self.ctx.model_cfg.get("weights_path") or download_cfg.get("sam3_checkpoint"),
+                    self.ctx.model_cfg.get("weights_url") or download_cfg.get("sam3_checkpoint_url"),
+                    cache_root,
+                    "sam3",
+                )
+
+                self.processor, self.model, self.prompts, self.class_map, self.class_to_id = _load_dino_components(
+                    self.ctx
+                )
+                sam3_model = build_sam3(sam3_cfg, str(weights_path), device=self.ctx.device)
+                self.predictor = predictor_cls(sam3_model)
+                self.use_sam3 = True
+                self.backend_status = "real"
+                self.fallback_used = False
+                self.fallback_to = ""
+                self.backend_reason = ""
+                return
+            except Exception as exc:
+                reason = str(exc)
+                if "weights" in reason or "checkpoint" in reason:
+                    self.backend_reason = "weights_not_found"
+                elif "missing" in reason or "No module" in reason:
+                    self.backend_reason = "missing_dependency"
+                else:
+                    self.backend_reason = "runtime_error"
+                if backend_mode == "real":
+                    self.backend_status = "unavailable"
+                    self.fallback_used = False
+                    self.fallback_to = ""
+                    raise RuntimeError(f"sam3 real backend failed: {exc}") from exc
+
+        self.backend_status = "fallback"
+        self.fallback_used = True
+        self.fallback_to = "gdino_sam2_v1"
+        if backend_mode == "fallback":
+            self.backend_reason = "forced_fallback"
+        elif not self.backend_reason:
+            self.backend_reason = "missing_backend"
         logging.warning("sam3 backend not available; falling back to gdino+sam2 path")
         super().load()
 
     def infer(self, images: List[Any], out_dir: Path, debug_dir: Optional[Path] = None) -> dict:
         report = super().infer(images, out_dir, debug_dir=debug_dir)
-        report["fallback_used"] = "gdino_sam2"
+        report.update(
+            {
+                "backend_status": self.backend_status,
+                "fallback_used": self.fallback_used,
+                "fallback_from": self.fallback_from,
+                "fallback_to": self.fallback_to,
+                "backend_reason": self.backend_reason,
+            }
+        )
         return report

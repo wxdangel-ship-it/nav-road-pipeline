@@ -71,6 +71,24 @@ def _mask_iou(a: np.ndarray, b: np.ndarray) -> float:
     return float(inter) / float(union) if union > 0 else 0.0
 
 
+def _env_flag(name: str, default: str = "1") -> bool:
+    val = os.environ.get(name, default)
+    return str(val).strip().lower() in {"1", "true", "yes", "y"}
+
+
+def _read_json(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _format_provider_name(pid: str, backend: dict) -> str:
+    if backend.get("fallback_used"):
+        target = backend.get("fallback_to") or "fallback"
+        return f"{pid}(fallback->{target})"
+    return pid
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", default="")
@@ -113,6 +131,15 @@ def main() -> int:
     if not providers:
         log.error("no providers specified")
         return 4
+    manifest = _read_json(run_dir / "run_manifest.json")
+    providers_backend = manifest.get("providers_backend") or {}
+    exclude_fallback = _env_flag("EXCLUDE_FALLBACK_PROVIDERS", "1")
+    providers_for_eval = []
+    for pid in providers:
+        backend = providers_backend.get(pid) or {}
+        if exclude_fallback and backend.get("fallback_used"):
+            continue
+        providers_for_eval.append(pid)
 
     per_provider: Dict[str, dict] = {}
     for provider in providers:
@@ -155,15 +182,16 @@ def main() -> int:
             "mask_area_p50": {cls: _percentile(areas, 50) for cls, areas in mask_areas.items()},
             "mask_area_p90": {cls: _percentile(areas, 90) for cls, areas in mask_areas.items()},
             "frames_with_class": frames_with_class,
+            "backend": providers_backend.get(provider) or {},
         }
 
     consistency: Dict[str, dict] = {}
     disagreements: Dict[str, dict] = {}
-    for i in range(len(providers)):
-        for j in range(i + 1, len(providers)):
-            a_id = providers[i]
-            b_id = providers[j]
-            key = f"{a_id}__vs__{b_id}"
+    for i in range(len(providers_for_eval)):
+        for j in range(i + 1, len(providers_for_eval)):
+            a_id = providers_for_eval[i]
+            b_id = providers_for_eval[j]
+            key = f"{_format_provider_name(a_id, providers_backend.get(a_id) or {})}__vs__{_format_provider_name(b_id, providers_backend.get(b_id) or {})}"
             per_class_ious: Dict[str, List[float]] = {}
             worst: Dict[str, List[Tuple[float, str, str]]] = {}
             for drive_id, frames in by_drive.items():
@@ -201,7 +229,7 @@ def main() -> int:
                 ]
 
     stability: Dict[str, dict] = {}
-    for provider in providers:
+    for provider in providers_for_eval:
         per_class: Dict[str, List[float]] = {}
         for drive_id, frames in by_drive.items():
             ordered = frames
@@ -228,11 +256,13 @@ def main() -> int:
         "run_dir": str(run_dir),
         "sample_index": str(index_path),
         "providers": providers,
+        "providers_for_eval": providers_for_eval,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "per_provider": per_provider,
         "consistency_p50": consistency,
         "stability_p50": stability,
         "disagreements": disagreements,
+        "exclude_fallback": exclude_fallback,
     }
     report_json = out_dir / "report.json"
     _safe_unlink(report_json)
@@ -244,15 +274,35 @@ def main() -> int:
         f"- run_dir: {run_dir}",
         f"- sample_index: {index_path}",
         f"- providers: {', '.join(providers)}",
+        f"- providers_for_eval: {', '.join(providers_for_eval)}",
+        f"- exclude_fallback: {exclude_fallback}",
         f"- generated_at: {report['generated_at']}",
         "",
-        "## Per-Provider Summary",
+        "## Provider Backend Status",
+        "",
+        "| provider_id | backend_status | fallback_used | fallback_to | backend_reason |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for provider in providers:
+        backend = providers_backend.get(provider) or {}
+        lines.append(
+            "| {pid} | {status} | {used} | {to} | {reason} |".format(
+                pid=provider,
+                status=backend.get("backend_status") or "unknown",
+                used=backend.get("fallback_used"),
+                to=backend.get("fallback_to") or "",
+                reason=backend.get("backend_reason") or "",
+            )
+        )
+    lines.append("")
+    lines.append("## Per-Provider Summary")
+    for provider in providers:
         stats = per_provider.get(provider, {})
+        backend = stats.get("backend") or {}
+        display = _format_provider_name(provider, backend)
         lines.extend(
             [
-                f"### {provider}",
+                f"### {display}",
                 f"- det_counts: {stats.get('det_counts')}",
                 f"- det_score_p50: {stats.get('det_score_p50')}",
                 f"- mask_area_p50: {stats.get('mask_area_p50')}",
@@ -267,7 +317,9 @@ def main() -> int:
     lines.append("")
     lines.append("## Stability (IoU p50)")
     for provider, vals in stability.items():
-        lines.append(f"- {provider}: {vals}")
+        backend = providers_backend.get(provider) or {}
+        display = _format_provider_name(provider, backend)
+        lines.append(f"- {display}: {vals}")
     lines.append("")
     lines.append("## Disagreements (Top-K Lowest IoU)")
     for key, per_cls in disagreements.items():

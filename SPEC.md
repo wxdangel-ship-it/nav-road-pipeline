@@ -184,3 +184,11 @@ Stage C：定型验证（Top-3 全量回归 Golden+Refresh+Stress；跑 Arm0–A
 - autotune 已通过 sim_metrics 与 eval_all 解耦（避免真实 eval 改动影响搜索机制）
 - 后续真实 autotune 将逐步替换 sim_metrics 为真实多保真评测（先小样本/限帧，再全量）
 
+
+## 18. ????????????????
+- ?? schema ?????????backend_status / fallback_used / fallback_from / fallback_to / backend_reason
+- ?????
+  - scripts/run_image_providers.cmd
+  - scripts/run_ab_eval.cmd
+  - scripts/setup_sam3_weights.cmd
+- STRICT_BACKEND=1 ?? fallback??????? fallback ?????

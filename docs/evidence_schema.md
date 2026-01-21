@@ -17,6 +17,11 @@
 - `model_id`: 模型 ID（与 `provider_id` 一致或更细粒度）
 - `model_version`: 模型版本字符串
 - `ckpt_hash`: 权重标识（文件名或 hash）
+- `backend_status`: `real` / `fallback` / `unavailable`
+- `fallback_used`: 是否启用 fallback（bool）
+- `fallback_from`: 触发 fallback 的 provider（如 `sam3_v1`）
+- `fallback_to`: fallback 实际运行的 provider（如 `gdino_sam2_v1`）
+- `backend_reason`: 可选，`missing_dependency` / `weights_not_found` / `runtime_error` 等
 - `scene_profile`: `car/aerial/sat` 等
 - `drive_id`, `frame_id`
 - `image_path`: 原始图像路径（本地）

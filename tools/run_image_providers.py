@@ -173,6 +173,30 @@ def _write_evidence_records(
             f.write(json.dumps(rec) + "\n")
 
 
+def _backend_defaults(provider_id: str, report: dict) -> dict:
+    backend_status = report.get("backend_status") or "real"
+    fallback_used = bool(report.get("fallback_used", False))
+    fallback_from = report.get("fallback_from") or ""
+    fallback_to = report.get("fallback_to") or ""
+    backend_reason = report.get("backend_reason") or ""
+    if fallback_used and backend_status == "real":
+        backend_status = "fallback"
+    if fallback_used and not fallback_from:
+        fallback_from = provider_id
+    return {
+        "backend_status": backend_status,
+        "fallback_used": fallback_used,
+        "fallback_from": fallback_from,
+        "fallback_to": fallback_to,
+        "backend_reason": backend_reason,
+    }
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    val = os.environ.get(name, default)
+    return str(val).strip().lower() in {"1", "true", "yes", "y"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", required=True)
@@ -241,6 +265,7 @@ def main() -> int:
     device, has_cuda = _device_auto()
     seg_schema = _load_yaml(Path(args.seg_schema))
 
+    strict_backend = _env_flag("STRICT_BACKEND", "0")
     run_manifest = {
         "run_id": out_run.name,
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -252,6 +277,8 @@ def main() -> int:
         "device": device,
         "cuda_available": has_cuda,
         "git_commit": _git_commit(),
+        "strict_backend": strict_backend,
+        "providers_backend": {},
     }
     (out_run / "run_manifest.json").write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
 
@@ -277,11 +304,25 @@ def main() -> int:
 
         ctx = ProviderContext(model_cfg=model_cfg, seg_schema=seg_schema, device=device)
         provider = provider_cls(ctx)
-        provider.load()
+        try:
+            provider.load()
+        except Exception as exc:
+            log.error("provider load failed: %s (%s)", provider_id, exc)
+            provider_backend = {
+                "backend_status": "unavailable",
+                "fallback_used": False,
+                "fallback_from": provider_id,
+                "fallback_to": "",
+                "backend_reason": "missing_dependency" if "No module" in str(exc) else "runtime_error",
+            }
+            run_manifest["providers_backend"][provider_id] = provider_backend
+            (out_run / "run_manifest.json").write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
+            return 12
 
         records: List[dict] = []
         counts: Dict[str, int] = {}
         per_drive_reports: Dict[str, dict] = {}
+        provider_backend = {}
         for drive_id, frames in by_drive.items():
             drive_dir = provider_out / drive_id
             drive_dir.mkdir(parents=True, exist_ok=True)
@@ -294,6 +335,14 @@ def main() -> int:
             per_drive_reports[drive_id] = report
             for k, v in (report.get("counts") or {}).items():
                 counts[k] = counts.get(k, 0) + int(v)
+            provider_backend = _backend_defaults(provider_id, report)
+            if provider_backend["backend_status"] == "unavailable":
+                log.error("provider unavailable: %s (%s)", provider_id, provider_backend.get("backend_reason"))
+                return 10
+            if strict_backend and provider_backend["fallback_used"]:
+                log.error("STRICT_BACKEND=1 fallback used by %s -> %s", provider_id, provider_backend.get("fallback_to"))
+                (out_run / "run_manifest.json").write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
+                return 11
 
             for item in frames:
                 seg_path = drive_dir / "seg_masks" / f"{item.path.stem}_seg.png"
@@ -315,6 +364,7 @@ def main() -> int:
                     "config_path": str(Path(args.zoo)),
                     "git_commit": run_manifest["git_commit"],
                     "generated_at": run_manifest["generated_at"],
+                    **provider_backend,
                 }
                 records.append(seg_record)
 
@@ -338,8 +388,11 @@ def main() -> int:
                         "config_path": str(Path(args.zoo)),
                         "git_commit": run_manifest["git_commit"],
                         "generated_at": run_manifest["generated_at"],
+                        **provider_backend,
                     }
                     records.append(det_record)
+
+        run_manifest["providers_backend"][provider_id] = provider_backend
 
         evidence_path.parent.mkdir(parents=True, exist_ok=True)
         _write_evidence_records(evidence_path, records)
@@ -351,6 +404,7 @@ def main() -> int:
             "counts": counts,
             "frames": {drive: len(frames) for drive, frames in by_drive.items()},
             "provider_report": per_drive_reports,
+            "backend": provider_backend,
             "generated_at": run_manifest["generated_at"],
         }
         report_path = out_run / "reports" / f"{provider_id}_infer_report.json"
@@ -392,6 +446,7 @@ def main() -> int:
                 if code != 0:
                     log.warning("feature_store_map failed: provider=%s drive=%s", provider_id, drive_id)
 
+    (out_run / "run_manifest.json").write_text(json.dumps(run_manifest, indent=2), encoding="utf-8")
     log.info("run completed: %s", out_run)
     return 0
 

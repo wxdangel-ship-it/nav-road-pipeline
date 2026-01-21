@@ -6,6 +6,10 @@ if not exist .venv\Scripts\python.exe (
   call .\scripts\setup.cmd
 )
 
+if "%STRICT_BACKEND%"=="" (
+  set "STRICT_BACKEND=0"
+)
+
 set "ARGS=%*"
 if "%ARGS%"=="" (
   set "INDEX=runs\image_samples_golden8\sample_index.jsonl"
