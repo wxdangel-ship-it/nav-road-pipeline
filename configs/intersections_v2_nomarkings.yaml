@@ -1,23 +1,22 @@
 run:
   expected_drives_file: configs/golden_drives.txt
-
 seeds:
   traj_enabled: true
-  traj_points_path_template: ""
+  traj_points_path_template: ''
   traj_turn_angle_deg: 35.0
   traj_min_sep_m: 25.0
   traj_search_radius_m: 30.0
   osm_enabled: true
   osm_roads_path: E:/KITTI360/KITTI-360/_osm_download/drivable_roads.geojson
   osm_highway_allowlist:
-    - residential
-    - unclassified
-    - tertiary
-    - secondary
-    - primary
-    - trunk
-    - service
-    - living_street
+  - residential
+  - unclassified
+  - tertiary
+  - secondary
+  - primary
+  - trunk
+  - service
+  - living_street
   drive_bbox_buffer_m: 150
   assign_max_dist_m: 200
   multi_assign: true
@@ -28,15 +27,13 @@ seeds:
   sat_outputs_dir: runs/sat_intersections_full_golden8/outputs
   geom_enabled: true
   seed_radius_default_m: 18.0
-
 refine:
   enabled: true
   search_radius_m: 25.0
   refine_src_default: geometry
   markings_enabled: false
-  markings_feature_store_dir: ""
+  markings_feature_store_dir: ''
   markings_max_dist_m: 20.0
-
 shape:
   radius_m: 20.0
   road_buffer_m: 1.0
@@ -53,16 +50,14 @@ shape:
   min_area_m2: 30.0
   min_part_area_m2: 30.0
   min_hole_area_m2: 30.0
-
 gate:
-  min_overlap_road: 0.70
-  max_circularity: 0.90
+  min_overlap_road: 0.7
+  max_circularity: 0.9
   min_arm_count: 3
   min_area_m2: 50.0
   max_area_m2: 12000.0
   retry_shrink_ratio: 0.75
   sat_drop_on_fail: false
   dup_iou: 0.25
-
 debug:
   enable_debug_layers: true

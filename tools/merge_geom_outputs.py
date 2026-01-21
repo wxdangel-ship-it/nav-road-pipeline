@@ -5,9 +5,10 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
-import geopandas as gpd
-import pandas as pd
 import yaml
+from shapely.geometry import shape, mapping
+from shapely.ops import transform as geom_transform
+from pyproj import Transformer
 
 
 def _read_index(path: Path) -> List[dict]:
@@ -87,6 +88,31 @@ def _read_summary(outputs_dir: Path) -> Dict[str, object]:
         return {}
 
 
+def _read_geojson_features(path: Path) -> List[dict]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data.get("features", []) or []
+
+
+def _write_geojson(path: Path, features: List[dict]) -> None:
+    path.write_text(
+        json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _reproject_features(features: List[dict], src_epsg: int, dst_epsg: int) -> List[dict]:
+    transformer = Transformer.from_crs(f"EPSG:{src_epsg}", f"EPSG:{dst_epsg}", always_xy=True)
+    out = []
+    for feat in features:
+        geom = feat.get("geometry")
+        if not geom:
+            continue
+        shp = shape(geom)
+        shp = geom_transform(transformer.transform, shp)
+        out.append({"type": "Feature", "geometry": mapping(shp), "properties": feat.get("properties") or {}})
+    return out
+
+
 def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict, intersections_root: Path | None = None) -> None:
     center_frames = []
     center_single_frames = []
@@ -114,22 +140,64 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict,
                 return alt
         return cand
 
+    def _tag_features(
+        feats: List[dict],
+        drive: str,
+        run_id: str,
+        candidate_id: str,
+        backend_used: str | None = None,
+        sat_present: bool | None = None,
+        sat_conf: float | None = None,
+    ) -> List[dict]:
+        out = []
+        for feat in feats:
+            props = feat.get("properties") or {}
+            props["drive"] = drive
+            props["drive_id"] = drive
+            props["tile_id"] = drive
+            props["geom_run_id"] = run_id
+            props["candidate_id"] = candidate_id
+            if backend_used is not None:
+                props["backend_used"] = backend_used
+            if sat_present is not None:
+                props["sat_present"] = sat_present
+            if sat_conf is not None:
+                props["sat_confidence"] = sat_conf
+            feat["properties"] = props
+            out.append(feat)
+        return out
+
     def _read_with_fallback(path: Path, fallback: Path, drive: str, layer: str, target_epsg: int | None):
         if path.exists():
-            return gpd.read_file(path), False
+            feats = _read_geojson_features(path)
+            if not feats:
+                _note_empty(drive, layer, path)
+                return []
+            return feats
         if fallback.exists() and target_epsg is not None:
-            gdf = gpd.read_file(fallback)
-            if gdf.crs is None:
-                gdf = gdf.set_crs(32632, allow_override=True)
-            try:
-                gdf = gdf.to_crs(target_epsg)
-            except Exception:
-                return None, False
+            feats = _read_geojson_features(fallback)
+            if not feats:
+                _note_empty(drive, layer, fallback)
+                return []
+            feats = _reproject_features(feats, 32632, target_epsg)
             report.setdefault("generated_from_internal", []).append(
                 {"drive_id": drive, "layer": layer, "source": str(fallback)}
             )
-            return gdf, True
-        return None, False
+            return feats
+        _note_missing(drive, layer, path)
+        return None
+
+    def _load_layer(path: Path, fallback: Path | None, drive: str, layer: str, target_epsg: int | None):
+        if target_epsg is not None:
+            return _read_with_fallback(path, fallback or path, drive, layer, target_epsg)
+        if path.exists():
+            feats = _read_geojson_features(path)
+            if not feats:
+                _note_empty(drive, layer, path)
+                return []
+            return feats
+        _note_missing(drive, layer, path)
+        return None
 
     for entry in entries:
         outputs_dir = Path(entry["outputs_dir"])
@@ -155,258 +223,138 @@ def _merge_layers(entries: List[dict], suffix: str, out_dir: Path, report: dict,
         inter_algo_path = inter_dir / f"intersections_algo{suffix}.geojson"
         inter_sat_path = inter_dir / f"intersections_sat{suffix}.geojson"
         inter_final_path = inter_dir / f"intersections_final{suffix}.geojson"
-        if suffix == "_wgs84":
-            gdf, used_fallback = _read_with_fallback(
-                center_path,
-                _resolve_path(outputs_dir, run_id, "centerlines.geojson"),
-                drive,
-                f"centerlines{suffix}",
-                4326,
-            )
-        else:
-            gdf, used_fallback = (gpd.read_file(center_path), False) if center_path.exists() else (None, False)
-        if gdf is not None:
-            if gdf.empty:
-                _note_empty(drive, f"centerlines{suffix}", center_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                center_frames.append(gdf)
-        else:
-            _note_missing(drive, f"centerlines{suffix}", center_path)
-        if suffix == "_wgs84":
-            gdf, used_fallback = _read_with_fallback(
-                center_single_path,
-                _resolve_path(outputs_dir, run_id, "centerlines_single.geojson"),
-                drive,
-                f"centerlines_single{suffix}",
-                4326,
-            )
-        else:
-            gdf, used_fallback = (gpd.read_file(center_single_path), False) if center_single_path.exists() else (None, False)
-        if gdf is not None:
-            if gdf.empty:
-                _note_empty(drive, f"centerlines_single{suffix}", center_single_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                center_single_frames.append(gdf)
-        else:
-            _note_missing(drive, f"centerlines_single{suffix}", center_single_path)
-        if suffix == "_wgs84":
-            gdf, used_fallback = _read_with_fallback(
-                center_dual_path,
-                _resolve_path(outputs_dir, run_id, "centerlines_dual.geojson"),
-                drive,
-                f"centerlines_dual{suffix}",
-                4326,
-            )
-        else:
-            gdf, used_fallback = (gpd.read_file(center_dual_path), False) if center_dual_path.exists() else (None, False)
-        if gdf is not None:
-            if gdf.empty:
-                _note_empty(drive, f"centerlines_dual{suffix}", center_dual_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                center_dual_frames.append(gdf)
-        else:
-            _note_missing(drive, f"centerlines_dual{suffix}", center_dual_path)
-        if suffix == "_wgs84":
-            gdf, used_fallback = _read_with_fallback(
-                center_both_path,
-                _resolve_path(outputs_dir, run_id, "centerlines_both.geojson"),
-                drive,
-                f"centerlines_both{suffix}",
-                4326,
-            )
-        else:
-            gdf, used_fallback = (gpd.read_file(center_both_path), False) if center_both_path.exists() else (None, False)
-        if gdf is not None:
-            if gdf.empty:
-                _note_empty(drive, f"centerlines_both{suffix}", center_both_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                center_both_frames.append(gdf)
-        else:
-            _note_missing(drive, f"centerlines_both{suffix}", center_both_path)
-        if suffix == "_wgs84":
-            gdf, used_fallback = _read_with_fallback(
-                road_path,
-                _resolve_path(outputs_dir, run_id, "road_polygon.geojson"),
-                drive,
-                f"road_polygon{suffix}",
-                4326,
-            )
-        else:
-            gdf, used_fallback = (gpd.read_file(road_path), False) if road_path.exists() else (None, False)
-        if gdf is not None:
-            if gdf.empty:
-                _note_empty(drive, f"road_polygon{suffix}", road_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                road_frames.append(gdf)
-        else:
-            _note_missing(drive, f"road_polygon{suffix}", road_path)
-        if inter_path.exists():
-            gdf = gpd.read_file(inter_path)
-            if gdf.empty:
-                _note_empty(drive, f"intersections{suffix}", inter_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                gdf["backend_used"] = backend_used
-                gdf["sat_present"] = sat_present
-                gdf["sat_confidence"] = sat_conf
-                inter_frames.append(gdf)
-        else:
-            _note_missing(drive, f"intersections{suffix}", inter_path)
-        if inter_algo_path.exists():
-            gdf = gpd.read_file(inter_algo_path)
-            if gdf.empty:
-                _note_empty(drive, f"intersections_algo{suffix}", inter_algo_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                gdf["backend_used"] = "algo"
-                gdf["sat_present"] = sat_present
-                gdf["sat_confidence"] = sat_conf
-                inter_algo_frames.append(gdf)
-        else:
-            _note_missing(drive, f"intersections_algo{suffix}", inter_algo_path)
-        if inter_sat_path.exists():
-            gdf = gpd.read_file(inter_sat_path)
-            if gdf.empty:
-                _note_empty(drive, f"intersections_sat{suffix}", inter_sat_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                gdf["backend_used"] = "sat"
-                gdf["sat_present"] = sat_present
-                gdf["sat_confidence"] = sat_conf
-                inter_sat_frames.append(gdf)
-        else:
-            _note_missing(drive, f"intersections_sat{suffix}", inter_sat_path)
-        if inter_final_path.exists():
-            gdf = gpd.read_file(inter_final_path)
-            if gdf.empty:
-                _note_empty(drive, f"intersections_final{suffix}", inter_final_path)
-            else:
-                gdf["drive"] = drive
-                gdf["drive_id"] = drive
-                gdf["tile_id"] = drive
-                gdf["geom_run_id"] = run_id
-                gdf["candidate_id"] = candidate_id
-                inter_final_frames.append(gdf)
-        else:
-            _note_missing(drive, f"intersections_final{suffix}", inter_final_path)
+        feats = _load_layer(
+            center_path,
+            _resolve_path(outputs_dir, run_id, "centerlines.geojson"),
+            drive,
+            f"centerlines{suffix}",
+            4326 if suffix == "_wgs84" else None,
+        )
+        if feats:
+            center_frames.extend(_tag_features(feats, drive, run_id, candidate_id))
+
+        feats = _load_layer(
+            center_single_path,
+            _resolve_path(outputs_dir, run_id, "centerlines_single.geojson"),
+            drive,
+            f"centerlines_single{suffix}",
+            4326 if suffix == "_wgs84" else None,
+        )
+        if feats:
+            center_single_frames.extend(_tag_features(feats, drive, run_id, candidate_id))
+
+        feats = _load_layer(
+            center_dual_path,
+            _resolve_path(outputs_dir, run_id, "centerlines_dual.geojson"),
+            drive,
+            f"centerlines_dual{suffix}",
+            4326 if suffix == "_wgs84" else None,
+        )
+        if feats:
+            center_dual_frames.extend(_tag_features(feats, drive, run_id, candidate_id))
+
+        feats = _load_layer(
+            center_both_path,
+            _resolve_path(outputs_dir, run_id, "centerlines_both.geojson"),
+            drive,
+            f"centerlines_both{suffix}",
+            4326 if suffix == "_wgs84" else None,
+        )
+        if feats:
+            center_both_frames.extend(_tag_features(feats, drive, run_id, candidate_id))
+
+        feats = _load_layer(
+            road_path,
+            _resolve_path(outputs_dir, run_id, "road_polygon.geojson"),
+            drive,
+            f"road_polygon{suffix}",
+            4326 if suffix == "_wgs84" else None,
+        )
+        if feats:
+            road_frames.extend(_tag_features(feats, drive, run_id, candidate_id))
+
+        feats = _load_layer(inter_path, None, drive, f"intersections{suffix}", None)
+        if feats:
+            inter_frames.extend(_tag_features(feats, drive, run_id, candidate_id, backend_used, sat_present, sat_conf))
+
+        feats = _load_layer(inter_algo_path, None, drive, f"intersections_algo{suffix}", None)
+        if feats:
+            inter_algo_frames.extend(_tag_features(feats, drive, run_id, candidate_id, "algo", sat_present, sat_conf))
+
+        feats = _load_layer(inter_sat_path, None, drive, f"intersections_sat{suffix}", None)
+        if feats:
+            inter_sat_frames.extend(_tag_features(feats, drive, run_id, candidate_id, "sat", sat_present, sat_conf))
+
+        feats = _load_layer(inter_final_path, None, drive, f"intersections_final{suffix}", None)
+        if feats:
+            inter_final_frames.extend(_tag_features(feats, drive, run_id, candidate_id))
+
+    def _coerce_conf(features: List[dict]) -> List[dict]:
+        for feat in features:
+            props = feat.get("properties") or {}
+            if "conf" in props:
+                try:
+                    props["conf"] = float(props["conf"])
+                except (TypeError, ValueError):
+                    props["conf"] = None
+            feat["properties"] = props
+        return features
+
+    def _write_filtered(features: List[dict], src: str, name: str) -> None:
+        filtered = [f for f in features if (f.get("properties") or {}).get("src") == src]
+        if filtered:
+            _write_geojson(out_dir / name, filtered)
 
     if center_frames:
-        merged_center = gpd.GeoDataFrame(pd.concat(center_frames, ignore_index=True))
-        merged_center.to_file(out_dir / f"merged_centerlines{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_centerlines{suffix}"] = int(len(merged_center))
+        _write_geojson(out_dir / f"merged_centerlines{suffix}.geojson", center_frames)
+        report.setdefault("feature_count", {})[f"merged_centerlines{suffix}"] = int(len(center_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines{suffix}"})
     if center_single_frames:
-        merged_center_single = gpd.GeoDataFrame(pd.concat(center_single_frames, ignore_index=True))
-        merged_center_single.to_file(out_dir / f"merged_centerlines_single{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_centerlines_single{suffix}"] = int(len(merged_center_single))
+        _write_geojson(out_dir / f"merged_centerlines_single{suffix}.geojson", center_single_frames)
+        report.setdefault("feature_count", {})[f"merged_centerlines_single{suffix}"] = int(len(center_single_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines_single{suffix}"})
     if center_dual_frames:
-        merged_center_dual = gpd.GeoDataFrame(pd.concat(center_dual_frames, ignore_index=True))
-        merged_center_dual.to_file(out_dir / f"merged_centerlines_dual{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_centerlines_dual{suffix}"] = int(len(merged_center_dual))
+        _write_geojson(out_dir / f"merged_centerlines_dual{suffix}.geojson", center_dual_frames)
+        report.setdefault("feature_count", {})[f"merged_centerlines_dual{suffix}"] = int(len(center_dual_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines_dual{suffix}"})
     if center_both_frames:
-        merged_center_both = gpd.GeoDataFrame(pd.concat(center_both_frames, ignore_index=True))
-        merged_center_both.to_file(out_dir / f"merged_centerlines_both{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_centerlines_both{suffix}"] = int(len(merged_center_both))
+        _write_geojson(out_dir / f"merged_centerlines_both{suffix}.geojson", center_both_frames)
+        report.setdefault("feature_count", {})[f"merged_centerlines_both{suffix}"] = int(len(center_both_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_centerlines_both{suffix}"})
     if road_frames:
-        gpd.GeoDataFrame(pd.concat(road_frames, ignore_index=True)).to_file(
-            out_dir / f"merged_road_polygon{suffix}.geojson", driver="GeoJSON"
-        )
+        _write_geojson(out_dir / f"merged_road_polygon{suffix}.geojson", road_frames)
+        report.setdefault("feature_count", {})[f"merged_road_polygon{suffix}"] = int(len(road_frames))
+    else:
+        report.setdefault("empty_layer", []).append({"layer": f"merged_road_polygon{suffix}"})
     if inter_frames:
-        merged = gpd.GeoDataFrame(pd.concat(inter_frames, ignore_index=True))
-        merged.to_file(out_dir / f"merged_intersections{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_intersections{suffix}"] = int(len(merged))
+        _write_geojson(out_dir / f"merged_intersections{suffix}.geojson", inter_frames)
+        report.setdefault("feature_count", {})[f"merged_intersections{suffix}"] = int(len(inter_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections{suffix}"})
-    def _coerce_conf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-        if "conf" not in gdf.columns:
-            return gdf
-        gdf = gdf.copy()
-        gdf["conf"] = pd.to_numeric(gdf["conf"], errors="coerce")
-        gdf["conf"] = gdf["conf"].where(pd.notna(gdf["conf"]), None)
-        return gdf
-
-    def _write_filtered(gdf: gpd.GeoDataFrame, src: str, name: str) -> None:
-        if "src" not in gdf.columns:
-            return
-        filtered = gdf[gdf["src"] == src]
-        if not filtered.empty:
-            filtered.to_file(out_dir / name, driver="GeoJSON")
-
     if inter_final_frames:
-        merged_final = gpd.GeoDataFrame(pd.concat(inter_final_frames, ignore_index=True))
-        merged_final = _coerce_conf(merged_final)
-        merged_final.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+        merged_final = _coerce_conf(inter_final_frames)
+        _write_geojson(out_dir / f"merged_intersections_final{suffix}.geojson", merged_final)
         report.setdefault("feature_count", {})[f"merged_intersections_final{suffix}"] = int(len(merged_final))
-        _write_filtered(
-            merged_final,
-            "sat",
-            f"merged_intersections_final_sat_only{suffix}.geojson",
-        )
-        _write_filtered(
-            merged_final,
-            "algo",
-            f"merged_intersections_final_algo_only{suffix}.geojson",
-        )
+        _write_filtered(merged_final, "sat", f"merged_intersections_final_sat_only{suffix}.geojson")
+        _write_filtered(merged_final, "algo", f"merged_intersections_final_algo_only{suffix}.geojson")
     elif inter_frames:
-        merged = _coerce_conf(merged)
-        merged.to_file(out_dir / f"merged_intersections_final{suffix}.geojson", driver="GeoJSON")
+        merged = _coerce_conf(inter_frames)
+        _write_geojson(out_dir / f"merged_intersections_final{suffix}.geojson", merged)
         report.setdefault("feature_count", {})[f"merged_intersections_final{suffix}"] = int(len(merged))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_final{suffix}"})
     if inter_algo_frames:
-        merged_algo = gpd.GeoDataFrame(pd.concat(inter_algo_frames, ignore_index=True))
-        merged_algo.to_file(out_dir / f"merged_intersections_algo{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_intersections_algo{suffix}"] = int(len(merged_algo))
+        _write_geojson(out_dir / f"merged_intersections_algo{suffix}.geojson", inter_algo_frames)
+        report.setdefault("feature_count", {})[f"merged_intersections_algo{suffix}"] = int(len(inter_algo_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_algo{suffix}"})
     if inter_sat_frames:
-        merged_sat = gpd.GeoDataFrame(pd.concat(inter_sat_frames, ignore_index=True))
-        merged_sat.to_file(out_dir / f"merged_intersections_sat{suffix}.geojson", driver="GeoJSON")
-        report.setdefault("feature_count", {})[f"merged_intersections_sat{suffix}"] = int(len(merged_sat))
+        _write_geojson(out_dir / f"merged_intersections_sat{suffix}.geojson", inter_sat_frames)
+        report.setdefault("feature_count", {})[f"merged_intersections_sat{suffix}"] = int(len(inter_sat_frames))
     else:
         report.setdefault("empty_layer", []).append({"layer": f"merged_intersections_sat{suffix}"})
 

@@ -3,21 +3,21 @@ run:
 
 seeds:
   traj_enabled: true
-  traj_points_path_template: ""
+  traj_points_path_template: ''
   traj_turn_angle_deg: 35.0
   traj_min_sep_m: 25.0
   traj_search_radius_m: 30.0
   osm_enabled: true
   osm_roads_path: E:/KITTI360/KITTI-360/_osm_download/drivable_roads.geojson
   osm_highway_allowlist:
-    - residential
-    - unclassified
-    - tertiary
-    - secondary
-    - primary
-    - trunk
-    - service
-    - living_street
+  - residential
+  - unclassified
+  - tertiary
+  - secondary
+  - primary
+  - trunk
+  - service
+  - living_street
   drive_bbox_buffer_m: 150
   assign_max_dist_m: 200
   multi_assign: true
@@ -34,29 +34,35 @@ refine:
   search_radius_m: 25.0
   refine_src_default: geometry
   markings_enabled: false
-  markings_feature_store_dir: ""
+  markings_feature_store_dir: ''
   markings_max_dist_m: 20.0
 
 shape:
   radius_m: 20.0
   road_buffer_m: 1.0
-  arm_length_m: 25.0
-  arm_buffer_m: 7.0
+  arm_length_m: 35.0
+  arm_buffer_m: 5.0
   arm_count_seed_radius_m: 6.0
-  seed_search_radius_m_osm: 40.0
-  seed_search_radius_m_skeleton: 40.0
-  arm_length_m_osm: 35.0
-  arm_length_m_skeleton: 35.0
-  arm_buffer_m_osm: 5.0
-  arm_buffer_m_skeleton: 5.0
+  arm_count_eval_radius_m: 16.0
+  arm_count_angle_bin_deg: 20.0
+  arm_count_min_len_m: 3.0
+  min_arm_count_for_src: 2
+  seed_search_radius_m_centerlines: 40.0
+  seed_search_radius_m_osm: 45.0
+  seed_search_radius_m_osm_expand: 15.0
+  seed_search_radius_m_skeleton: 45.0
+  arm_length_m_osm: 40.0
+  arm_length_m_skeleton: 40.0
+  arm_buffer_m_osm: 3.5
+  arm_buffer_m_skeleton: 3.5
   simplify_m: 0.5
   min_area_m2: 30.0
   min_part_area_m2: 30.0
   min_hole_area_m2: 30.0
 
 gate:
-  min_overlap_road: 0.70
-  max_circularity: 0.90
+  min_overlap_road: 0.7
+  max_circularity: 0.9
   min_arm_count: 3
   min_area_m2: 50.0
   max_area_m2: 12000.0
