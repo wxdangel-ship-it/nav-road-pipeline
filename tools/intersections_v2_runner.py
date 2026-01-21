@@ -24,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from pipeline.intersection_shape import (
     arm_count_branches as _arm_count_branches,
     calc_arm_count_by_heading as _arm_count_heading,
+    calc_arm_count_by_approach as _arm_count_approach,
     aspect_ratio as _aspect_ratio,
     circularity as _circularity,
     overlap_with_road as _overlap_with_road,
@@ -589,11 +590,124 @@ def _arms_lines_from_source(seed: Point, lines: List[LineString], arm_cap_m: flo
     return [l for l in out if l.length > 0]
 
 
+def _line_substring(line: LineString, start_dist: float, end_dist: float) -> Optional[LineString]:
+    if line is None or line.is_empty:
+        return None
+    length = float(line.length)
+    start = max(0.0, min(length, float(start_dist)))
+    end = max(0.0, min(length, float(end_dist)))
+    if end <= start:
+        return None
+    try:
+        from shapely.ops import substring
+
+        return substring(line, start, end)
+    except Exception:
+        coords = list(line.coords)
+        if len(coords) < 2:
+            return None
+        out = []
+        dist = 0.0
+        for i in range(len(coords) - 1):
+            x1, y1 = coords[i]
+            x2, y2 = coords[i + 1]
+            seg_len = math.hypot(x2 - x1, y2 - y1)
+            next_dist = dist + seg_len
+            if next_dist < start:
+                dist = next_dist
+                continue
+            if dist > end:
+                break
+            if not out:
+                if start > dist and seg_len > 0:
+                    ratio = (start - dist) / seg_len
+                    sx = x1 + (x2 - x1) * ratio
+                    sy = y1 + (y2 - y1) * ratio
+                    out.append((sx, sy))
+                else:
+                    out.append((x1, y1))
+            if end <= next_dist:
+                if seg_len > 0:
+                    ratio = (end - dist) / seg_len
+                    ex = x1 + (x2 - x1) * ratio
+                    ey = y1 + (y2 - y1) * ratio
+                    out.append((ex, ey))
+                else:
+                    out.append((x2, y2))
+                break
+            out.append((x2, y2))
+            dist = next_dist
+        if len(out) < 2:
+            return None
+        return LineString(out)
+
+
+def _arm_segment_from_junction(line: LineString, junction: Point, arm_len_m: float) -> Optional[LineString]:
+    if line is None or line.is_empty:
+        return None
+    dist = float(line.project(junction))
+    total = float(line.length)
+    if total <= 0:
+        return None
+    dist_to_start = dist
+    dist_to_end = total - dist
+    if dist_to_end >= dist_to_start:
+        start = dist
+        end = dist + arm_len_m
+    else:
+        start = dist - arm_len_m
+        end = dist
+    return _line_substring(line, start, end)
+
+
+def _osm_junctions_with_incident(
+    lines: List[LineString],
+    snap_m: float,
+    min_degree: int,
+    drive_id: str,
+) -> List[dict]:
+    nodes: List[Tuple[float, float]] = []
+    grid: Dict[Tuple[int, int], List[int]] = {}
+    edges: Dict[int, set] = {}
+    node_lines: Dict[int, set] = {}
+    for line_idx, line in enumerate(lines):
+        if line.is_empty or len(line.coords) < 2:
+            continue
+        p1 = Point(line.coords[0])
+        p2 = Point(line.coords[-1])
+        n1 = _snap_point(p1, nodes, grid, snap_m)
+        n2 = _snap_point(p2, nodes, grid, snap_m)
+        if n1 == n2:
+            continue
+        edges.setdefault(n1, set()).add(n2)
+        edges.setdefault(n2, set()).add(n1)
+        node_lines.setdefault(n1, set()).add(line_idx)
+        node_lines.setdefault(n2, set()).add(line_idx)
+    out = []
+    for idx, neighbors in edges.items():
+        x, y = nodes[idx]
+        pt = Point(x, y)
+        incident_idxs = node_lines.get(idx, set())
+        incident = [lines[i] for i in incident_idxs if 0 <= i < len(lines)]
+        degree = max(len(neighbors), len(incident))
+        if degree >= min_degree:
+            out.append(
+                {
+                    "point": pt,
+                    "degree": degree,
+                    "incident": incident,
+                    "junction_id": f"{drive_id}_osm_junction_{idx}",
+                }
+            )
+    return out
+
+
 def _build_arms_v3(
     seed: Point,
     road_poly: Polygon,
     centerlines: List[LineString],
     osm_lines: List[LineString],
+    osm_junctions: List[dict],
     cfg: dict,
 ) -> Tuple[dict, dict]:
     arm_cap_m = float(cfg.get("arm_cap_m", 25.0))
@@ -606,22 +720,69 @@ def _build_arms_v3(
     arms_lines = []
     arm_buffer_m = float(cfg.get("arm_buffer_m", 5.0))
     osm_links_used_count = 0
+    arm_count_incident = 0
     if center_use and len(center_use) >= min_center:
         arms_src = "centerlines"
         arms_lines = _arms_lines_from_source(seed, center_use, arm_cap_m)
         arm_buffer_m = float(cfg.get("arm_buffer_m_centerlines", 5.0))
-    else:
+    if not arms_lines or _arm_count_approach(
+        arms_lines,
+        seed,
+        float(cfg.get("arm_count_eval_radius_m", 14.0)),
+        float(cfg.get("arm_count_angle_bin_deg", 20.0)),
+        float(cfg.get("arm_count_min_len_m", 3.0)),
+    ) < 3:
         osm_search = float(cfg.get("seed_search_radius_m_osm", 45.0))
-        osm_use = [ln for ln in osm_lines if ln is not None and ln.intersects(seed.buffer(osm_search))]
-        if len(osm_use) <= 1:
-            osm_search += float(cfg.get("seed_search_radius_m_osm_expand", 10.0))
-            osm_use = [ln for ln in osm_lines if ln is not None and ln.intersects(seed.buffer(osm_search))]
-        if osm_use:
-            arms_src = "osm"
-            arms_lines = _arms_lines_from_source(seed, osm_use, arm_cap_m)
-            arm_buffer_m = float(cfg.get("arm_buffer_m_osm", 3.5))
-            osm_links_used_count = len(osm_use)
-        else:
+        best = None
+        best_dist = None
+        for j in osm_junctions:
+            pt = j.get("point")
+            if pt is None:
+                continue
+            dist = seed.distance(pt)
+            if dist <= osm_search and (best_dist is None or dist < best_dist):
+                best = j
+                best_dist = dist
+        if best is not None:
+            incident = []
+            if osm_lines:
+                search_m = float(cfg.get("osm_junction_incident_search_m", 6.0))
+                seen = set()
+                for line in osm_lines:
+                    if line is None or line.is_empty:
+                        continue
+                    if line.distance(best["point"]) <= search_m:
+                        line_id = id(line)
+                        if line_id in seen:
+                            continue
+                        seen.add(line_id)
+                        incident.append(line)
+                if len(incident) < 3:
+                    search_m = max(search_m, float(cfg.get("osm_snap_m", 2.0)) * 3.0)
+                    for line in osm_lines:
+                        if line is None or line.is_empty:
+                            continue
+                        if line.distance(best["point"]) <= search_m:
+                            line_id = id(line)
+                            if line_id in seen:
+                                continue
+                            seen.add(line_id)
+                            incident.append(line)
+            if not incident:
+                incident = best.get("incident") or []
+            arm_count_incident = len(incident)
+            if arm_count_incident >= 3:
+                arms_src = "osm_junction"
+                arm_buffer_m = float(cfg.get("arm_buffer_m_osm", 3.5))
+                osm_links_used_count = arm_count_incident
+                for line in incident:
+                    seg = _arm_segment_from_junction(line, best["point"], arm_cap_m)
+                    if seg is not None and not seg.is_empty:
+                        arms_lines.append(seg)
+            else:
+                arms_src = "osm_junction"
+                osm_links_used_count = arm_count_incident
+        if not arms_lines:
             try:
                 local = road_poly.buffer(float(cfg.get("road_buffer_m", 1.0))).intersection(seed.buffer(arm_cap_m))
                 local = local.buffer(0)
@@ -632,10 +793,28 @@ def _build_arms_v3(
                 arms_src = "skeleton"
                 arms_lines = _arms_lines_from_source(seed, [skeleton], arm_cap_m)
                 arm_buffer_m = float(cfg.get("arm_buffer_m_skeleton", 3.5))
+            elif center_use and len(center_use) >= min_center:
+                arms_src = "centerlines"
+                arms_lines = _arms_lines_from_source(seed, center_use, arm_cap_m)
+                arm_buffer_m = float(cfg.get("arm_buffer_m_centerlines", 5.0))
     arms_mask = None
     if arms_lines:
         corridors = [ln.buffer(arm_buffer_m, cap_style=2, join_style=2) for ln in arms_lines]
         arms_mask = unary_union(corridors) if corridors else None
+    arm_count_axis = _arm_count_heading(
+        arms_lines,
+        seed,
+        float(cfg.get("arm_count_eval_radius_m", 14.0)),
+        float(cfg.get("arm_count_angle_bin_deg", 20.0)),
+        float(cfg.get("arm_count_min_len_m", 3.0)),
+    )
+    arm_count_approach = _arm_count_approach(
+        arms_lines,
+        seed,
+        float(cfg.get("arm_count_eval_radius_m", 14.0)),
+        float(cfg.get("arm_count_angle_bin_deg", 20.0)),
+        float(cfg.get("arm_count_min_len_m", 3.0)),
+    )
     meta = {
         "arms_src": arms_src,
         "arms_lines": arms_lines,
@@ -643,6 +822,10 @@ def _build_arms_v3(
         "arm_cap_m": arm_cap_m,
         "arm_buffer_m_used": arm_buffer_m,
         "osm_links_used_count": osm_links_used_count,
+        "arm_count_incident": arm_count_incident,
+        "arm_count_axis": arm_count_axis,
+        "arm_count_approach": arm_count_approach,
+        "osm_junction": best.get("point") if best is not None else None,
     }
     return meta, {
         "arms_lines": arms_lines,
@@ -651,6 +834,10 @@ def _build_arms_v3(
         "arm_cap_m": arm_cap_m,
         "arm_buffer_m_used": arm_buffer_m,
         "osm_links_used_count": osm_links_used_count,
+        "arm_count_incident": arm_count_incident,
+        "arm_count_axis": arm_count_axis,
+        "arm_count_approach": arm_count_approach,
+        "osm_junction": best.get("point") if best is not None else None,
     }
 
 
@@ -669,7 +856,14 @@ def _shape_metrics(
     aspect = _aspect_ratio(refined)
     overlap = _overlap_with_road(refined, road_poly)
     arm_count_legacy = _arm_count_branches(seed, arms_geom, float(cfg.get("arm_count_seed_radius_m", 6.0)))
-    arm_count_heading = _arm_count_heading(
+    arm_count_axis = _arm_count_heading(
+        arms_lines,
+        seed,
+        float(cfg.get("arm_count_eval_radius_m", 14.0)),
+        float(cfg.get("arm_count_angle_bin_deg", 20.0)),
+        float(cfg.get("arm_count_min_len_m", 3.0)),
+    )
+    arm_count_approach = _arm_count_approach(
         arms_lines,
         seed,
         float(cfg.get("arm_count_eval_radius_m", 14.0)),
@@ -680,8 +874,10 @@ def _shape_metrics(
         "circularity": circ,
         "aspect_ratio": aspect,
         "overlap_road": overlap,
-        "arm_count": arm_count_heading,
-        "arm_count_heading": arm_count_heading,
+        "arm_count": arm_count_approach,
+        "arm_count_heading": arm_count_approach,
+        "arm_count_axis": arm_count_axis,
+        "arm_count_approach": arm_count_approach,
         "arm_count_legacy": arm_count_legacy,
         "has_arms": 1 if arms_geom is not None and not arms_geom.is_empty else 0,
         "arms_area": float(arms_geom.area) if arms_geom is not None and not arms_geom.is_empty else 0.0,
@@ -694,6 +890,8 @@ def _shape_metrics(
         "arms_mask": meta.get("arms_mask"),
         "arm_cap_m": meta.get("arm_cap_m"),
         "arm_buffer_m_used": meta.get("arm_buffer_m_used"),
+        "arm_count_incident": meta.get("arm_count_incident"),
+        "osm_junction": meta.get("osm_junction"),
         "core_radius_m": meta.get("core_radius_m"),
         "coverage_local": meta.get("coverage_local"),
         "quality_low": meta.get("quality_low", 0),
@@ -916,6 +1114,7 @@ def _shape_from_seed(
     road_poly: Polygon,
     centerlines: List[LineString],
     osm_lines: List[LineString],
+    osm_junctions: List[dict],
     cfg: dict,
 ) -> Tuple[Optional[Polygon], dict]:
     def _lines_near_seed(lines: List[LineString], seed_pt: Point, radius_m: float) -> List[LineString]:
@@ -932,7 +1131,23 @@ def _shape_from_seed(
         return out
 
     if bool(cfg.get("arm_shape_v3_enabled", False)):
-        arms_meta, _ = _build_arms_v3(seed, road_poly, centerlines, osm_lines, cfg)
+        arms_meta, _ = _build_arms_v3(seed, road_poly, centerlines, osm_lines, osm_junctions, cfg)
+        if (arms_meta.get("arms_src") or "") == "osm_junction" and int(arms_meta.get("arm_count_incident") or 0) < 3:
+            best = None
+            best_dist = None
+            for j in osm_junctions:
+                pt = j.get("point")
+                if pt is None:
+                    continue
+                dist = seed.distance(pt)
+                if best_dist is None or dist < best_dist:
+                    best = j
+                    best_dist = dist
+            degree = int(best.get("degree") or 0) if best is not None else 0
+            if degree >= 3:
+                arms_meta["arm_count_incident"] = degree
+                if int(arms_meta.get("osm_links_used_count") or 0) < degree:
+                    arms_meta["osm_links_used_count"] = degree
         arm_cap_m = float(arms_meta.get("arm_cap_m", cfg.get("arm_cap_m", 25.0)))
         core_radius = float(cfg.get("core_radius_m", 0.0))
         if core_radius <= 0:
@@ -942,8 +1157,41 @@ def _shape_from_seed(
             core_radius = _clamp(core_ratio * arm_cap_m, core_min, core_max)
         road_local = road_poly.intersection(seed.buffer(arm_cap_m))
         road_local = _make_valid(road_local)
+        road_local_src = "road_polygon"
+        road_local_retry_steps = 0
+        road_local_retry_radius = arm_cap_m
+        if road_local is None or road_local.is_empty:
+            for step, retry_r in enumerate((50.0, 80.0), start=1):
+                retry_local = road_poly.intersection(seed.buffer(retry_r))
+                retry_local = _make_valid(retry_local)
+                if retry_local is not None and not retry_local.is_empty:
+                    road_local = retry_local
+                    road_local_retry_steps = step
+                    road_local_retry_radius = retry_r
+                    break
+        if road_local is not None and not road_local.is_empty:
+            max_offset = float(cfg.get("road_local_max_offset_m", 30.0))
+            if max_offset > 0 and seed.distance(road_local) > max_offset:
+                road_local = None
+        if road_local is None or road_local.is_empty:
+            sat_poly = cfg.get("_sat_road_poly")
+            if sat_poly is not None and not sat_poly.is_empty:
+                sat_local = sat_poly.intersection(seed.buffer(80.0))
+                sat_local = _make_valid(sat_local)
+                if sat_local is not None and not sat_local.is_empty:
+                    road_local = sat_local
+                    road_local_src = "sat_fill"
+                    road_local_retry_steps = 2
+                    road_local_retry_radius = 80.0
+        if road_local is None or road_local.is_empty:
+            road_local = _make_valid(seed.buffer(12.0))
+            road_local_src = "seed_circle"
+            road_local_retry_steps = 2
+            road_local_retry_radius = 12.0
         core = road_poly.intersection(seed.buffer(core_radius))
         core = _make_valid(core)
+        if road_local_src != "road_polygon":
+            core = road_local
         arms_mask = arms_meta.get("arms_mask")
         shape_arms = road_poly.intersection(arms_mask) if arms_mask is not None and not arms_mask.is_empty else None
         if shape_arms is not None and not shape_arms.is_empty:
@@ -952,6 +1200,10 @@ def _shape_from_seed(
         else:
             refined = _make_valid(core)
             reason = "core_only"
+        if road_local_src == "sat_fill":
+            reason = "sat_fill_fallback"
+        if road_local_src == "seed_circle":
+            reason = "seed_circle_fallback"
 
         coverage_min = float(cfg.get("coverage_local_min", 0.9))
         coverage_local = 0.0
@@ -959,7 +1211,8 @@ def _shape_from_seed(
             coverage_local = float(refined.intersection(road_local).area) / max(1e-6, float(road_local.area))
 
         retry_used = False
-        if coverage_local < coverage_min:
+        arm_count_heading = int(arms_meta.get("arm_count_heading", 0) or 0)
+        if coverage_local < coverage_min and arm_count_heading >= 3:
             arm_buffer_retry = float(arms_meta.get("arm_buffer_m_used", cfg.get("arm_buffer_m", 5.0))) + float(
                 cfg.get("coverage_retry_buffer_add_m", 0.5)
             )
@@ -988,7 +1241,7 @@ def _shape_from_seed(
 
         quality_low = False
         if retry_used:
-            reason = "coverage_expand_retry"
+            reason = "coverage_retry"
         if coverage_local < coverage_min and road_local is not None and not road_local.is_empty:
             refined = road_local
             quality_low = True
@@ -1007,9 +1260,38 @@ def _shape_from_seed(
             "coverage_local": coverage_local,
             "quality_low": 1 if quality_low else 0,
             "reason": reason,
+            "road_local_retry_steps": road_local_retry_steps,
+            "road_local_retry_radius_m": road_local_retry_radius,
+            "road_local_src": road_local_src,
             "osm_links_used_count": arms_meta.get("osm_links_used_count", 0),
+            "arm_count_incident": arms_meta.get("arm_count_incident"),
+            "arm_count_axis": arms_meta.get("arm_count_axis"),
+            "arm_count_approach": arms_meta.get("arm_count_approach"),
+            "osm_junction": arms_meta.get("osm_junction"),
+            "osm_incident_insufficient": 1 if (arms_meta.get("arm_count_incident") or 0) < 3 else 0,
         }
-        return refined, _shape_metrics(seed, refined, road_poly, meta, cfg, meta.get("arms_src") or "none")
+        metrics = _shape_metrics(seed, refined, road_poly, meta, cfg, meta.get("arms_src") or "none")
+        metrics["road_local_retry_steps"] = road_local_retry_steps
+        metrics["road_local_retry_radius_m"] = road_local_retry_radius
+        metrics["road_local_src"] = road_local_src
+        if road_local_src == "seed_circle":
+            metrics["quality_flag_override"] = "very_low"
+        if (metrics.get("arms_src") or "") == "osm_junction" and int(metrics.get("arm_count_incident") or 0) < 3:
+            best = None
+            best_dist = None
+            for j in osm_junctions:
+                pt = j.get("point")
+                if pt is None:
+                    continue
+                dist = seed.distance(pt)
+                if best_dist is None or dist < best_dist:
+                    best = j
+                    best_dist = dist
+            degree = int(best.get("degree") or 0) if best is not None else 0
+            if degree >= 3:
+                metrics["arm_count_incident"] = degree
+                metrics["osm_incident_insufficient"] = 0
+        return refined, metrics
 
     min_src_arm_count = int(cfg.get("min_arm_count_for_src", 2))
 
@@ -1026,7 +1308,7 @@ def _shape_from_seed(
         return None, {"reason": "empty", "arms_src": "none"}
     metrics = _shape_metrics(seed, refined, road_poly, meta, cfg, "centerlines")
 
-    if metrics["has_arms"] == 0 or metrics["arm_count_heading"] < min_src_arm_count:
+    if metrics["has_arms"] == 0 or metrics["arm_count_approach"] < min_src_arm_count:
         if osm_lines:
             osm_search = float(cfg.get("seed_search_radius_m_osm", cfg.get("seed_search_radius_m", 40.0)))
             osm_use = _lines_near_seed(osm_lines, seed, osm_search)
@@ -1048,10 +1330,10 @@ def _shape_from_seed(
             if refined_osm is not None and not refined_osm.is_empty:
                 metrics_osm = _shape_metrics(seed, refined_osm, road_poly, meta_osm, cfg_osm, "osm")
                 metrics_osm["osm_links_used_count"] = len(osm_use)
-                if metrics_osm["arm_count_heading"] > metrics["arm_count_heading"] or metrics["has_arms"] == 0:
+                if metrics_osm["arm_count_approach"] > metrics["arm_count_approach"] or metrics["has_arms"] == 0:
                     refined, metrics = refined_osm, metrics_osm
 
-    if metrics["has_arms"] == 0 or metrics["arm_count_heading"] < min_src_arm_count:
+    if metrics["has_arms"] == 0 or metrics["arm_count_approach"] < min_src_arm_count:
         cfg_sk = dict(cfg)
         sk_search = float(cfg.get("seed_search_radius_m_skeleton", cfg.get("seed_search_radius_m", 40.0)))
         cfg_sk["arm_length_m"] = float(cfg.get("arm_length_m_skeleton", float(cfg.get("arm_length_m", 25.0)) + 10.0))
@@ -1075,13 +1357,13 @@ def _shape_from_seed(
             )
             if refined_sk is not None and not refined_sk.is_empty:
                 metrics_sk = _shape_metrics(seed, refined_sk, road_poly, meta_sk, cfg_sk, "skeleton")
-                if metrics_sk["arm_count_heading"] > metrics["arm_count_heading"] or metrics["has_arms"] == 0:
+                if metrics_sk["arm_count_approach"] > metrics["arm_count_approach"] or metrics["has_arms"] == 0:
                     refined, metrics = refined_sk, metrics_sk
 
     if metrics.get("has_arms") == 0:
         metrics["arms_src"] = "none"
         metrics["reason"] = "no_arms"
-    elif metrics.get("arm_count_heading", 0) <= 1:
+    elif metrics.get("arm_count_approach", 0) <= 1:
         metrics["reason"] = "weak_arms"
     return refined, metrics
 
@@ -1118,6 +1400,15 @@ def _write_csv(path: Path, rows: List[dict]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def _write_jsonl(path: Path, rows: List[dict]) -> None:
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=True) + "\n")
 
 
 def _write_missing_reason_summary(out_csv: Path, expected_drives: List[str], report_type: str, run_id: str) -> dict:
@@ -1190,6 +1481,7 @@ def main() -> int:
     shape_cfg = cfg.get("shape", {}) or {}
     gate_cfg = cfg.get("gate", {}) or {}
     debug_cfg = cfg.get("debug", {}) or {}
+    debug_drop_trace = bool(debug_cfg.get("drop_trace", False) or debug_cfg.get("debug_drop_trace", False))
 
     expected_drives = []
     expected_path = Path(run_cfg.get("expected_drives_file", "configs/golden_drives.txt"))
@@ -1230,6 +1522,22 @@ def main() -> int:
             bbox = _drive_bbox_wgs84(entry, road_poly)
             if bbox is not None:
                 drive_bboxes_wgs84[drive] = bbox
+
+    sat_road_poly = None
+    sat_road_path = shape_cfg.get("sat_road_polygon_path")
+    if sat_road_path:
+        sat_path = Path(sat_road_path)
+        if sat_path.exists():
+            sat_feats = _read_geojson(sat_path)
+            sat_polys = _collect_polys(sat_feats)
+            if sat_polys:
+                sat_poly = unary_union(sat_polys)
+                minx, miny, _, _ = sat_poly.bounds
+                if _is_wgs84_coords(minx, miny):
+                    sat_road_poly = _to_utm32(sat_poly)
+                else:
+                    sat_road_poly = sat_poly
+                shape_cfg["_sat_road_poly"] = sat_road_poly
 
     sat_features_by_drive: Dict[str, List[dict]] = {}
     sat_outputs_dir = Path(seeds_cfg.get("sat_outputs_dir", ""))
@@ -1329,6 +1637,11 @@ def main() -> int:
                 bbox_buf = (bminx - buffer_m, bminy - buffer_m, bmaxx + buffer_m, bmaxy + buffer_m)
                 if _bbox_intersects((lminx, lminy, lmaxx, lmaxy), bbox_buf):
                     osm_lines_by_drive.setdefault(d, []).append(line)
+        osm_junctions_by_drive: Dict[str, List[dict]] = {}
+        for d, lines in osm_lines_by_drive.items():
+            if not lines:
+                continue
+            osm_junctions_by_drive[d] = _osm_junctions_with_incident(lines, snap_m, min_degree, d)
         for pt, degree, hw_types in osm_seeds:
             pt_wgs = _geom_to_wgs84(pt) if seeds_in_utm else pt
             hits = []
@@ -1444,6 +1757,10 @@ def main() -> int:
         debug_arms_lines = []
         debug_refined = []
         debug_pruned = []
+        debug_osm_junctions = []
+        debug_osm_arms_lines = []
+        drop_trace = []
+        armcount_rows = []
 
         seeds: List[dict] = []
         seed_counts = {"traj": 0, "osm": 0, "sat": 0, "geom": 0}
@@ -1472,10 +1789,34 @@ def main() -> int:
                 )
                 seed_counts["traj"] += 1
 
+        osm_primary = bool(seeds_cfg.get("osm_junction_as_primary", False))
+        junction_seed_radius = float(seeds_cfg.get("seed_dedup_radius_m", 5.0))
+        junction_seed_ids = set()
         if seeds_cfg.get("osm_enabled", True):
-            for item in osm_seeds_by_drive.get(drive, []):
-                seeds.append(item)
-                seed_counts["osm"] += 1
+            osm_junctions = osm_junctions_by_drive.get(drive, [])
+            if osm_primary and osm_junctions:
+                for j in osm_junctions:
+                    pt = j.get("point")
+                    if pt is None:
+                        continue
+                    junction_id = j.get("junction_id") or f"{drive}_osm_junction"
+                    junction_seed_ids.add(junction_id)
+                    seeds.append(
+                        {
+                            "seed": pt,
+                            "src_seed": "osm",
+                            "reason": "osm_junction_primary",
+                            "conf_prior": min(1.0, 0.4 + 0.1 * float(j.get("degree") or 0)),
+                            "radius_m": float(seeds_cfg.get("seed_radius_default_m", 18.0)),
+                            "degree": int(j.get("degree") or 0),
+                            "junction_id": junction_id,
+                        }
+                    )
+                    seed_counts["osm"] += 1
+            if not osm_primary:
+                for item in osm_seeds_by_drive.get(drive, []):
+                    seeds.append(item)
+                    seed_counts["osm"] += 1
             if drive not in osm_seeds_by_drive:
                 missing_reasons.append("missing_osm_inputs")
 
@@ -1521,12 +1862,53 @@ def main() -> int:
         refined_seeds = []
         markings_hits = 0
         markings_query_counts = {k: 0 for k in ("stop_line", "crosswalk", "gore_marking", "arrow")}
+        seen_junctions = []
         for item in seeds:
             seed = item["seed"]
             ref_seed = seed
             refine_src = "none"
             conf_refine = None
             seed_raw = seed
+            if osm_primary and item.get("junction_id"):
+                if junction_seed_radius > 0 and any(seed.distance(p) <= junction_seed_radius for p in seen_junctions):
+                    continue
+                seen_junctions.append(seed)
+                refined_seeds.append(
+                    {
+                        **item,
+                        "seed": seed,
+                        "seed_raw": seed_raw,
+                        "refine_src": "junction",
+                        "conf_refine": None,
+                    }
+                )
+                seed_features.append(
+                    {
+                        "type": "Feature",
+                        "geometry": mapping(seed),
+                        "properties": {
+                            "src_seed": item["src_seed"],
+                            "reason": item["reason"],
+                            "degree": item.get("degree"),
+                            "junction_id": item.get("junction_id"),
+                        },
+                    }
+                )
+                refined_seed_features.append(
+                    {
+                        "type": "Feature",
+                        "geometry": mapping(seed),
+                        "properties": {
+                            "src_seed": item["src_seed"],
+                            "reason": item["reason"],
+                            "refine_src": "junction",
+                            "conf_refine": None,
+                            "degree": item.get("degree"),
+                            "junction_id": item.get("junction_id"),
+                        },
+                    }
+                )
+                continue
             if refine_cfg.get("markings_enabled") and markings_feats:
                 max_dist = float(refine_cfg.get("markings_max_dist_m", 20.0))
                 min_conf = float(refine_cfg.get("markings_min_conf", 0.0))
@@ -1594,12 +1976,43 @@ def main() -> int:
 
         osm_lines = osm_lines_by_drive.get(drive, [])
         osm_seed_items = osm_seeds_by_drive.get(drive, [])
-        for item in refined_seeds:
+        osm_junctions = osm_junctions_by_drive.get(drive, [])
+        if osm_junctions:
+            for j in osm_junctions:
+                pt = j.get("point")
+                if pt is None:
+                    continue
+                debug_osm_junctions.append(
+                    {
+                        "type": "Feature",
+                        "geometry": mapping(pt),
+                        "properties": {
+                            "degree": int(j.get("degree") or 0),
+                            "junction_id": j.get("junction_id"),
+                            "arms_src": "osm_junction",
+                        },
+                    }
+                )
+        for seed_idx, item in enumerate(refined_seeds):
             src_seed = item["src_seed"]
             seed = item["seed"]
             seed_raw = item.get("seed_raw") or seed
             refine_src = item.get("refine_src") or "none"
             conf_refine = item.get("conf_refine")
+            seed_id = item.get("junction_id") or f"{drive}_{src_seed}_{seed_idx}"
+            trace_entry = None
+            if debug_drop_trace:
+                trace_entry = {
+                    "drive_id": drive,
+                    "seed_id": seed_id,
+                    "src_seed": src_seed,
+                    "refine_src": refine_src,
+                    "seed_reason": item.get("reason") or "",
+                    "kept": None,
+                    "dropped_reason": "",
+                    "dedup_best_match_iou": None,
+                    "best_kept_seed_id": "",
+                }
             shape_cfg_use = dict(shape_cfg)
             radius_m = float(item["radius_m"])
             width_lines = center_lines if center_lines else osm_lines
@@ -1621,10 +2034,20 @@ def main() -> int:
                 width_est = float(shape_cfg_use.get("width_default_m", 12.0))
                 osm_degree = int(item.get("degree") or 2)
                 radius_src = "arms_v3"
-            poly, metrics = _shape_from_seed(seed, road_poly, center_lines, osm_lines, shape_cfg_use)
+            poly, metrics = _shape_from_seed(seed, road_poly, center_lines, osm_lines, osm_junctions, shape_cfg_use)
             if poly is None or poly.is_empty:
+                if trace_entry is not None:
+                    trace_entry["dropped_reason"] = "empty_geom"
+                    trace_entry["kept"] = False
+                    drop_trace.append(trace_entry)
                 continue
             prune_info = {"spur_pruned": 0, "spur_removed_cnt": 0, "spur_removed_len_sum": 0.0}
+            road_local_info = {
+                "road_local_retry_steps": metrics.get("road_local_retry_steps", 0),
+                "road_local_retry_radius_m": metrics.get("road_local_retry_radius_m", 0.0),
+                "road_local_src": metrics.get("road_local_src", ""),
+                "quality_flag_override": metrics.get("quality_flag_override"),
+            }
             if bool(shape_cfg_use.get("spur_prune_enabled", True)):
                 pruned, prune_info = _spur_prune(poly, seed, radius_m, shape_cfg_use)
                 if pruned is not None and not pruned.is_empty:
@@ -1639,13 +2062,35 @@ def main() -> int:
                         "coverage_local": metrics.get("coverage_local"),
                         "quality_low": metrics.get("quality_low", 0),
                         "reason": metrics.get("reason"),
+                        "arm_count_incident": metrics.get("arm_count_incident"),
+                        "arm_count_axis": metrics.get("arm_count_axis"),
+                        "arm_count_approach": metrics.get("arm_count_approach"),
+                        "osm_junction": metrics.get("osm_junction"),
                     }
                     metrics = _shape_metrics(seed, pruned, road_poly, meta, shape_cfg_use, metrics.get("arms_src") or "none")
+                    metrics.update(road_local_info)
                     poly = pruned
+                else:
+                    metrics.update(road_local_info)
                 metrics["spur_pruned"] = prune_info.get("spur_pruned", 0)
                 metrics["spur_removed_cnt"] = prune_info.get("spur_removed_cnt", 0)
                 metrics["spur_removed_len_sum"] = prune_info.get("spur_removed_len_sum", 0.0)
                 metrics["refined_pruned"] = poly
+            if trace_entry is not None:
+                trace_entry.update(
+                    {
+                        "arms_src": metrics.get("arms_src") or "none",
+                        "arm_count_incident": int(metrics.get("arm_count_incident", 0) or 0),
+                        "arm_count_axis": int(metrics.get("arm_count_axis", 0) or 0),
+                        "arm_count_approach": int(metrics.get("arm_count_approach", 0) or 0),
+                        "has_arms": int(metrics.get("has_arms", 0) or 0),
+                        "coverage_local": float(metrics.get("coverage_local", 0.0) or 0.0),
+                        "refined_area_m2": float(metrics.get("refined_area", 0.0) or 0.0),
+                        "reason": metrics.get("reason") or item.get("reason") or "",
+                        "road_local_src": str(metrics.get("road_local_src") or ""),
+                        "road_local_retry_radius_m": float(metrics.get("road_local_retry_radius_m", 0.0) or 0.0),
+                    }
+                )
             markings_gate_pass = None
             if refine_src == "markings":
                 min_overlap = float(refine_cfg.get("markings_min_overlap_road", 0.0))
@@ -1662,6 +2107,7 @@ def main() -> int:
                             road_poly,
                             center_lines,
                             osm_lines,
+                            osm_junctions,
                             shape_cfg_use,
                         )
                         if poly_fb is None or poly_fb.is_empty:
@@ -1678,31 +2124,41 @@ def main() -> int:
             if not gate_ok_geom and gate_cfg.get("retry_shrink_ratio", 0.0) and not bool(shape_cfg_use.get("arm_shape_v3_enabled", False)):
                 shrink_cfg = dict(shape_cfg_use)
                 shrink_cfg["radius_m"] = float(shape_cfg_use["radius_m"]) * float(gate_cfg["retry_shrink_ratio"])
-                poly, metrics = _shape_from_seed(seed, road_poly, center_lines, osm_lines, shrink_cfg)
+                poly, metrics = _shape_from_seed(seed, road_poly, center_lines, osm_lines, osm_junctions, shrink_cfg)
                 area = float(poly.area) if poly is not None else 0.0
                 gate_ok_geom = _shape_gate_ok(metrics, gate_cfg, area) if poly is not None else False
             if not gate_ok_geom and src_seed == "sat" and gate_cfg.get("sat_drop_on_fail", True):
                 gate_fail_counts["sat"] += 1
+                if trace_entry is not None:
+                    trace_entry["dropped_reason"] = "gate_drop_sat"
+                    trace_entry["kept"] = False
+                    drop_trace.append(trace_entry)
                 continue
             if not gate_ok_geom:
                 gate_fail_counts["other"] += 1
                 if metrics.get("local") is not None:
                     poly = metrics["local"]
                 else:
+                    if trace_entry is not None:
+                        trace_entry["dropped_reason"] = "gate_drop_geom"
+                        trace_entry["kept"] = False
+                        drop_trace.append(trace_entry)
                     continue
             if poly is None or poly.is_empty:
                 continue
             if metrics.get("has_arms") == 0:
                 no_arms_count += 1
-            arm_count_heading = int(metrics.get("arm_count_heading", metrics.get("arm_count", 0)) or 0)
-            if arm_count_heading <= 1:
+            arm_count_approach = int(metrics.get("arm_count_approach", metrics.get("arm_count", 0)) or 0)
+            if arm_count_approach <= 1:
                 weak_arms_count += 1
             quality_flag = "weak"
-            if arm_count_heading >= 3:
+            if arm_count_approach >= 3:
                 quality_flag = "good"
-            elif arm_count_heading == 2:
+            elif arm_count_approach == 2:
                 quality_flag = "ok"
-            shape_gate_pass = 1 if (gate_ok_geom and arm_count_heading >= 2) else 0
+            if metrics.get("quality_flag_override"):
+                quality_flag = str(metrics.get("quality_flag_override"))
+            shape_gate_pass = 1 if (gate_ok_geom and arm_count_approach >= 2) else 0
 
             props = {
                 "drive_id": drive,
@@ -1710,14 +2166,18 @@ def main() -> int:
                 "src_seed": src_seed,
                 "refine_src": refine_src,
                 "reason": metrics.get("reason") or item.get("reason"),
+                "seed_reason": item.get("reason"),
+                "seed_id": seed_id,
                 "conf_prior": item.get("conf_prior"),
                 "conf_refine": conf_refine,
                 "radius_m_used": round(float(metrics.get("arm_cap_m", radius_m) or radius_m), 3),
                 "road_width_local_est": round(float(width_est), 3),
                 "osm_degree": int(metrics.get("osm_degree", osm_degree) or osm_degree),
                 "radius_src": radius_src,
-                "arm_count": arm_count_heading,
-                "arm_count_heading": arm_count_heading,
+                "arm_count": arm_count_approach,
+                "arm_count_heading": arm_count_approach,
+                "arm_count_axis": int(metrics.get("arm_count_axis", 0) or 0),
+                "arm_count_approach": arm_count_approach,
                 "arm_count_legacy": int(metrics.get("arm_count_legacy", 0) or 0),
                 "arms_src": metrics.get("arms_src") or "none",
                 "quality_flag": quality_flag,
@@ -1726,6 +2186,10 @@ def main() -> int:
                 "core_radius_m": float(metrics.get("core_radius_m", 0.0) or 0.0),
                 "coverage_local": round(float(metrics.get("coverage_local", 0.0) or 0.0), 4),
                 "quality_low": int(metrics.get("quality_low", 0)),
+                "road_local_retry_steps": int(metrics.get("road_local_retry_steps", 0) or 0),
+                "road_local_retry_radius_m": float(metrics.get("road_local_retry_radius_m", 0.0) or 0.0),
+                "road_local_src": str(metrics.get("road_local_src") or ""),
+                "arm_count_incident": int(metrics.get("arm_count_incident", 0) or 0),
                 "overlap_road": round(float(metrics.get("overlap_road", 0.0)), 4),
                 "circularity": round(float(metrics.get("circularity", 0.0)), 4),
                 "aspect_ratio": round(float(metrics.get("aspect_ratio", 0.0)), 4),
@@ -1738,6 +2202,8 @@ def main() -> int:
                 "spur_removed_cnt": int(metrics.get("spur_removed_cnt", 0)),
                 "spur_removed_len_sum": round(float(metrics.get("spur_removed_len_sum", 0.0)), 3),
             }
+            minx, miny, maxx, maxy = poly.bounds
+            props["arm_span_proxy"] = round(float(max(maxx - minx, maxy - miny)), 3)
             if metrics.get("osm_links_used_count") is not None:
                 props["osm_links_used_count"] = int(metrics.get("osm_links_used_count", 0))
             if markings_gate_pass is not None:
@@ -1747,7 +2213,13 @@ def main() -> int:
                 sat_features.append(feat)
             else:
                 algo_features.append(feat)
-            final_candidates.append((poly, props))
+            trace_idx = None
+            if trace_entry is not None:
+                trace_entry["shape_gate_pass"] = int(shape_gate_pass)
+                trace_entry["gate_ok_geom"] = int(gate_ok_geom)
+                drop_trace.append(trace_entry)
+                trace_idx = len(drop_trace) - 1
+            final_candidates.append((poly, props, trace_idx))
             if debug_cfg.get("enable_debug_layers", True):
                 if metrics.get("local") is not None:
                     debug_local.append({"type": "Feature", "geometry": mapping(metrics["local"]), "properties": {"src_seed": src_seed}})
@@ -1781,15 +2253,37 @@ def main() -> int:
                                 "properties": {"src_seed": src_seed, "arms_src": metrics.get("arms_src") or "none"},
                             }
                         )
+                        if (metrics.get("arms_src") or "none") == "osm_junction":
+                            debug_osm_arms_lines.append(
+                                {
+                                    "type": "Feature",
+                                    "geometry": mapping(line),
+                                    "properties": {"src_seed": src_seed, "arms_src": "osm_junction"},
+                                }
+                            )
                 debug_refined.append({"type": "Feature", "geometry": mapping(poly), "properties": {"src_seed": src_seed}})
                 if metrics.get("refined_pruned") is not None and not metrics["refined_pruned"].is_empty:
                     debug_pruned.append({"type": "Feature", "geometry": mapping(metrics["refined_pruned"]), "properties": {"src_seed": src_seed}})
+            if metrics.get("arms_src") == "osm_junction":
+                armcount_rows.append(
+                    {
+                        "drive_id": drive,
+                        "src_seed": src_seed,
+                        "osm_degree": int(item.get("degree") or 0),
+                        "arm_count_incident": int(metrics.get("arm_count_incident", 0) or 0),
+                        "arm_count_axis": int(metrics.get("arm_count_axis", 0) or 0),
+                        "arm_count_approach": int(metrics.get("arm_count_approach", 0) or 0),
+                        "arm_cap_m": float(metrics.get("arm_cap_m", 0.0) or 0.0),
+                        "coverage_local": float(metrics.get("coverage_local", 0.0) or 0.0),
+                        "reason": str(metrics.get("reason") or ""),
+                    }
+                )
 
         def _priority(src: str) -> int:
             return {"traj": 4, "osm": 3, "sat": 2, "geom": 1}.get(src, 0)
 
         final_features = []
-        for poly, props in final_candidates:
+        for poly, props, trace_idx in final_candidates:
             kept_idx = None
             for idx, kept in enumerate(final_features):
                 if _iou(poly, shape(kept["geometry"])) >= gate_cfg.get("dup_iou", 0.25):
@@ -1797,16 +2291,34 @@ def main() -> int:
                     break
             if kept_idx is None:
                 final_features.append({"type": "Feature", "geometry": mapping(poly), "properties": props})
+                if trace_idx is not None and 0 <= trace_idx < len(drop_trace):
+                    drop_trace[trace_idx]["kept"] = True
                 continue
             kept_props = final_features[kept_idx]["properties"]
+            if osm_primary and props.get("seed_reason") == "osm_junction_primary":
+                final_features.append({"type": "Feature", "geometry": mapping(poly), "properties": props})
+                if trace_idx is not None and 0 <= trace_idx < len(drop_trace):
+                    drop_trace[trace_idx]["kept"] = True
+                continue
             if _priority(props["src_seed"]) > _priority(kept_props.get("src_seed")):
                 final_features[kept_idx] = {"type": "Feature", "geometry": mapping(poly), "properties": props}
+                if trace_idx is not None and 0 <= trace_idx < len(drop_trace):
+                    drop_trace[trace_idx]["kept"] = True
                 continue
             if _priority(props["src_seed"]) == _priority(kept_props.get("src_seed")):
                 score_new = props["overlap_road"] + 0.1 * props["arm_count"] - 0.5 * props["circularity"]
                 score_old = kept_props.get("overlap_road", 0.0) + 0.1 * kept_props.get("arm_count", 0) - 0.5 * kept_props.get("circularity", 0.0)
                 if score_new > score_old:
                     final_features[kept_idx] = {"type": "Feature", "geometry": mapping(poly), "properties": props}
+                    if trace_idx is not None and 0 <= trace_idx < len(drop_trace):
+                        drop_trace[trace_idx]["kept"] = True
+                    continue
+            if trace_idx is not None and 0 <= trace_idx < len(drop_trace):
+                best_iou = _iou(poly, shape(final_features[kept_idx]["geometry"]))
+                drop_trace[trace_idx]["kept"] = False
+                drop_trace[trace_idx]["dropped_reason"] = "dedup_iou"
+                drop_trace[trace_idx]["dedup_best_match_iou"] = round(float(best_iou), 4)
+                drop_trace[trace_idx]["best_kept_seed_id"] = str(kept_props.get("seed_id") or "")
 
         missing_osm_feats = []
         if osm_seed_items:
@@ -1839,6 +2351,7 @@ def main() -> int:
         _write_geojson(drive_dir / "intersections_shape_debug_arms_lines.geojson", debug_arms_lines)
         _write_geojson(drive_dir / "intersections_shape_debug_refined.geojson", debug_refined)
         _write_geojson(drive_dir / "intersections_shape_debug_refined_pruned.geojson", debug_pruned)
+        _write_geojson(drive_dir / "osm_junctions_wgs84.geojson", _to_wgs84(debug_osm_junctions, 32632))
         _write_geojson(drive_dir / "arms_lines.geojson", debug_arms_lines)
         _write_geojson(drive_dir / "local_wgs84.geojson", _to_wgs84(debug_local, 32632))
         _write_geojson(drive_dir / "arms_wgs84.geojson", _to_wgs84(debug_arms, 32632))
@@ -1846,6 +2359,11 @@ def main() -> int:
         _write_geojson(drive_dir / "refined_wgs84.geojson", _to_wgs84(debug_refined, 32632))
         _write_geojson(drive_dir / "refined_pruned_wgs84.geojson", _to_wgs84(debug_pruned, 32632))
         _write_geojson(drive_dir / "road_local_wgs84.geojson", _to_wgs84(debug_local, 32632))
+        _write_geojson(drive_dir / "osm_arms_lines_wgs84.geojson", _to_wgs84(debug_osm_arms_lines, 32632))
+        if armcount_rows:
+            _write_csv(drive_dir / "osm_junction_armcount_debug.csv", armcount_rows)
+        if debug_drop_trace:
+            _write_jsonl(drive_dir / "debug_drop_trace.jsonl", drop_trace)
         _write_geojson(drive_dir / "missing_osm_junctions.geojson", missing_osm_feats)
         _write_geojson(drive_dir / "missing_osm_junctions_wgs84.geojson", _to_wgs84(missing_osm_feats, 32632))
 
