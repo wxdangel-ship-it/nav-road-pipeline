@@ -20,3 +20,17 @@ models:
     model_version: v1
     device: cpu
     backend: auto
+    open3dis_python: ""
+    open3dis_runner: tools/open3dis_runner.py
+    image_run_root: runs/image_evidence_20260122_114726
+    image_provider: grounded_sam2_v1
+    class_whitelist:
+      - traffic_light
+      - traffic_sign
+      - pole
+      - barrier
+    min_points: 60
+    grid_size_m: 4.0
+    max_instances_per_frame: 6
+    z_min: -2.0
+    z_max: 2.5

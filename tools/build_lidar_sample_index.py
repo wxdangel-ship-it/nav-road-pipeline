@@ -75,6 +75,8 @@ def main() -> int:
     ap.add_argument("--index", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--data-root", default="")
+    ap.add_argument("--drive", default="")
+    ap.add_argument("--drives", default="")
     ap.add_argument("--frames-per-drive", type=int, default=20)
     ap.add_argument("--stride", type=int, default=5)
     args = ap.parse_args()
@@ -86,6 +88,10 @@ def main() -> int:
         return 2
 
     drives = _load_index_drives(Path(args.index)) if args.index else []
+    if args.drive:
+        drives = [args.drive]
+    elif args.drives:
+        drives = [d.strip() for d in args.drives.split(",") if d.strip()]
     if not drives:
         candidate = data_root / "data_3d_raw"
         if candidate.exists():

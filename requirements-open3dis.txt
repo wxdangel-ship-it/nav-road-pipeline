@@ -1,1 +1,4 @@
-# Placeholder for Open3DIS environment requirements.
+numpy
+pyproj
+shapely
+pyyaml

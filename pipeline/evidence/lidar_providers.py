@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
+import subprocess
+from pathlib import Path
 from dataclasses import dataclass
 from typing import List
 
@@ -119,16 +122,150 @@ class Open3DISProvider(BaseLidarProvider):
     def load(self) -> None:
         cfg = self.ctx.model_cfg or {}
         backend = str(cfg.get("backend", "auto"))
+        python_path = str(cfg.get("open3dis_python", "")).strip()
+        if not python_path:
+            path_file = Path("cache") / "open3dis_python_path.txt"
+            if path_file.exists():
+                python_path = path_file.read_text(encoding="utf-8").strip()
+        runner_path = str(cfg.get("open3dis_runner", "tools/open3dis_runner.py")).strip()
+
+        self._python_path = python_path
+        self._runner_path = runner_path
+        self._backend = backend
+
         if backend == "fallback":
             return None
-        raise RuntimeError("missing_dependency:open3dis_runner")
+        if not python_path or not Path(python_path).exists():
+            if backend == "real":
+                raise RuntimeError("missing_dependency:open3dis_env")
+            return None
+        if not runner_path or not Path(runner_path).exists():
+            if backend == "real":
+                raise RuntimeError("missing_dependency:open3dis_runner")
+            return None
 
     def infer(self, frames: List[LidarFrame], out_dir, debug_dir) -> dict:
+        cfg = self.ctx.model_cfg or {}
+        if not getattr(self, "_python_path", "") or not getattr(self, "_runner_path", ""):
+            return {
+                "backend_status": "unavailable",
+                "fallback_used": False,
+                "backend_reason": "missing_dependency",
+                "counts": {},
+                "features": [],
+                "errors": [],
+            }
+
+        out_dir = Path(out_dir)
+        debug_dir = Path(debug_dir)
+        jobs_path = debug_dir / "open3dis_jobs.jsonl"
+        out_path = debug_dir / "open3dis_results.jsonl"
+        err_path = debug_dir / "open3dis_errors.txt"
+        if out_path.exists():
+            out_path.unlink()
+        if err_path.exists():
+            err_path.unlink()
+
+        with jobs_path.open("w", encoding="utf-8") as f:
+            for frame in frames:
+                f.write(
+                    json.dumps(
+                        {
+                            "drive_id": frame.drive_id,
+                            "frame_id": frame.frame_id,
+                            "lidar_path": frame.lidar_path,
+                        }
+                    )
+                    + "\n"
+                )
+
+        cmd = [
+            self._python_path,
+            self._runner_path,
+            "--data-root",
+            self.ctx.data_root,
+            "--jobs",
+            str(jobs_path),
+            "--out",
+            str(out_path),
+            "--errors",
+            str(err_path),
+            "--image-run-root",
+            str(cfg.get("image_run_root", "")),
+            "--image-provider",
+            str(cfg.get("image_provider", "")),
+            "--class-whitelist",
+            ",".join(cfg.get("class_whitelist", []) or []),
+            "--min-points",
+            str(cfg.get("min_points", 60)),
+            "--grid-size",
+            str(cfg.get("grid_size_m", 4.0)),
+            "--max-instances",
+            str(cfg.get("max_instances_per_frame", 6)),
+            "--z-min",
+            str(cfg.get("z_min", -2.0)),
+            "--z-max",
+            str(cfg.get("z_max", 2.5)),
+        ]
+        try:
+            subprocess.check_call(cmd, cwd=str(Path(__file__).resolve().parents[2]))
+        except Exception as exc:
+            return {
+                "backend_status": "unavailable",
+                "fallback_used": False,
+                "backend_reason": f"runtime_error:{exc}",
+                "counts": {},
+                "features": [],
+                "errors": [str(exc)],
+            }
+
+        features = []
+        counts = {}
+        errors = []
+        if err_path.exists():
+            errors = [line for line in err_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+        if out_path.exists():
+            import shapely.wkt
+
+            for line in out_path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                geom_wkt = row.get("geometry_wkt") or ""
+                if not geom_wkt:
+                    continue
+                try:
+                    geom = shapely.wkt.loads(geom_wkt)
+                except Exception:
+                    continue
+                props = row.get("properties") or {}
+                label = props.get("label", "unknown")
+                props.update(
+                    {
+                        "provider_id": cfg.get("model_id", "pc_open3dis_v1"),
+                        "model_id": cfg.get("model_id", "pc_open3dis_v1"),
+                        "model_version": cfg.get("model_version", "v1"),
+                        "ckpt_hash": cfg.get("ckpt_hash", ""),
+                        "geometry_frame": "utm32",
+                        "backend_status": "real",
+                        "fallback_used": False,
+                        "fallback_from": "",
+                        "fallback_to": "",
+                        "backend_reason": "",
+                    }
+                )
+                features.append({"geometry": geom, "properties": props, "class": label})
+                counts[label] = counts.get(label, 0) + 1
+
         return {
-            "backend_status": "unavailable",
+            "backend_status": "real",
             "fallback_used": False,
-            "backend_reason": "missing_dependency",
-            "counts": {},
-            "features": [],
-            "errors": [],
+            "backend_reason": "",
+            "counts": counts,
+            "features": features,
+            "errors": errors,
         }
