@@ -31,7 +31,7 @@ models:
       - barrier
     min_points: 60
     min_area_m2: 1.0
-    grid_size_m: 4.0
+    grid_cell_size_m: 4.0
     max_instances_per_frame: 6
     z_min: -2.0
     z_max: 2.5

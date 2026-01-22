@@ -199,7 +199,7 @@ class Open3DISProvider(BaseLidarProvider):
             "--min-points",
             str(cfg.get("min_points", 60)),
             "--grid-size",
-            str(cfg.get("grid_size_m", 4.0)),
+            str(cfg.get("grid_cell_size_m", cfg.get("grid_size_m", 4.0))),
             "--max-instances",
             str(cfg.get("max_instances_per_frame", 6)),
             "--min-area-m2",
@@ -245,6 +245,8 @@ class Open3DISProvider(BaseLidarProvider):
                 except Exception:
                     continue
                 props = row.get("properties") or {}
+                props.pop("frames", None)
+                props.pop("centroids", None)
                 label = props.get("label", "unknown")
                 props.update(
                     {

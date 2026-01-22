@@ -159,12 +159,12 @@ def main() -> int:
                     "instance_id": instance_id,
                     "label": label,
                     "drive_id": drive_id,
-                    "frames": set(),
+                    "frames": {},
                     "geoms": [],
                     "points_count": 0,
                 }
                 instances[instance_id] = info
-            info["frames"].add(frame_id)
+            info["frames"][frame_id] = (float(hull.centroid.x), float(hull.centroid.y))
             info["geoms"].append(hull)
             info["points_count"] += int(idxs.size)
             instance_count += 1
@@ -174,7 +174,8 @@ def main() -> int:
         geom = unary_union(info["geoms"]) if info["geoms"] else None
         if geom is None or geom.is_empty:
             continue
-        frames = sorted(info["frames"])
+        frames = sorted(info["frames"].keys())
+        centroids = [list(info["frames"][fid]) for fid in frames]
         record = {
             "geometry_wkt": geom.wkt,
             "properties": {
@@ -185,6 +186,8 @@ def main() -> int:
                 "points_count": int(info["points_count"]),
                 "drive_id": info["drive_id"],
                 "frame_id": frames[0] if frames else "",
+                "frames": frames,
+                "centroids": centroids,
                 "evidence_strength": "strong",
                 "backend_status": "real",
             },
