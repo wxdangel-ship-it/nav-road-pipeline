@@ -2,6 +2,7 @@ lane_marking:
   max_merge_dist_m: 1.2
   max_gap_m: 2.5
   max_angle_diff_deg: 15
+  heading_max_diff_deg: 15
   min_length_m: 3.0
   simplify_tol_m: 0.2
   smooth_window: 0
@@ -10,5 +11,17 @@ stop_line:
   max_merge_dist_m: 1.5
   max_gap_m: 2.5
   max_angle_diff_deg: 10
+  heading_max_diff_deg: 15
   min_length_m: 1.5
   simplify_tol_m: 0.2
+
+crosswalk:
+  cluster_buffer_m: 3.0
+  min_area_m2: 2.0
+  max_area_m2: 200.0
+  min_rectangularity: 0.6
+  min_aspect_ratio: 1.5
+  max_aspect_ratio: 10.0
+
+heading:
+  cam_id: image_02

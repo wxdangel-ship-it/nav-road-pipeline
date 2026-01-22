@@ -5,14 +5,18 @@ import datetime
 import json
 import logging
 import os
+import re
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from PIL import Image, ImageDraw
 from pyproj import Transformer
 from shapely.geometry import LineString, MultiLineString, MultiPoint, MultiPolygon, Point, Polygon, box
+from shapely import wkb
 from shapely.ops import linemerge, unary_union
 
 import sys
@@ -21,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.datasets.kitti360_io import load_kitti360_lidar_points_world, load_kitti360_pose
+from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_lidar_points_world, load_kitti360_pose
 
 
 LOG = logging.getLogger("build_road_entities")
@@ -73,6 +77,123 @@ def _percentile(values: List[float], p: float) -> float:
         return 0.0
     return float(np.percentile(np.asarray(values, dtype=float), p))
 
+
+def _extract_drive_frame(text: str) -> Tuple[str, str]:
+    if not text:
+        return "", ""
+    drive_match = re.search(r"(2013_05_28_drive_\\d{4}_sync)", text)
+    frame_match = re.search(r"(\\d{10})", text)
+    drive_id = drive_match.group(1) if drive_match else ""
+    frame_id = frame_match.group(1) if frame_match else ""
+    return drive_id, frame_id
+
+
+def _fill_evidence_fields(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if gdf.empty:
+        return gdf
+    gdf = gdf.copy()
+    for col in ["drive_id", "frame_id", "conf", "model_id"]:
+        if col not in gdf.columns:
+            gdf[col] = ""
+    gdf["conf"] = gdf["conf"].fillna(1.0)
+
+    def _fill_row(row: pd.Series) -> pd.Series:
+        if row.get("drive_id") and row.get("frame_id"):
+            return row
+        for col in row.index:
+            if not isinstance(row[col], str):
+                continue
+            d, f = _extract_drive_frame(row[col])
+            if d and not row.get("drive_id"):
+                row["drive_id"] = d
+            if f and not row.get("frame_id"):
+                row["frame_id"] = f
+            if row.get("drive_id") and row.get("frame_id"):
+                break
+        return row
+
+    gdf = gdf.apply(_fill_row, axis=1)
+    gdf["drive_id"] = gdf["drive_id"].fillna("")
+    gdf["frame_id"] = gdf["frame_id"].fillna("")
+    gdf["model_id"] = gdf["model_id"].fillna(gdf.get("provider_id", ""))
+    return gdf
+
+
+def _geom_signature(geom: Polygon) -> str:
+    if geom is None or geom.is_empty:
+        return ""
+    try:
+        return wkb.dumps(geom, hex=True, rounding_precision=3)
+    except Exception:
+        return geom.wkt
+
+
+def _dedup_by_signature(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    if gdf.empty:
+        return gdf
+    sigs = gdf.geometry.apply(_geom_signature)
+    gdf = gdf.assign(_geom_sig=sigs)
+    gdf = gdf.drop_duplicates(subset="_geom_sig").drop(columns=["_geom_sig"])
+    return gdf
+
+
+def _assign_drive_by_spatial(
+    gdf: gpd.GeoDataFrame,
+    drive_polys: Dict[str, Polygon],
+) -> gpd.GeoDataFrame:
+    if gdf.empty:
+        return gdf
+    gdf = gdf.copy()
+    if "drive_id" not in gdf.columns:
+        gdf["drive_id"] = ""
+    missing = gdf["drive_id"].isna() | (gdf["drive_id"] == "")
+    if not missing.any():
+        return gdf
+
+    polys = [poly for poly in drive_polys.values() if poly is not None and not poly.is_empty]
+    if not polys:
+        return gdf
+    try:
+        from shapely.strtree import STRtree
+
+        tree = STRtree(polys)
+        poly_id = {id(poly): key for key, poly in drive_polys.items()}
+    except Exception:
+        tree = None
+        poly_id = {}
+
+    def _find_drive(geom: Polygon) -> str:
+        if geom is None or geom.is_empty:
+            return ""
+        candidates = []
+        if tree is not None:
+            for cand in tree.query(geom):
+                if isinstance(cand, (int, np.integer)):
+                    candidates.append(polys[int(cand)])
+                else:
+                    candidates.append(cand)
+        else:
+            candidates = polys
+        best_drive = ""
+        best_dist = float("inf")
+        for cand in candidates:
+            dist = cand.distance(geom)
+            if dist < best_dist:
+                best_dist = dist
+                best_drive = poly_id.get(id(cand), "")
+        return best_drive
+
+    gdf.loc[missing, "drive_id"] = gdf.loc[missing, "geometry"].apply(_find_drive)
+    return gdf
+
+
+def _assert_required_fields(gdf: gpd.GeoDataFrame, label: str) -> None:
+    if gdf.empty:
+        return
+    miss_drive = (gdf["drive_id"].isna() | (gdf["drive_id"] == "")).mean()
+    miss_frame = (gdf["frame_id"].isna() | (gdf["frame_id"] == "")).mean()
+    if miss_drive > 0.01 or miss_frame > 0.01:
+        raise ValueError(f"{label} missing fields: drive_id={miss_drive:.3f} frame_id={miss_frame:.3f}")
 
 def _read_map_evidence(path: Path) -> Dict[str, gpd.GeoDataFrame]:
     layers = []
@@ -215,6 +336,70 @@ def _angle_diff_deg(a: float, b: float) -> float:
     return min(diff, 180.0 - diff)
 
 
+def _segment_heading_deg(p0: Tuple[float, float], p1: Tuple[float, float]) -> Optional[float]:
+    dx = p1[0] - p0[0]
+    dy = p1[1] - p0[1]
+    if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+        return None
+    angle = float(np.degrees(np.arctan2(dy, dx)))
+    if angle < 0:
+        angle += 180.0
+    return angle
+
+
+def _build_drive_heading_segments(
+    data_root: Path,
+    drive_id: str,
+    frames: List[dict],
+) -> List[Tuple[LineString, float]]:
+    segments = []
+    coords = []
+    for row in frames:
+        frame_id = str(row.get("frame_id"))
+        try:
+            x, y, _ = load_kitti360_pose(data_root, drive_id, frame_id)
+        except Exception:
+            continue
+        coords.append((x, y))
+    for i in range(1, len(coords)):
+        p0 = coords[i - 1]
+        p1 = coords[i]
+        heading = _segment_heading_deg(p0, p1)
+        if heading is None:
+            continue
+        line = LineString([p0, p1])
+        segments.append((line, heading))
+    return segments
+
+
+def _nearest_heading(segments: List[Tuple[LineString, float]], geom: Polygon) -> Optional[float]:
+    if not segments:
+        return None
+    centroid = geom.centroid
+    try:
+        from shapely.strtree import STRtree
+
+        lines = [seg[0] for seg in segments]
+        tree = STRtree(lines)
+        line_id = {id(line): idx for idx, line in enumerate(lines)}
+        candidates = tree.query(centroid)
+        if len(candidates) == 0:
+            candidates = lines
+    except Exception:
+        candidates = [seg[0] for seg in segments]
+        line_id = {id(seg[0]): idx for idx, seg in enumerate(segments)}
+    best_heading = None
+    best_dist = float("inf")
+    for line in candidates:
+        idx = line_id.get(id(line))
+        if idx is None:
+            continue
+        dist = centroid.distance(line)
+        if dist < best_dist:
+            best_dist = dist
+            best_heading = segments[idx][1]
+    return best_heading
+
 def _line_endpoints(geom: LineString) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     coords = list(geom.coords)
     return (coords[0][0], coords[0][1]), (coords[-1][0], coords[-1][1])
@@ -225,6 +410,64 @@ def _min_endpoint_gap(a: LineString, b: LineString) -> float:
     b0, b1 = _line_endpoints(b)
     pairs = [(a0, b0), (a0, b1), (a1, b0), (a1, b1)]
     return min(float(np.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1])) for p in pairs)
+
+
+def _rect_heading_deg(rect: Polygon) -> Optional[float]:
+    if rect is None or rect.is_empty:
+        return None
+    coords = list(rect.exterior.coords)
+    if len(coords) < 4:
+        return None
+    edges = []
+    for i in range(len(coords) - 1):
+        p0 = coords[i]
+        p1 = coords[i + 1]
+        length = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
+        if length > 1e-6:
+            edges.append((length, p0, p1))
+    if not edges:
+        return None
+    edges.sort(key=lambda x: x[0], reverse=True)
+    _, p0, p1 = edges[0]
+    return _segment_heading_deg(p0, p1)
+
+
+def _filter_lines_by_heading(
+    gdf: gpd.GeoDataFrame,
+    heading_segments: List[Tuple[LineString, float]],
+    max_diff_deg: float,
+    mode: str,
+) -> gpd.GeoDataFrame:
+    if gdf.empty or not heading_segments:
+        return gdf
+    keep_rows = []
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        if isinstance(geom, MultiLineString):
+            geom = linemerge(list(geom.geoms))
+            if geom is None or geom.is_empty:
+                continue
+        if not isinstance(geom, LineString):
+            continue
+        line_heading = _line_direction_deg(geom)
+        if line_heading is None:
+            continue
+        road_heading = _nearest_heading(heading_segments, geom)
+        if road_heading is None:
+            keep_rows.append(row)
+            continue
+        diff = _angle_diff_deg(line_heading, road_heading)
+        if mode == "perpendicular":
+            diff = abs(diff - 90.0)
+        if diff <= max_diff_deg:
+            row = row.copy()
+            row["heading_diff_deg"] = diff
+            keep_rows.append(row)
+    if not keep_rows:
+        return gpd.GeoDataFrame(columns=gdf.columns, geometry=[], crs=gdf.crs)
+    return gpd.GeoDataFrame(keep_rows, geometry="geometry", crs=gdf.crs)
 
 
 def _aggregate_lines(
@@ -369,6 +612,11 @@ def _build_entities_from_clusters(
             geom = unary_union(hits.geometry.values)
         if geom is None or geom.is_empty:
             continue
+        heading_diff = ""
+        if "heading_diff_deg" in hits.columns:
+            diffs = [float(v) for v in hits["heading_diff_deg"].tolist() if v != "" and not pd.isna(v)]
+            if diffs:
+                heading_diff = float(np.median(diffs))
 
         entities.append(
             {
@@ -383,6 +631,7 @@ def _build_entities_from_clusters(
                     "provider_hits": json.dumps(providers, ensure_ascii=True),
                     "created_from_run": created_from_run,
                     "qa_flag": qa_flag,
+                    "heading_diff_deg": heading_diff,
                 },
             }
         )
@@ -430,6 +679,111 @@ def _format_stats(stats: Dict[str, dict]) -> List[str]:
             f"- {drive_id}: segments={row.get('segments')} length_p50={row.get('length_p50')} length_p90={row.get('length_p90')}"
         )
     return lines
+
+
+def _count_stats_per_drive(gdf: gpd.GeoDataFrame) -> Dict[str, float]:
+    if gdf.empty:
+        return {"min": 0, "median": 0, "max": 0}
+    if "drive_id" not in gdf.columns:
+        gdf = gdf.copy()
+        gdf["drive_id"] = gdf["entity_id"].apply(lambda v: str(v).rsplit("_", 1)[0] if v else "")
+    counts = gdf.groupby("drive_id").size().astype(float).tolist()
+    return {
+        "min": float(np.min(counts)) if counts else 0.0,
+        "median": float(np.median(counts)) if counts else 0.0,
+        "max": float(np.max(counts)) if counts else 0.0,
+    }
+
+
+def _angle_stats_by_drive(
+    gdf: gpd.GeoDataFrame,
+    heading_segments_by_drive: Dict[str, List[Tuple[LineString, float]]],
+    mode: str,
+) -> Dict[str, dict]:
+    if gdf.empty:
+        return {}
+    if "drive_id" not in gdf.columns:
+        gdf = gdf.copy()
+        gdf["drive_id"] = gdf["entity_id"].apply(lambda v: str(v).rsplit("_", 1)[0] if v else "")
+    stats = {}
+    for drive_id, group in gdf.groupby("drive_id"):
+        segs = heading_segments_by_drive.get(drive_id, [])
+        diffs = []
+        for geom in group.geometry:
+            if geom is None or geom.is_empty:
+                continue
+            if isinstance(geom, MultiLineString):
+                geom = linemerge(list(geom.geoms))
+                if geom is None or geom.is_empty:
+                    continue
+            if not isinstance(geom, LineString):
+                continue
+            line_heading = _line_direction_deg(geom)
+            if line_heading is None:
+                continue
+            road_heading = _nearest_heading(segs, geom) if segs else None
+            if road_heading is None:
+                continue
+            diff = _angle_diff_deg(line_heading, road_heading)
+            if mode == "perpendicular":
+                diff = abs(diff - 90.0)
+            diffs.append(diff)
+        stats[str(drive_id)] = {
+            "p50": _percentile(diffs, 50),
+            "p90": _percentile(diffs, 90),
+        }
+    return stats
+
+
+def _project_world_to_image(
+    points: np.ndarray,
+    pose_xy_yaw: Tuple[float, float, float],
+    calib: Dict[str, np.ndarray],
+) -> np.ndarray:
+    x0, y0, yaw = pose_xy_yaw
+    c = float(np.cos(-yaw))
+    s = float(np.sin(-yaw))
+    dx = points[:, 0] - x0
+    dy = points[:, 1] - y0
+    x_ego = c * dx - s * dy
+    y_ego = s * dx + c * dy
+    z_ego = points[:, 2]
+    ones = np.ones_like(x_ego)
+    pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
+    cam = calib["t_velo_to_cam"] @ pts_h
+    proj = calib["p_rect"] @ np.vstack([cam[:3, :], np.ones((1, cam.shape[1]))])
+    zs = proj[2, :]
+    valid = zs > 1e-3
+    us = np.zeros_like(zs)
+    vs = np.zeros_like(zs)
+    us[valid] = proj[0, valid] / zs[valid]
+    vs[valid] = proj[1, valid] / zs[valid]
+    return np.stack([us, vs, valid], axis=1)
+
+
+def _geom_to_image_points(
+    geom: Polygon,
+    pose_xy_yaw: Tuple[float, float, float],
+    calib: Dict[str, np.ndarray],
+) -> List[Tuple[float, float]]:
+    if geom is None or geom.is_empty:
+        return []
+    if isinstance(geom, Polygon):
+        coords = np.array(list(geom.exterior.coords), dtype=float)
+    elif isinstance(geom, LineString):
+        coords = np.array(list(geom.coords), dtype=float)
+    else:
+        return []
+    if coords.shape[0] == 0:
+        return []
+    points = np.column_stack([coords[:, 0], coords[:, 1], np.zeros(coords.shape[0], dtype=float)])
+    proj = _project_world_to_image(points, pose_xy_yaw, calib)
+    out = []
+    for u, v, valid in proj:
+        if not valid:
+            continue
+        out.append((float(u), float(v)))
+    return out
 
 
 def main() -> int:
@@ -483,6 +837,9 @@ def main() -> int:
     cfg = _load_yaml(cfg_path) if cfg_path.exists() else {}
     lane_cfg = cfg.get("lane_marking", {})
     stop_cfg = cfg.get("stop_line", {})
+    cross_cfg = cfg.get("crosswalk", {})
+    heading_cfg = cfg.get("heading", {})
+    cam_id = str(heading_cfg.get("cam_id", "image_02"))
 
     image_layers_all: Dict[str, List[gpd.GeoDataFrame]] = {
         "lane_marking_img": [],
@@ -514,8 +871,60 @@ def main() -> int:
         "stop_line_line": [],
     }
 
+    drive_polys: Dict[str, Polygon] = {}
+    for drive_id in by_drive:
+        road_path = None
+        for name in road_candidates:
+            candidate = Path(args.road_root) / drive_id / "geom_outputs" / name
+            if candidate.exists():
+                road_path = candidate
+                break
+        if road_path is None:
+            continue
+        road_gdf = gpd.read_file(road_path)
+        if road_gdf.empty:
+            continue
+        if "wgs84" in road_path.name.lower():
+            road_gdf = road_gdf.set_crs("EPSG:4326", allow_override=True).to_crs("EPSG:32632")
+        elif road_gdf.crs is None:
+            road_gdf = road_gdf.set_crs("EPSG:32632")
+        drive_polys[drive_id] = road_gdf.geometry.union_all()
+
+    if image_evidence_all:
+        normalized = {}
+        for layer_name, gdf in image_evidence_all.items():
+            if gdf is None or gdf.empty:
+                continue
+            gdf = _fill_evidence_fields(gdf)
+            gdf = _assign_drive_by_spatial(gdf, drive_polys)
+            if "frame_id" not in gdf.columns:
+                gdf["frame_id"] = ""
+            gdf.loc[gdf["frame_id"] == "", "frame_id"] = "unknown"
+            gdf["drive_id"] = gdf["drive_id"].fillna("")
+            normalized[layer_name] = gdf
+        image_evidence_all = normalized
+        for layer_name, gdf in image_evidence_all.items():
+            if layer_name.endswith("_wgs84"):
+                continue
+            _assert_required_fields(gdf, f"image_evidence:{layer_name}")
+        sig_owner: Dict[str, str] = {}
+        for layer_name, gdf in image_evidence_all.items():
+            if layer_name.endswith("_wgs84") or gdf.empty:
+                continue
+            for _, row in gdf.iterrows():
+                sig = _geom_signature(row.geometry)
+                if not sig:
+                    continue
+                owner = sig_owner.get(sig)
+                drive_id = str(row.get("drive_id") or "")
+                if owner and owner != drive_id:
+                    raise ValueError(f"cross_drive_duplicate:{layer_name}:{owner}:{drive_id}")
+                if not owner:
+                    sig_owner[sig] = drive_id
+
     qa_rows = []
     lidar_rasters = []
+    heading_segments_by_drive: Dict[str, List[Tuple[LineString, float]]] = {}
 
     for drive_id, frames in by_drive.items():
         image_present = False
@@ -536,6 +945,10 @@ def main() -> int:
                 gdf = gdf.set_crs("EPSG:32632")
             if "frame_id" not in gdf.columns:
                 gdf["frame_id"] = frame_id
+            if "drive_id" not in gdf.columns:
+                gdf["drive_id"] = drive_id
+            gdf["frame_id"] = gdf["frame_id"].fillna(frame_id)
+            gdf["drive_id"] = gdf["drive_id"].fillna(drive_id)
             image_layers_all[target_name].append(gdf)
             image_layers_drive[target_name].append(gdf)
 
@@ -556,6 +969,9 @@ def main() -> int:
                 if gdf_drive.empty:
                     continue
                 gdf_drive = gdf_drive.copy()
+                gdf_drive = gdf_drive[gdf_drive["drive_id"] == drive_id]
+                if gdf_drive.empty:
+                    continue
                 if gdf_drive.crs is None:
                     gdf_drive = gdf_drive.set_crs("EPSG:32632")
                 if "frame_id" not in gdf_drive.columns:
@@ -575,21 +991,9 @@ def main() -> int:
                 _push_layer("stop_line", "stop_line_img", frame_id)
                 _push_layer("crosswalk", "crosswalk_img", frame_id)
 
-        road_poly = None
-        road_path = None
-        for name in road_candidates:
-            candidate = Path(args.road_root) / drive_id / "geom_outputs" / name
-            if candidate.exists():
-                road_path = candidate
-                break
-        if road_path is not None:
-            road_gdf = gpd.read_file(road_path)
-            if not road_gdf.empty:
-                if "wgs84" in road_path.name.lower():
-                    road_gdf = road_gdf.set_crs("EPSG:4326", allow_override=True).to_crs("EPSG:32632")
-                elif road_gdf.crs is None:
-                    road_gdf = road_gdf.set_crs("EPSG:32632")
-                road_poly = road_gdf.geometry.union_all()
+        road_poly = drive_polys.get(drive_id)
+        heading_segments = _build_drive_heading_segments(data_root, drive_id, frames)
+        heading_segments_by_drive[drive_id] = heading_segments
 
         lidar_points = []
         lidar_intensity = []
@@ -681,8 +1085,20 @@ def main() -> int:
             if not gdf_list:
                 return
             gdf = gpd.GeoDataFrame(pd.concat(gdf_list, ignore_index=True), geometry="geometry", crs="EPSG:32632")
+            if "drive_id" in gdf.columns:
+                gdf = gdf[gdf["drive_id"] == drive_id]
+            if gdf.empty:
+                return
+            gdf = _dedup_by_signature(gdf)
             if line_merge:
                 gdf = _to_lines(gdf, args.line_min_length_m)
+                heading_max = float(agg_cfg.get("heading_max_diff_deg", agg_cfg.get("max_angle_diff_deg", 15.0)))
+                mode = "parallel"
+                if entity_type == "stop_line":
+                    mode = "perpendicular"
+                gdf = _filter_lines_by_heading(gdf, heading_segments, heading_max, mode)
+                if gdf.empty:
+                    return
                 gdf = _aggregate_lines(
                     gdf,
                     max_merge_dist_m=float(agg_cfg.get("max_merge_dist_m", 1.2)),
@@ -704,9 +1120,92 @@ def main() -> int:
             )
             entity_layers[entity_type + ("_line" if line_merge else "_poly")].extend(entities)
 
+        def _make_crosswalk_entities() -> None:
+            gdf_list = image_layers_drive.get("crosswalk_img", [])
+            if not gdf_list:
+                return
+            gdf = gpd.GeoDataFrame(pd.concat(gdf_list, ignore_index=True), geometry="geometry", crs="EPSG:32632")
+            if "drive_id" in gdf.columns:
+                gdf = gdf[gdf["drive_id"] == drive_id]
+            if gdf.empty:
+                return
+            gdf = _dedup_by_signature(gdf)
+            cluster_buffer = float(cross_cfg.get("cluster_buffer_m", args.cluster_buffer_m))
+            clusters = _cluster_geoms(gdf, cluster_buffer)
+            entities = []
+            for idx, cluster in enumerate(clusters):
+                hits = gdf[gdf.geometry.intersects(cluster)]
+                if hits.empty:
+                    continue
+                union_geom = unary_union(hits.geometry.values)
+                if union_geom is None or union_geom.is_empty:
+                    continue
+                rect = union_geom.minimum_rotated_rectangle
+                rect_area = rect.area if rect is not None else 0.0
+                area = union_geom.area
+                if rect_area <= 0:
+                    continue
+                rectangularity = area / rect_area if rect_area > 0 else 0.0
+                min_area = float(cross_cfg.get("min_area_m2", 2.0))
+                max_area = float(cross_cfg.get("max_area_m2", 200.0))
+                min_rect = float(cross_cfg.get("min_rectangularity", 0.6))
+                min_ratio = float(cross_cfg.get("min_aspect_ratio", 1.5))
+                max_ratio = float(cross_cfg.get("max_aspect_ratio", 10.0))
+                if area < min_area or area > max_area:
+                    continue
+                if rectangularity < min_rect:
+                    continue
+                rect_coords = list(rect.exterior.coords)
+                edge_lengths = []
+                for i in range(len(rect_coords) - 1):
+                    p0 = rect_coords[i]
+                    p1 = rect_coords[i + 1]
+                    edge_lengths.append(float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])))
+                edge_lengths = sorted(edge_lengths, reverse=True)
+                if len(edge_lengths) < 2:
+                    continue
+                ratio = edge_lengths[0] / max(1e-6, edge_lengths[-1])
+                if ratio < min_ratio or ratio > max_ratio:
+                    continue
+                rect_heading = _rect_heading_deg(rect)
+                road_heading = _nearest_heading(heading_segments, rect)
+                heading_diff = None
+                if rect_heading is not None and road_heading is not None:
+                    diff = _angle_diff_deg(rect_heading, road_heading)
+                    heading_diff = abs(diff - 90.0)
+                frames = set()
+                providers = {}
+                for _, row in hits.iterrows():
+                    frame_id = row.get("frame_id")
+                    if frame_id:
+                        frames.add(str(frame_id))
+                    model_id = row.get("model_id") or row.get("provider_id")
+                    if model_id:
+                        providers[str(model_id)] = providers.get(str(model_id), 0) + 1
+                entities.append(
+                    {
+                        "geometry": rect,
+                        "properties": {
+                            "entity_id": _entity_id(f"{drive_id}_crosswalk", idx),
+                            "drive_id": drive_id,
+                            "entity_type": "crosswalk",
+                            "confidence": 0.7,
+                            "evidence_sources": json.dumps({"image": True, "lidar": False, "aerial": False}, ensure_ascii=True),
+                            "frames_hit": len(frames),
+                            "provider_hits": json.dumps(providers, ensure_ascii=True),
+                            "created_from_run": str(run_dir),
+                            "qa_flag": "ok",
+                            "rectangularity": rectangularity,
+                            "heading_diff_deg": heading_diff if heading_diff is not None else "",
+                        },
+                    }
+                )
+            if entities:
+                entity_layers["crosswalk_poly"].extend(entities)
+
         _make_entities_for_class("lane_marking_img", "lane_marking", True, lane_cfg)
         _make_entities_for_class("stop_line_img", "stop_line", True, stop_cfg)
-        _make_entities_for_class("crosswalk_img", "crosswalk", False, {})
+        _make_crosswalk_entities()
 
         if road_poly is not None and not road_poly.is_empty:
             evidence_sources = {"image": image_present, "lidar": bool(lidar_points), "aerial": False}
@@ -732,7 +1231,7 @@ def main() -> int:
             frame_id = str(row.get("frame_id"))
             image_path = str(row.get("image_path") or "")
             try:
-                x, y, _ = load_kitti360_pose(data_root, drive_id, frame_id)
+                x, y, yaw = load_kitti360_pose(data_root, drive_id, frame_id)
             except Exception:
                 continue
             lon, lat = transformer.transform(x, y)
@@ -748,6 +1247,7 @@ def main() -> int:
 
             lidar_raster = outputs_dir / f"lidar_intensity_utm32_{drive_id}.tif"
             entity_ids = []
+            sanity_notes = []
             point = Point(x, y)
             for layer_name, feats in entity_layers.items():
                 for feat in feats:
@@ -756,6 +1256,51 @@ def main() -> int:
                         continue
                     if geom.distance(point) <= args.qa_radius_m:
                         entity_ids.append(feat["properties"]["entity_id"])
+                        rect = feat["properties"].get("rectangularity")
+                        hd = feat["properties"].get("heading_diff_deg")
+                        if rect:
+                            sanity_notes.append(f"{feat['properties']['entity_id']}:rect={rect}")
+                        if hd != "" and hd is not None:
+                            sanity_notes.append(f"{feat['properties']['entity_id']}:hd={hd}")
+
+            qa_images_dir = outputs_dir / "qa_images" / drive_id
+            qa_images_dir.mkdir(parents=True, exist_ok=True)
+            overlay_raw_path = ""
+            if overlay_path and Path(overlay_path).exists():
+                overlay_raw_path = str(qa_images_dir / f"{frame_id}_overlay_raw.png")
+                shutil.copy2(overlay_path, overlay_raw_path)
+
+            overlay_entities_path = ""
+            if image_path and Path(image_path).exists():
+                try:
+                    base_img = Image.open(image_path).convert("RGBA")
+                    overlay = Image.new("RGBA", base_img.size, (0, 0, 0, 0))
+                    draw = ImageDraw.Draw(overlay, "RGBA")
+                    calib = load_kitti360_calib(data_root, cam_id)
+                    pose = (x, y, yaw)
+                    for layer_name, feats in entity_layers.items():
+                        for feat in feats:
+                            if feat["properties"].get("drive_id") != drive_id:
+                                continue
+                            geom = feat["geometry"]
+                            if geom is None or geom.is_empty:
+                                continue
+                            pts = _geom_to_image_points(geom, pose, calib)
+                            if len(pts) < 2:
+                                continue
+                            if layer_name == "road_surface_poly":
+                                draw.polygon(pts, outline=(0, 255, 0, 180))
+                            elif layer_name == "crosswalk_poly":
+                                draw.polygon(pts, fill=(0, 128, 255, 80), outline=(0, 128, 255, 200))
+                            elif layer_name == "stop_line_line":
+                                draw.line(pts, fill=(255, 0, 0, 200), width=3)
+                            elif layer_name == "lane_marking_line":
+                                draw.line(pts, fill=(255, 255, 0, 200), width=2)
+                    out = Image.alpha_composite(base_img, overlay)
+                    overlay_entities_path = str(qa_images_dir / f"{frame_id}_overlay_entities.png")
+                    out.save(overlay_entities_path)
+                except Exception as exc:
+                    log.warning("overlay entities failed: %s %s (%s)", drive_id, frame_id, exc)
 
             qa_rows.append(
                 {
@@ -766,8 +1311,11 @@ def main() -> int:
                     "lat": lat,
                     "image_path": image_path,
                     "image_overlay_path": overlay_path,
+                    "overlay_raw_path": overlay_raw_path,
+                    "overlay_entities_path": overlay_entities_path,
                     "lidar_raster_path": str(lidar_raster) if lidar_raster.exists() else "",
                     "entity_ids": json.dumps(sorted(set(entity_ids)), ensure_ascii=True),
+                    "sanity_note": ";".join(sanity_notes),
                 }
             )
     entity_layers_gdf = {
@@ -776,6 +1324,12 @@ def main() -> int:
         "crosswalk_poly": _gdf_from_entities(entity_layers["crosswalk_poly"], "EPSG:32632"),
         "stop_line_line": _gdf_from_entities(entity_layers["stop_line_line"], "EPSG:32632"),
     }
+    road_surface_gdf = entity_layers_gdf["road_surface_poly"]
+    if not road_surface_gdf.empty and "drive_id" in road_surface_gdf.columns:
+        missing_drive = road_surface_gdf["drive_id"].isna() | (road_surface_gdf["drive_id"] == "")
+        if missing_drive.any():
+            log.error("road_surface_poly missing drive_id")
+            return 7
     _write_gpkg_layers(outputs_dir / "road_entities_utm32.gpkg", entity_layers_gdf, "EPSG:32632")
 
     entity_layers_wgs84 = {}
@@ -833,6 +1387,11 @@ def main() -> int:
     for name, gdf in entity_layers_gdf.items():
         report_lines.append(f"- {name}: {len(gdf)}")
     report_lines.append("")
+    report_lines.append("## Per-Drive Count Summary")
+    for name, gdf in entity_layers_gdf.items():
+        stats = _count_stats_per_drive(gdf)
+        report_lines.append(f"- {name}: min={stats['min']} median={stats['median']} max={stats['max']}")
+    report_lines.append("")
     report_lines.append("## QA Assets")
     report_lines.append(f"- qa_index: {qa_path}")
     report_lines.append(f"- image_evidence: {outputs_dir / 'image_evidence_utm32.gpkg'}")
@@ -848,6 +1407,16 @@ def main() -> int:
     report_lines.extend(_format_stats(lane_stats))
     report_lines.append("### stop_line")
     report_lines.extend(_format_stats(stop_stats))
+    report_lines.append("")
+    report_lines.append("## Heading Diff Stats (After)")
+    lane_angle = _angle_stats_by_drive(entity_layers_gdf["lane_marking_line"], heading_segments_by_drive, "parallel")
+    stop_angle = _angle_stats_by_drive(entity_layers_gdf["stop_line_line"], heading_segments_by_drive, "perpendicular")
+    report_lines.append("### lane_marking")
+    for drive_id, row in lane_angle.items():
+        report_lines.append(f"- {drive_id}: p50={row.get('p50')} p90={row.get('p90')}")
+    report_lines.append("### stop_line")
+    for drive_id, row in stop_angle.items():
+        report_lines.append(f"- {drive_id}: p50={row.get('p50')} p90={row.get('p90')}")
     report_lines.append("")
     report_lines.append("## Needs Review (Top 10)")
     needs_review = []
