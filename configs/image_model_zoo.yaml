@@ -90,8 +90,11 @@ models:
     sam3_builder: sam3.build_sam:build_sam3
     sam3_predictor: sam3.sam3_image_predictor:SAM3ImagePredictor
     sam3_model_cfg: "sam3/configs/sam3_hiera_b+.yaml"
-    weights_path: cache/model_weights/sam3/sam3_v1.pt
+    weights_path: cache/model_weights/sam3/sam3.pt
     weights_url: ""
+    weights_repo_id: facebook/sam3
+    weights_filename: sam3.pt
+    weights_revision: main
     prompts:
       - divider
       - lane marking

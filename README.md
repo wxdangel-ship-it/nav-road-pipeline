@@ -54,3 +54,7 @@ runs/<exp_id>/
 
 - `runs/`、`cache/`、权重与大文件不入库
 - `_wgs84` 必须是 EPSG:4326，否则重投影或改名
+
+- SAM3 ?????
+  - `scripts/setup_sam3_weights.cmd`
+  - ?? HF_TOKEN ? huggingface-cli login

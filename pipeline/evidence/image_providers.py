@@ -579,12 +579,15 @@ class Sam3Provider(_DinoSam2Base):
                 return
             except Exception as exc:
                 reason = str(exc)
-                if "weights" in reason or "checkpoint" in reason:
+                if isinstance(exc, ModuleNotFoundError) or isinstance(exc, ImportError):
+                    self.backend_reason = "import_error"
+                elif "weights" in reason or "checkpoint" in reason:
                     self.backend_reason = "weights_not_found"
                 elif "missing" in reason or "No module" in reason:
                     self.backend_reason = "missing_dependency"
                 else:
                     self.backend_reason = "runtime_error"
+                logging.error("sam3 real backend error: %s", exc)
                 if backend_mode == "real":
                     self.backend_status = "unavailable"
                     self.fallback_used = False
