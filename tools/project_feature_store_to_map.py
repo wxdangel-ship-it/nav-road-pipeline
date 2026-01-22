@@ -251,6 +251,55 @@ def _filter_points_in_geom(uv: np.ndarray, world_pts: np.ndarray, geom, line_buf
     return np.asarray(pts, dtype=float)
 
 
+def _mask_area_px(geom, line_buffer_px: float) -> float:
+    if geom is None or geom.is_empty:
+        return 0.0
+    if geom.geom_type in {"Polygon", "MultiPolygon"}:
+        return float(geom.area)
+    if geom.geom_type in {"LineString", "MultiLineString"}:
+        return float(geom.length) * max(line_buffer_px * 2.0, 1.0)
+    return 0.0
+
+
+def _confidence_value(props: dict) -> float:
+    for key in ("conf", "score", "confidence"):
+        val = props.get(key)
+        if val is not None:
+            try:
+                return float(val)
+            except Exception:
+                continue
+    return 0.0
+
+
+def _cap_instances_per_class(
+    gdf: gpd.GeoDataFrame, max_instances_per_class: int
+) -> gpd.GeoDataFrame:
+    if max_instances_per_class <= 0 or gdf.empty:
+        return gdf
+    if "class" not in gdf.columns:
+        return gdf
+    rows = []
+    for cls, part in gdf.groupby("class"):
+        if len(part) <= max_instances_per_class:
+            rows.append(part)
+            continue
+        tmp = part.copy()
+        tmp["__conf"] = tmp.apply(lambda r: _confidence_value(dict(r)), axis=1)
+        tmp = tmp.sort_values("__conf", ascending=False).head(max_instances_per_class)
+        rows.append(tmp.drop(columns=["__conf"], errors="ignore"))
+    return gpd.GeoDataFrame(pd.concat(rows, ignore_index=True), geometry="geometry")
+
+
+def _apply_mask_area_filter(
+    gdf: gpd.GeoDataFrame, min_mask_area_px: float, line_buffer_px: float
+) -> gpd.GeoDataFrame:
+    if min_mask_area_px <= 0 or gdf.empty:
+        return gdf
+    areas = gdf.geometry.apply(lambda g: _mask_area_px(g, line_buffer_px))
+    return gdf.loc[areas >= min_mask_area_px]
+
+
 def _write_layers(path: Path, by_class: Dict[str, list]) -> None:
     if path.exists():
         path.unlink()
@@ -274,8 +323,10 @@ def main() -> int:
     ap.add_argument("--camera", default="image_00")
     ap.add_argument("--max-frames", type=int, default=0)
     ap.add_argument("--map-mode", default="auto", choices=["lidar_project", "ground_plane", "auto"])
-    ap.add_argument("--min-points", type=int, default=10)
-    ap.add_argument("--min-length", type=float, default=2.0)
+    ap.add_argument("--min-points", type=int, default=30)
+    ap.add_argument("--min-length", type=float, default=0.8)
+    ap.add_argument("--min-mask-area-px", type=float, default=500.0)
+    ap.add_argument("--max-instances-per-class", type=int, default=200)
     ap.add_argument("--line-buffer-px", type=float, default=2.0)
     ap.add_argument("--resume", type=int, default=1)
     ap.add_argument("--debug-root", default="")
@@ -316,6 +367,14 @@ def main() -> int:
     by_class_all: Dict[str, list] = {}
     errors = []
     debug_samples: Dict[str, list] = {}
+    ground_classes = {
+        "lane_marking",
+        "stop_line",
+        "crosswalk",
+        "gore_marking",
+        "arrow",
+        "arrow_marking",
+    }
 
     for frame_dir in frames:
         frame_id = frame_dir.name
@@ -342,6 +401,11 @@ def main() -> int:
         if gdf.empty:
             continue
 
+        gdf = _apply_mask_area_filter(gdf, args.min_mask_area_px, args.line_buffer_px)
+        gdf = _cap_instances_per_class(gdf, args.max_instances_per_class)
+        if gdf.empty:
+            continue
+
         lidar_ok = False
         uv = None
         world_pts = None
@@ -364,29 +428,48 @@ def main() -> int:
             map_reason = ""
             mapped = None
             points_count = 0
+            evidence_strength = ""
+            map_mode_used = ""
+            weak_reason = ""
+            is_ground_class = cls in ground_classes
 
             if map_mode in {"lidar_project", "auto"} and lidar_ok:
                 pts = _filter_points_in_geom(uv, world_pts, geom, args.line_buffer_px)
                 points_count = int(pts.shape[0])
                 if points_count >= args.min_points:
                     mapped = _points_to_geometry(pts, geom_type, args.min_length)
-                    map_mode = "lidar_project"
+                    if mapped is not None and not mapped.is_empty:
+                        map_mode_used = "lidar_project"
+                        evidence_strength = "strong"
                 else:
                     map_reason = "lidar_points_insufficient"
                     if map_mode == "lidar_project":
                         mapped = None
-            if mapped is None and map_mode in {"ground_plane", "auto"}:
+            if mapped is None and map_mode in {"ground_plane", "auto"} and is_ground_class:
                 mapped = _project_geometry_ground_plane(geom, calib, (pose_xy[0], pose_xy[1]), pose_xy[2])
                 if mapped is not None:
-                    map_mode = "ground_plane"
-                    if not map_reason:
-                        map_reason = "plane_assumed"
-
+                    map_mode_used = "ground_plane"
+                    evidence_strength = "weak"
+                    if map_reason == "lidar_points_insufficient":
+                        weak_reason = "insufficient_lidar_points"
+                    elif not lidar_ok:
+                        weak_reason = "no_lidar"
+                    else:
+                        weak_reason = "plane_assumed"
             if mapped is None or mapped.is_empty:
                 continue
+            if mapped.geom_type in {"LineString", "MultiLineString"} and mapped.length < args.min_length:
+                continue
+
+            if map_mode_used == "":
+                map_mode_used = map_mode
+            if evidence_strength == "":
+                evidence_strength = "strong" if map_mode_used == "lidar_project" else "weak"
 
             props["geometry_frame"] = "map"
-            props["map_mode"] = map_mode
+            props["map_mode_used"] = map_mode_used
+            props["evidence_strength"] = evidence_strength
+            props["weak_reason"] = weak_reason
             props["map_reason"] = map_reason
             props["points_count"] = points_count
             props["drive_id"] = props.get("drive_id") or args.drive

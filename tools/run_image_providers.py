@@ -136,6 +136,8 @@ def _build_feature_store_map(
     map_mode: str,
     map_min_points: str,
     map_min_length: str,
+    map_min_mask_area_px: str,
+    map_max_instances_per_class: str,
     map_line_buffer: str,
     debug_root: str,
 ) -> int:
@@ -156,6 +158,10 @@ def _build_feature_store_map(
         map_min_points,
         "--min-length",
         map_min_length,
+        "--min-mask-area-px",
+        map_min_mask_area_px,
+        "--max-instances-per-class",
+        map_max_instances_per_class,
         "--line-buffer-px",
         map_line_buffer,
     ]
@@ -457,8 +463,10 @@ def main() -> int:
                 _safe_rmtree(fs_map_root)
             fs_map_root.mkdir(parents=True, exist_ok=True)
             map_mode = os.environ.get("MAP_MODE", "auto")
-            map_min_points = os.environ.get("MAP_MIN_POINTS", "10")
-            map_min_length = os.environ.get("MAP_MIN_LENGTH", "2.0")
+            map_min_points = os.environ.get("MAP_MIN_POINTS", "30")
+            map_min_length = os.environ.get("MAP_MIN_LENGTH", "0.8")
+            map_min_mask_area_px = os.environ.get("MAP_MIN_MASK_AREA_PX", "500")
+            map_max_instances_per_class = os.environ.get("MAP_MAX_INSTANCES_PER_CLASS", "200")
             map_line_buffer = os.environ.get("MAP_LINE_BUFFER_PX", "2.0")
             for drive_id, frames in by_drive.items():
                 camera = frames[0].camera if frames else "image_00"
@@ -471,6 +479,8 @@ def main() -> int:
                     map_mode=map_mode,
                     map_min_points=map_min_points,
                     map_min_length=map_min_length,
+                    map_min_mask_area_px=map_min_mask_area_px,
+                    map_max_instances_per_class=map_max_instances_per_class,
                     map_line_buffer=map_line_buffer,
                     debug_root=str(out_run / "debug" / provider_id),
                 )
