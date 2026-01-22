@@ -200,7 +200,7 @@ def _env_flag(name: str, default: str = "0") -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", required=True)
-    ap.add_argument("--providers", default="grounded_sam2_v1,gdino_sam2_v1,sam3_v1")
+    ap.add_argument("--providers", default="grounded_sam2_v1,gdino_sam2_v1")
     ap.add_argument("--out-run", default="")
     ap.add_argument("--zoo", default="configs/image_model_zoo.yaml")
     ap.add_argument("--seg-schema", default="configs/seg_schema.yaml")
@@ -266,6 +266,13 @@ def main() -> int:
     seg_schema = _load_yaml(Path(args.seg_schema))
 
     strict_backend = _env_flag("STRICT_BACKEND", "0")
+    if not os.environ.get("HF_HOME"):
+        os.environ["HF_HOME"] = str(Path("cache") / "hf")
+    if not os.environ.get("HF_HUB_CACHE"):
+        os.environ["HF_HUB_CACHE"] = str(Path("cache") / "hf" / "hub")
+    if not os.environ.get("TRANSFORMERS_CACHE"):
+        os.environ["TRANSFORMERS_CACHE"] = str(Path("cache") / "hf" / "transformers")
+
     run_manifest = {
         "run_id": out_run.name,
         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),

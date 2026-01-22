@@ -5,6 +5,10 @@ models:
     device: auto
     input_size: 1024
     model_version: v1
+    dino_repo_id: IDEA-Research/grounding-dino-base
+    dino_revision: main
+    dino_filename: pytorch_model.bin
+    dino_weights_path: cache/model_weights/gdino/grounding-dino-base
     prompts:
       - divider
       - median
@@ -44,6 +48,16 @@ models:
     device: auto
     input_size: 1024
     model_version: v1
+    backend: auto
+    dino_repo_id: IDEA-Research/grounding-dino-base
+    dino_revision: main
+    dino_filename: pytorch_model.bin
+    dino_weights_path: cache/model_weights/gdino/grounding-dino-base
+    prompt_packs_path: configs/image_prompt_packs.yaml
+    max_boxes_per_prompt: 50
+    min_box_size: 6
+    tile_max_per_prompt: 80
+    global_nms_iou: 0.5
     prompts:
       - divider
       - median
@@ -64,6 +78,7 @@ models:
       gore marking: gore_marking
       arrow: arrow
       traffic light: traffic_light
+      traffic sign: traffic_sign
     download:
       source: huggingface
       repo: IDEA-Research/grounding-dino-base

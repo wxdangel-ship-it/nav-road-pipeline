@@ -1,0 +1,51 @@
+prompt_packs:
+  car:
+    items:
+      - class: traffic_light
+        texts: ["traffic light", "traffic signal"]
+        score_thr: 0.25
+        max_instances: 50
+      - class: traffic_sign
+        texts: ["traffic sign", "road sign"]
+        score_thr: 0.25
+        max_instances: 80
+      - class: crosswalk
+        texts: ["crosswalk", "zebra crossing"]
+        score_thr: 0.25
+        max_instances: 80
+      - class: stop_line
+        texts: ["stop line", "stop bar"]
+        score_thr: 0.25
+        max_instances: 80
+      - class: lane_marking
+        texts: ["lane marking", "lane line"]
+        score_thr: 0.25
+        max_instances: 120
+      - class: divider_median
+        texts: ["road divider", "median barrier", "divider barrier"]
+        score_thr: 0.25
+        max_instances: 80
+  aerial:
+    items:
+      - class: crosswalk
+        texts: ["crosswalk", "zebra crossing"]
+        score_thr: 0.25
+        max_instances: 120
+      - class: stop_line
+        texts: ["stop line", "stop bar"]
+        score_thr: 0.25
+        max_instances: 120
+      - class: lane_marking
+        texts: ["lane marking", "lane line"]
+        score_thr: 0.25
+        max_instances: 200
+      - class: divider_median
+        texts: ["road divider", "median", "divider barrier"]
+        score_thr: 0.25
+        max_instances: 120
+      - class: arrow
+        texts: ["arrow marking", "directional arrow", "road arrow"]
+        score_thr: 0.25
+        max_instances: 80
+  default:
+    items: []

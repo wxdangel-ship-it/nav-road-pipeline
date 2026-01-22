@@ -245,7 +245,12 @@ class YoloWorldProvider(ImageProvider):
         return {"status": "ok", "counts": counts}
 
 
-def _load_dino_components(ctx: ProviderContext) -> tuple[Any, Any, List[str], Dict[str, str], Dict[str, int]]:
+def _load_dino_components(
+    ctx: ProviderContext,
+    repo_id: Optional[str] = None,
+    revision: Optional[str] = None,
+    local_dir: Optional[Path] = None,
+) -> tuple[Any, Any, List[str], Dict[str, str], Dict[str, int]]:
     try:
         import torch
         from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
@@ -253,26 +258,30 @@ def _load_dino_components(ctx: ProviderContext) -> tuple[Any, Any, List[str], Di
         raise RuntimeError(f"missing transformers/torch: {exc}") from exc
 
     download_cfg = ctx.model_cfg.get("download") or {}
-    dino_repo = download_cfg.get("repo")
+    dino_repo = repo_id or download_cfg.get("repo")
     if not dino_repo:
         raise RuntimeError("grounding_dino repo not configured")
 
     from huggingface_hub import snapshot_download
 
     cache_dirs = _resolve_cache_env()
-    local_dir = (
-        Path(cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"] or ".")
-        / "local_snapshots"
-        / dino_repo.replace("/", "--")
-    )
-    local_dir.mkdir(parents=True, exist_ok=True)
-    snapshot_dir = snapshot_download(
-        repo_id=dino_repo,
-        cache_dir=cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"],
-        token=False,
-        local_dir=str(local_dir),
-        local_dir_use_symlinks=False,
-    )
+    if local_dir and local_dir.exists():
+        snapshot_dir = str(local_dir)
+    else:
+        local_snap = (
+            Path(cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"] or ".")
+            / "local_snapshots"
+            / dino_repo.replace("/", "--")
+        )
+        local_snap.mkdir(parents=True, exist_ok=True)
+        snapshot_dir = snapshot_download(
+            repo_id=dino_repo,
+            cache_dir=cache_dirs["hf_hub_cache"] or cache_dirs["hf_home"],
+            token=False,
+            revision=revision or "main",
+            local_dir=str(local_snap),
+            local_dir_use_symlinks=False,
+        )
 
     try:
         processor = AutoProcessor.from_pretrained(
@@ -335,6 +344,48 @@ class _DinoSam2Base(ImageProvider):
         self.prompts: List[str] = []
         self.class_map: Dict[str, str] = {}
         self.class_to_id: Dict[str, int] = {}
+        self.prompt_packs: Dict[str, Any] = {}
+
+    def _load_prompt_packs(self) -> Dict[str, Any]:
+        pack_path = self.ctx.model_cfg.get("prompt_packs_path")
+        if not pack_path:
+            return {}
+        try:
+            import yaml
+
+            data = yaml.safe_load(Path(pack_path).read_text(encoding="utf-8")) or {}
+            return data.get("prompt_packs") or {}
+        except Exception:
+            return {}
+
+    def _build_prompt_table(self, scene_profile: str) -> tuple[List[str], Dict[str, dict], Dict[str, str]]:
+        packs = self.prompt_packs or {}
+        table: Dict[str, dict] = {}
+        prompt_to_class: Dict[str, str] = {}
+        profile = scene_profile
+        if profile == "sat" and "aerial" in packs:
+            profile = "aerial"
+        pack = packs.get(profile) or packs.get("default") or {}
+        items = pack.get("items") or []
+        for item in items:
+            cls = str(item.get("class") or "").strip().lower()
+            if not cls:
+                continue
+            texts = [str(t).strip().lower() for t in (item.get("texts") or []) if str(t).strip()]
+            if not texts:
+                continue
+            table[cls] = {
+                "score_thr": float(item.get("score_thr") or 0.0),
+                "max_instances": int(item.get("max_instances") or 0),
+                "min_box_size": float(item.get("min_box_size") or 0.0),
+                "texts": texts,
+            }
+            for t in texts:
+                prompt_to_class[t] = cls
+        prompt_list: List[str] = []
+        for cls, cfg in table.items():
+            prompt_list.extend(cfg.get("texts") or [])
+        return prompt_list, table, prompt_to_class
 
     def load(self) -> None:
         try:
@@ -353,7 +404,17 @@ class _DinoSam2Base(ImageProvider):
         elif not sam2_cfg.startswith("configs/"):
             sam2_cfg = f"configs/{sam2_cfg}"
         sam2_ckpt = _resolve_sam2_checkpoint(download_cfg, _ensure_cache_env())
-        self.processor, self.model, self.prompts, self.class_map, self.class_to_id = _load_dino_components(self.ctx)
+        self.prompt_packs = self._load_prompt_packs()
+        repo_id = self.ctx.model_cfg.get("dino_repo_id") or download_cfg.get("repo")
+        revision = self.ctx.model_cfg.get("dino_revision") or "main"
+        local_dir = self.ctx.model_cfg.get("dino_weights_path")
+        local_dir = Path(local_dir) if local_dir else None
+        self.processor, self.model, self.prompts, self.class_map, self.class_to_id = _load_dino_components(
+            self.ctx,
+            repo_id=repo_id,
+            revision=revision,
+            local_dir=local_dir if local_dir and local_dir.exists() else None,
+        )
 
         sam2 = build_sam2(sam2_cfg, str(sam2_ckpt), device=self.ctx.device)
         self.predictor = SAM2ImagePredictor(sam2)
@@ -386,21 +447,21 @@ class _DinoSam2Base(ImageProvider):
             )[0]
         return results
 
-    def _run_dino_tiled(self, img: "Image.Image") -> dict:
+    def _run_dino_tiled(self, img: "Image.Image", prompts: List[str]) -> dict:
         tile_size = int(self.ctx.model_cfg.get("tile_size") or 0)
         overlap = int(self.ctx.model_cfg.get("tile_overlap") or 0)
         if tile_size <= 0:
-            return self._run_dino(img, self.prompts)
+            return self._run_dino(img, prompts)
         w, h = img.size
         if w <= tile_size and h <= tile_size:
-            return self._run_dino(img, self.prompts)
+            return self._run_dino(img, prompts)
         boxes_all: List[List[float]] = []
         scores_all: List[float] = []
         labels_all: List[Any] = []
         text_labels_all: List[str] = []
         for x0, y0, x1, y1 in _iter_tiles((w, h), tile_size, overlap):
             tile = img.crop((x0, y0, x1, y1))
-            results = self._run_dino(tile, self.prompts)
+            results = self._run_dino(tile, prompts)
             boxes = results.get("boxes", [])
             scores = results.get("scores", [])
             labels = results.get("labels", [])
@@ -418,7 +479,23 @@ class _DinoSam2Base(ImageProvider):
                     text_labels_all.append(text_labels[idx])
                 else:
                     text_labels_all.append("")
-        iou_thr = float(self.ctx.model_cfg.get("tile_nms_iou") or 0.5)
+        per_prompt = int(self.ctx.model_cfg.get("tile_max_per_prompt") or 0)
+        if per_prompt > 0 and text_labels_all:
+            buckets: Dict[str, List[int]] = {}
+            for idx, label in enumerate(text_labels_all):
+                key = str(label or "").lower()
+                buckets.setdefault(key, []).append(idx)
+            keep_idx = []
+            for key, inds in buckets.items():
+                inds_sorted = sorted(inds, key=lambda i: scores_all[i], reverse=True)[:per_prompt]
+                keep_idx.extend(inds_sorted)
+            keep_idx = sorted(set(keep_idx))
+            boxes_all = [boxes_all[i] for i in keep_idx]
+            scores_all = [scores_all[i] for i in keep_idx]
+            labels_all = [labels_all[i] for i in keep_idx]
+            text_labels_all = [text_labels_all[i] for i in keep_idx]
+
+        iou_thr = float(self.ctx.model_cfg.get("global_nms_iou") or self.ctx.model_cfg.get("tile_nms_iou") or 0.5)
         keep = _nms(boxes_all, scores_all, iou_thr)
         boxes_all = [boxes_all[i] for i in keep]
         scores_all = [scores_all[i] for i in keep]
@@ -448,7 +525,10 @@ class _DinoSam2Base(ImageProvider):
             img_path = Path(item.path)
             img = Image.open(img_path).convert("RGB")
             w, h = img.size
-            results = self._run_dino_tiled(img)
+            prompt_list, prompt_table, prompt_to_class = self._build_prompt_table(item.scene_profile)
+            if not prompt_list:
+                prompt_list = list(self.prompts)
+            results = self._run_dino_tiled(img, prompt_list)
             boxes = results.get("boxes", [])
             scores = results.get("scores", [])
             labels = results.get("labels", [])
@@ -459,6 +539,7 @@ class _DinoSam2Base(ImageProvider):
             mask = np.zeros((h, w), dtype=np.uint8)
             conf_map = np.zeros((h, w), dtype=np.float32)
             self.predictor.set_image(np.array(img))
+            per_class_dets: Dict[str, List[tuple]] = {}
             for idx, box in enumerate(boxes):
                 label_val = labels[idx] if idx < len(labels) else -1
                 if idx < len(text_labels):
@@ -470,29 +551,53 @@ class _DinoSam2Base(ImageProvider):
                 else:
                     prompt = ""
                 prompt = _norm_name(prompt)
-                mapped = self.class_map.get(str(prompt).lower(), prompt)
+                mapped = prompt_to_class.get(prompt)
+                if not mapped:
+                    mapped = self.class_map.get(str(prompt).lower(), prompt)
                 mapped = str(mapped).lower()
                 if mapped not in allowed:
                     continue
                 conf = float(scores[idx]) if idx < len(scores) else None
                 bbox = [float(x) for x in box.tolist()] if hasattr(box, "tolist") else [float(x) for x in box]
-                dets.append({"class": mapped, "bbox": bbox, "conf": conf, "frame_id": frame_id})
-                counts[mapped] = counts.get(mapped, 0) + 1
-                class_id = self.class_to_id.get(mapped)
-                if class_id is None:
-                    continue
-                try:
-                    masks, _, _ = self.predictor.predict(box=np.array(bbox), multimask_output=False)
-                except Exception:
-                    continue
-                if masks is None:
-                    continue
-                mask_bin = masks[0].astype(bool)
-                conf_val = conf if conf is not None else 0.5
-                update = mask_bin & (conf_val > conf_map)
-                mask[update] = class_id
-                conf_map[update] = conf_val
-                masks_total += 1
+                per_class_dets.setdefault(mapped, []).append((conf, bbox, prompt))
+
+            max_boxes_default = int(self.ctx.model_cfg.get("max_boxes_per_prompt") or 0)
+            min_box_size_default = float(self.ctx.model_cfg.get("min_box_size") or 0.0)
+            for cls, items in per_class_dets.items():
+                cfg = prompt_table.get(cls) or {}
+                score_thr = float(cfg.get("score_thr") or 0.0)
+                max_instances = int(cfg.get("max_instances") or 0) or max_boxes_default
+                min_box_size = float(cfg.get("min_box_size") or 0.0) or min_box_size_default
+                filtered = []
+                for conf, bbox, prompt in items:
+                    if conf is not None and conf < score_thr:
+                        continue
+                    if min_box_size > 0:
+                        if (bbox[2] - bbox[0]) < min_box_size or (bbox[3] - bbox[1]) < min_box_size:
+                            continue
+                    filtered.append((conf, bbox, prompt))
+                if max_instances > 0 and len(filtered) > max_instances:
+                    logging.warning("truncate %s boxes: %d -> %d", cls, len(filtered), max_instances)
+                    filtered = sorted(filtered, key=lambda x: x[0] or 0.0, reverse=True)[:max_instances]
+
+                for conf, bbox, prompt in filtered:
+                    dets.append({"class": cls, "bbox": bbox, "conf": conf, "frame_id": frame_id})
+                    counts[cls] = counts.get(cls, 0) + 1
+                    class_id = self.class_to_id.get(cls)
+                    if class_id is None:
+                        continue
+                    try:
+                        masks, _, _ = self.predictor.predict(box=np.array(bbox), multimask_output=False)
+                    except Exception:
+                        continue
+                    if masks is None:
+                        continue
+                    mask_bin = masks[0].astype(bool)
+                    conf_val = conf if conf is not None else 0.5
+                    update = mask_bin & (conf_val > conf_map)
+                    mask[update] = class_id
+                    conf_map[update] = conf_val
+                    masks_total += 1
 
             _save_mask(seg_dir / f"{img_path.stem}_seg.png", mask)
             (det_dir / f"{img_path.stem}_det.json").write_text(json.dumps(dets, indent=2), encoding="utf-8")
@@ -523,7 +628,113 @@ class GroundedSam2Provider(_DinoSam2Base):
 
 @register_provider("gdino_sam2")
 class GdinoSam2Provider(_DinoSam2Base):
-    pass
+    def __init__(self, ctx: ProviderContext) -> None:
+        super().__init__(ctx)
+        self.backend_status = "unknown"
+        self.fallback_used = False
+        self.fallback_from = "gdino_sam2_v1"
+        self.fallback_to = ""
+        self.backend_reason = ""
+
+    def load(self) -> None:
+        backend_mode = str(self.ctx.model_cfg.get("backend") or "auto").lower()
+        download_cfg = self.ctx.model_cfg.get("download") or {}
+        repo_id = self.ctx.model_cfg.get("dino_repo_id") or download_cfg.get("repo")
+        revision = self.ctx.model_cfg.get("dino_revision") or "main"
+        local_dir = self.ctx.model_cfg.get("dino_weights_path")
+        local_dir = Path(local_dir) if local_dir else None
+        filename = self.ctx.model_cfg.get("dino_filename")
+
+        if backend_mode == "real":
+            if not local_dir or not local_dir.exists():
+                self.backend_status = "unavailable"
+                self.backend_reason = "weights_not_found"
+                raise RuntimeError("gdino weights not found for real backend")
+            if filename and not (local_dir / filename).exists():
+                self.backend_status = "unavailable"
+                self.backend_reason = "weights_not_found"
+                raise RuntimeError("gdino weights file missing for real backend")
+            self.backend_status = "real"
+            self.fallback_used = False
+            self.backend_reason = ""
+            self.processor, self.model, self.prompts, self.class_map, self.class_to_id = _load_dino_components(
+                self.ctx, repo_id=repo_id, revision=revision, local_dir=local_dir
+            )
+            try:
+                from sam2.build_sam import build_sam2
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+            except Exception as exc:
+                self.backend_status = "unavailable"
+                self.backend_reason = "missing_dependency"
+                raise RuntimeError(f"missing sam2: {exc}") from exc
+            sam2_cfg = (download_cfg.get("sam2_model_cfg") or "")
+            sam2_cfg = str(sam2_cfg)
+            if "sam2/configs/" in sam2_cfg:
+                sam2_cfg = "configs/" + sam2_cfg.split("sam2/configs/", 1)[1]
+            elif sam2_cfg and not sam2_cfg.startswith("configs/"):
+                sam2_cfg = f"configs/{sam2_cfg}"
+            sam2_ckpt = _resolve_sam2_checkpoint(download_cfg, _ensure_cache_env())
+            sam2 = build_sam2(sam2_cfg, str(sam2_ckpt), device=self.ctx.device)
+            self.predictor = SAM2ImagePredictor(sam2)
+            return
+
+        try:
+            local_exists = local_dir and local_dir.exists()
+            self.processor, self.model, self.prompts, self.class_map, self.class_to_id = _load_dino_components(
+                self.ctx, repo_id=repo_id, revision=revision, local_dir=local_dir if local_exists else None
+            )
+            if backend_mode == "fallback":
+                self.backend_status = "fallback"
+                self.fallback_used = True
+                self.fallback_to = "gdino_sam2_v1@hub"
+                self.backend_reason = "forced_fallback"
+            elif local_exists:
+                self.backend_status = "real"
+                self.fallback_used = False
+            else:
+                self.backend_status = "fallback"
+                self.fallback_used = True
+                self.fallback_to = "gdino_sam2_v1@hub"
+                self.backend_reason = "weights_not_found"
+            try:
+                from sam2.build_sam import build_sam2
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+            except Exception as exc:
+                self.backend_status = "unavailable"
+                self.backend_reason = "missing_dependency"
+                raise RuntimeError(f"missing sam2: {exc}") from exc
+            sam2_cfg = (download_cfg.get("sam2_model_cfg") or "")
+            sam2_cfg = str(sam2_cfg)
+            if "sam2/configs/" in sam2_cfg:
+                sam2_cfg = "configs/" + sam2_cfg.split("sam2/configs/", 1)[1]
+            elif sam2_cfg and not sam2_cfg.startswith("configs/"):
+                sam2_cfg = f"configs/{sam2_cfg}"
+            sam2_ckpt = _resolve_sam2_checkpoint(download_cfg, _ensure_cache_env())
+            sam2 = build_sam2(sam2_cfg, str(sam2_ckpt), device=self.ctx.device)
+            self.predictor = SAM2ImagePredictor(sam2)
+        except Exception as exc:
+            if backend_mode == "fallback":
+                self.backend_status = "fallback"
+                self.fallback_used = True
+                self.fallback_to = "gdino_sam2_v1@hub"
+                self.backend_reason = "runtime_error"
+                raise RuntimeError(f"gdino fallback failed: {exc}") from exc
+            self.backend_status = "unavailable"
+            self.backend_reason = "runtime_error"
+            raise
+
+    def infer(self, images: List[Any], out_dir: Path, debug_dir: Optional[Path] = None) -> dict:
+        report = super().infer(images, out_dir, debug_dir=debug_dir)
+        report.update(
+            {
+                "backend_status": self.backend_status,
+                "fallback_used": self.fallback_used,
+                "fallback_from": self.fallback_from,
+                "fallback_to": self.fallback_to,
+                "backend_reason": self.backend_reason,
+            }
+        )
+        return report
 
 
 @register_provider("sam3")

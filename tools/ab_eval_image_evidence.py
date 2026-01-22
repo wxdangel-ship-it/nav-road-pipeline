@@ -89,11 +89,35 @@ def _format_provider_name(pid: str, backend: dict) -> str:
     return pid
 
 
+def _build_conclusions(base_id: str, cand_id: str, stats: dict) -> List[str]:
+    base = stats.get(base_id, {})
+    cand = stats.get(cand_id, {})
+    base_counts = base.get("det_counts") or {}
+    cand_counts = cand.get("det_counts") or {}
+    base_area = base.get("mask_area_p50") or {}
+    cand_area = cand.get("mask_area_p50") or {}
+    classes = set(base_counts.keys()) | set(cand_counts.keys()) | set(base_area.keys()) | set(cand_area.keys())
+    diffs = []
+    for cls in classes:
+        dc = (cand_counts.get(cls) or 0) - (base_counts.get(cls) or 0)
+        da = None
+        if cand_area.get(cls) is not None or base_area.get(cls) is not None:
+            da = (cand_area.get(cls) or 0) - (base_area.get(cls) or 0)
+        score = abs(dc) + (abs(da) if da is not None else 0)
+        diffs.append((score, cls, dc, da))
+    diffs = sorted(diffs, key=lambda x: x[0], reverse=True)[:3]
+    lines = []
+    for _, cls, dc, da in diffs:
+        da_str = "n/a" if da is None else f"{da:+.1f}"
+        lines.append(f"- {cls}: det_count {dc:+d}, mask_area_p50 {da_str}")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--run-dir", default="")
     ap.add_argument("--index", default="")
-    ap.add_argument("--providers", default="grounded_sam2_v1,gdino_sam2_v1,sam3_v1")
+    ap.add_argument("--providers", default="grounded_sam2_v1,gdino_sam2_v1")
     ap.add_argument("--seg-schema", default="configs/seg_schema.yaml")
     ap.add_argument("--out-dir", default="")
     ap.add_argument("--top-k", type=int, default=5)
@@ -295,6 +319,20 @@ def main() -> int:
             )
         )
     lines.append("")
+    if len(providers_for_eval) == 2:
+        base_id = providers_for_eval[0]
+        cand_id = providers_for_eval[1]
+        base_name = _format_provider_name(base_id, providers_backend.get(base_id) or {})
+        cand_name = _format_provider_name(cand_id, providers_backend.get(cand_id) or {})
+        lines.extend(
+            [
+                "## Key Conclusions",
+                f"- baseline: {base_name}",
+                f"- candidate: {cand_name}",
+            ]
+        )
+        lines.extend(_build_conclusions(base_id, cand_id, per_provider))
+        lines.append("")
     lines.append("## Per-Provider Summary")
     for provider in providers:
         stats = per_provider.get(provider, {})
