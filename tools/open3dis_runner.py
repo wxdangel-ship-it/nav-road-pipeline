@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 from shapely.geometry import MultiPoint
+from shapely.ops import unary_union
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -84,6 +85,7 @@ def main() -> int:
     ap.add_argument("--min-points", type=int, default=60)
     ap.add_argument("--grid-size", type=float, default=4.0)
     ap.add_argument("--max-instances", type=int, default=6)
+    ap.add_argument("--min-area-m2", type=float, default=1.0)
     ap.add_argument("--z-min", type=float, default=-2.0)
     ap.add_argument("--z-max", type=float, default=2.5)
     args = ap.parse_args()
@@ -100,7 +102,7 @@ def main() -> int:
     whitelist = [c.strip() for c in args.class_whitelist.split(",") if c.strip()]
 
     rows = _load_jsonl(jobs_path)
-    out_lines = []
+    instances: Dict[str, dict] = {}
     err_lines = []
 
     for row in rows:
@@ -148,23 +150,46 @@ def main() -> int:
             hull = MultiPoint(pts[idxs, :2]).convex_hull
             if hull.is_empty:
                 continue
-            instance_id = f"{drive_id}_{label}_{cell[0]}_{cell[1]}"
-            record = {
-                "geometry_wkt": hull.wkt,
-                "properties": {
+            if float(hull.area) < args.min_area_m2:
+                continue
+            instance_id = f"{drive_id}_{label}_cell_{cell[0]}_{cell[1]}"
+            info = instances.get(instance_id)
+            if info is None:
+                info = {
                     "instance_id": instance_id,
                     "label": label,
-                    "score": 0.5,
-                    "frames_hit": 1,
-                    "points_count": int(idxs.size),
                     "drive_id": drive_id,
-                    "frame_id": frame_id,
-                    "evidence_strength": "strong",
-                    "backend_status": "real",
-                },
-            }
-            out_lines.append(json.dumps(record))
+                    "frames": set(),
+                    "geoms": [],
+                    "points_count": 0,
+                }
+                instances[instance_id] = info
+            info["frames"].add(frame_id)
+            info["geoms"].append(hull)
+            info["points_count"] += int(idxs.size)
             instance_count += 1
+
+    out_lines = []
+    for instance_id, info in instances.items():
+        geom = unary_union(info["geoms"]) if info["geoms"] else None
+        if geom is None or geom.is_empty:
+            continue
+        frames = sorted(info["frames"])
+        record = {
+            "geometry_wkt": geom.wkt,
+            "properties": {
+                "instance_id": instance_id,
+                "label": info["label"],
+                "score": 0.5,
+                "frames_hit": len(info["frames"]),
+                "points_count": int(info["points_count"]),
+                "drive_id": info["drive_id"],
+                "frame_id": frames[0] if frames else "",
+                "evidence_strength": "strong",
+                "backend_status": "real",
+            },
+        }
+        out_lines.append(json.dumps(record))
 
     out_path.write_text("\n".join(out_lines), encoding="utf-8")
     err_path.write_text("\n".join(err_lines), encoding="utf-8")

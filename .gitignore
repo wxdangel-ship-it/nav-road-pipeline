@@ -225,6 +225,8 @@ data/
 
 # local cache
 cache/
+pip-*/
+tmp*/
 
 
 # backups

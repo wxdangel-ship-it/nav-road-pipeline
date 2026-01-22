@@ -166,7 +166,7 @@ def main() -> int:
             if road_path:
                 road_gdf = _load_road_polygon(road_path)
                 if road_gdf is not None and not road_gdf.empty:
-                    road_geom = road_gdf.unary_union
+                    road_geom = road_gdf.geometry.union_all()
         stats = _collect_stats(map_path, road_geom)
         total = sum(int(v.get("count") or 0) for v in stats.values())
         report_lines.append(f"- {drive}: total={total}")
@@ -183,7 +183,7 @@ def main() -> int:
             if road_path:
                 road_gdf = _load_road_polygon(road_path)
                 if road_gdf is not None and not road_gdf.empty:
-                    road_geom = road_gdf.unary_union
+                    road_geom = road_gdf.geometry.union_all()
         stats = _collect_stats(map_path, road_geom)
         for cls, row in stats.items():
             report_lines.extend(
