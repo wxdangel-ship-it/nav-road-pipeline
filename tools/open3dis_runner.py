@@ -73,6 +73,71 @@ def _bin_points(points_xy: np.ndarray, grid_size: float) -> Dict[Tuple[int, int]
     return {cell: np.array(idxs, dtype=int) for cell, idxs in cells.items()}
 
 
+def _centroid_of_geoms(geoms: List) -> Tuple[float, float]:
+    xs = []
+    ys = []
+    for geom in geoms:
+        try:
+            c = geom.centroid
+        except Exception:
+            continue
+        xs.append(float(c.x))
+        ys.append(float(c.y))
+    if not xs:
+        return 0.0, 0.0
+    return float(np.mean(xs)), float(np.mean(ys))
+
+
+def _merge_instances(instances: Dict[str, dict], merge_radius_m: float) -> Dict[str, dict]:
+    if merge_radius_m <= 0:
+        return instances
+
+    grouped: Dict[Tuple[str, str], List[dict]] = {}
+    for info in instances.values():
+        key = (info.get("drive_id", ""), info.get("label", "unknown"))
+        grouped.setdefault(key, []).append(info)
+
+    merged: Dict[str, dict] = {}
+    for (drive_id, label), items in grouped.items():
+        clusters: List[dict] = []
+        for info in sorted(items, key=lambda r: r.get("instance_id", "")):
+            centroid = _centroid_of_geoms(info.get("geoms", []))
+            assigned = False
+            for cluster in clusters:
+                dist = float(np.hypot(centroid[0] - cluster["centroid"][0], centroid[1] - cluster["centroid"][1]))
+                if dist <= merge_radius_m:
+                    cluster["members"].append(info)
+                    n = float(len(cluster["members"]))
+                    cluster["centroid"] = (
+                        (cluster["centroid"][0] * (n - 1) + centroid[0]) / n,
+                        (cluster["centroid"][1] * (n - 1) + centroid[1]) / n,
+                    )
+                    assigned = True
+                    break
+            if not assigned:
+                clusters.append({"centroid": centroid, "members": [info]})
+
+        for idx, cluster in enumerate(clusters):
+            instance_id = f"{drive_id}_{label}_cluster_{idx}"
+            frames = {}
+            geoms = []
+            points_count = 0
+            for member in cluster["members"]:
+                frames.update(member.get("frames", {}))
+                geoms.extend(member.get("geoms", []))
+                points_count += int(member.get("points_count", 0))
+            merged[instance_id] = {
+                "instance_id": instance_id,
+                "label": label,
+                "drive_id": drive_id,
+                "frames": frames,
+                "geoms": geoms,
+                "points_count": points_count,
+            }
+
+    return merged
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-root", required=True)
@@ -86,6 +151,7 @@ def main() -> int:
     ap.add_argument("--grid-size", type=float, default=4.0)
     ap.add_argument("--max-instances", type=int, default=6)
     ap.add_argument("--min-area-m2", type=float, default=1.0)
+    ap.add_argument("--merge-radius-m", type=float, default=0.0)
     ap.add_argument("--z-min", type=float, default=-2.0)
     ap.add_argument("--z-max", type=float, default=2.5)
     args = ap.parse_args()
@@ -168,6 +234,8 @@ def main() -> int:
             info["geoms"].append(hull)
             info["points_count"] += int(idxs.size)
             instance_count += 1
+
+    instances = _merge_instances(instances, float(args.merge_radius_m))
 
     out_lines = []
     for instance_id, info in instances.items():

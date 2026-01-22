@@ -204,6 +204,8 @@ class Open3DISProvider(BaseLidarProvider):
             str(cfg.get("max_instances_per_frame", 6)),
             "--min-area-m2",
             str(cfg.get("min_area_m2", 1.0)),
+            "--merge-radius-m",
+            str(cfg.get("merge_radius_m", 0.0)),
             "--z-min",
             str(cfg.get("z_min", -2.0)),
             "--z-max",
