@@ -68,6 +68,12 @@ def _ensure_wgs84_range(gdf: gpd.GeoDataFrame) -> bool:
     return -180.0 <= minx <= 180.0 and -180.0 <= maxx <= 180.0 and -90.0 <= miny <= 90.0 and -90.0 <= maxy <= 90.0
 
 
+def _percentile(values: List[float], p: float) -> float:
+    if not values:
+        return 0.0
+    return float(np.percentile(np.asarray(values, dtype=float), p))
+
+
 def _read_map_evidence(path: Path) -> Dict[str, gpd.GeoDataFrame]:
     layers = []
     out = {}
@@ -93,6 +99,12 @@ def _read_map_evidence(path: Path) -> Dict[str, gpd.GeoDataFrame]:
         except Exception:
             continue
     return out
+
+
+def _load_yaml(path: Path) -> dict:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
 def _write_gpkg_layers(path: Path, layers: Dict[str, gpd.GeoDataFrame], crs: str) -> None:
@@ -183,6 +195,139 @@ def _cluster_geoms(gdf: gpd.GeoDataFrame, buffer_m: float) -> List[Polygon]:
     return []
 
 
+def _line_direction_deg(geom: LineString) -> Optional[float]:
+    coords = np.array(geom.coords, dtype=float)
+    if coords.shape[0] < 2:
+        return None
+    mean = coords.mean(axis=0)
+    cov = np.cov((coords - mean).T)
+    vals, vecs = np.linalg.eig(cov)
+    idx = int(np.argmax(vals))
+    direction = vecs[:, idx]
+    angle = float(np.degrees(np.arctan2(direction[1], direction[0])))
+    if angle < 0:
+        angle += 180.0
+    return angle
+
+
+def _angle_diff_deg(a: float, b: float) -> float:
+    diff = abs(a - b) % 180.0
+    return min(diff, 180.0 - diff)
+
+
+def _line_endpoints(geom: LineString) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    coords = list(geom.coords)
+    return (coords[0][0], coords[0][1]), (coords[-1][0], coords[-1][1])
+
+
+def _min_endpoint_gap(a: LineString, b: LineString) -> float:
+    a0, a1 = _line_endpoints(a)
+    b0, b1 = _line_endpoints(b)
+    pairs = [(a0, b0), (a0, b1), (a1, b0), (a1, b1)]
+    return min(float(np.hypot(p[0][0] - p[1][0], p[0][1] - p[1][1])) for p in pairs)
+
+
+def _aggregate_lines(
+    gdf: gpd.GeoDataFrame,
+    max_merge_dist_m: float,
+    max_gap_m: float,
+    max_angle_diff_deg: float,
+    min_length_m: float,
+    simplify_tol_m: float,
+) -> gpd.GeoDataFrame:
+    if gdf.empty:
+        return gdf
+    gdf = gdf.copy()
+    if simplify_tol_m > 0:
+        gdf["geometry"] = gdf["geometry"].apply(lambda g: g.simplify(simplify_tol_m) if g is not None else g)
+
+    lines = []
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        if isinstance(geom, LineString):
+            lines.append((geom, row))
+        elif isinstance(geom, MultiLineString):
+            for part in geom.geoms:
+                lines.append((part, row))
+    if not lines:
+        return gpd.GeoDataFrame(columns=gdf.columns, geometry=[], crs=gdf.crs)
+
+    geoms = [item[0] for item in lines]
+    directions = [(_line_direction_deg(g) if g.length > 0 else None) for g in geoms]
+    centers = [g.interpolate(0.5, normalized=True) for g in geoms]
+
+    try:
+        from shapely.strtree import STRtree
+
+        tree = STRtree(geoms)
+        geom_id = {id(g): idx for idx, g in enumerate(geoms)}
+    except Exception:
+        tree = None
+        geom_id = {}
+
+    parent = list(range(len(geoms)))
+
+    def _find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def _union(i: int, j: int) -> None:
+        ri = _find(i)
+        rj = _find(j)
+        if ri != rj:
+            parent[rj] = ri
+
+    for i, geom in enumerate(geoms):
+        if directions[i] is None:
+            continue
+        candidates = []
+        if tree is not None:
+            query_geom = geom.buffer(max_merge_dist_m + max_gap_m)
+            for cand in tree.query(query_geom):
+                idx = geom_id.get(id(cand))
+                if idx is not None:
+                    candidates.append(idx)
+        else:
+            candidates = list(range(len(geoms)))
+        for j in candidates:
+            if j <= i:
+                continue
+            if directions[j] is None:
+                continue
+            if _angle_diff_deg(directions[i], directions[j]) > max_angle_diff_deg:
+                continue
+            mid_dist = centers[i].distance(centers[j])
+            if mid_dist <= max_merge_dist_m or _min_endpoint_gap(geoms[i], geoms[j]) <= max_gap_m:
+                _union(i, j)
+
+    clusters: Dict[int, List[int]] = {}
+    for idx in range(len(geoms)):
+        root = _find(idx)
+        clusters.setdefault(root, []).append(idx)
+
+    merged_rows = []
+    for indices in clusters.values():
+        cluster_geoms = [geoms[i] for i in indices]
+        merged = linemerge(cluster_geoms)
+        if isinstance(merged, MultiLineString):
+            merged = linemerge(list(merged.geoms))
+        if merged is None or merged.is_empty:
+            continue
+        if merged.length < min_length_m:
+            continue
+        base_row = lines[indices[0]][1].copy()
+        base_row.geometry = merged
+        merged_rows.append(base_row)
+
+    if not merged_rows:
+        return gpd.GeoDataFrame(columns=gdf.columns, geometry=[], crs=gdf.crs)
+    return gpd.GeoDataFrame(merged_rows, geometry="geometry", crs=gdf.crs)
+
+
 def _entity_id(prefix: str, idx: int) -> str:
     return f"{prefix}_{idx:04d}"
 
@@ -230,6 +375,7 @@ def _build_entities_from_clusters(
                 "geometry": geom,
                 "properties": {
                     "entity_id": _entity_id(f"{drive_id}_{entity_type}", idx),
+                    "drive_id": drive_id,
                     "entity_type": entity_type,
                     "confidence": 0.7 if evidence_sources.get("image") else 0.5,
                     "evidence_sources": json.dumps(evidence_sources, ensure_ascii=True),
@@ -243,12 +389,56 @@ def _build_entities_from_clusters(
     return entities
 
 
+def _gdf_from_entities(feats: List[dict], crs: str) -> gpd.GeoDataFrame:
+    if not feats:
+        return gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs=crs)
+    rows = [feat["properties"] for feat in feats]
+    geoms = [feat["geometry"] for feat in feats]
+    return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
+
+
+def _line_stats_by_drive(gdf: gpd.GeoDataFrame) -> Dict[str, dict]:
+    if gdf.empty:
+        return {}
+    if "drive_id" not in gdf.columns:
+        gdf = gdf.copy()
+
+        def _infer_drive_id(row: pd.Series) -> str:
+            entity_id = str(row.get("entity_id") or "")
+            entity_type = str(row.get("entity_type") or "")
+            if entity_type and f"_{entity_type}_" in entity_id:
+                return entity_id.split(f"_{entity_type}_")[0]
+            parts = entity_id.split("_")
+            return "_".join(parts[:-1]) if len(parts) > 1 else ""
+
+        gdf["drive_id"] = gdf.apply(_infer_drive_id, axis=1)
+    stats = {}
+    for drive_id, group in gdf.groupby("drive_id"):
+        lengths = [float(geom.length) for geom in group.geometry if geom is not None and not geom.is_empty]
+        stats[str(drive_id)] = {
+            "segments": int(len(group)),
+            "length_p50": _percentile(lengths, 50),
+            "length_p90": _percentile(lengths, 90),
+        }
+    return stats
+
+
+def _format_stats(stats: Dict[str, dict]) -> List[str]:
+    lines = []
+    for drive_id, row in stats.items():
+        lines.append(
+            f"- {drive_id}: segments={row.get('segments')} length_p50={row.get('length_p50')} length_p90={row.get('length_p90')}"
+        )
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", required=True)
     ap.add_argument("--image-run", required=True)
     ap.add_argument("--image-provider", default="grounded_sam2_v1")
     ap.add_argument("--image-evidence-gpkg", default="")
+    ap.add_argument("--config", default="configs/road_entities.yaml")
     ap.add_argument("--road-root", required=True)
     ap.add_argument("--out-dir", default="")
     ap.add_argument("--lidar-grid-m", type=float, default=0.5)
@@ -288,6 +478,11 @@ def main() -> int:
     image_evidence_all = {}
     if image_evidence_gpkg and image_evidence_gpkg.exists():
         image_evidence_all = _read_map_evidence(image_evidence_gpkg)
+
+    cfg_path = Path(args.config)
+    cfg = _load_yaml(cfg_path) if cfg_path.exists() else {}
+    lane_cfg = cfg.get("lane_marking", {})
+    stop_cfg = cfg.get("stop_line", {})
 
     image_layers_all: Dict[str, List[gpd.GeoDataFrame]] = {
         "lane_marking_img": [],
@@ -480,6 +675,7 @@ def main() -> int:
             layer_key: str,
             entity_type: str,
             line_merge: bool,
+            agg_cfg: dict,
         ) -> None:
             gdf_list = image_layers_drive.get(layer_key, [])
             if not gdf_list:
@@ -487,6 +683,14 @@ def main() -> int:
             gdf = gpd.GeoDataFrame(pd.concat(gdf_list, ignore_index=True), geometry="geometry", crs="EPSG:32632")
             if line_merge:
                 gdf = _to_lines(gdf, args.line_min_length_m)
+                gdf = _aggregate_lines(
+                    gdf,
+                    max_merge_dist_m=float(agg_cfg.get("max_merge_dist_m", 1.2)),
+                    max_gap_m=float(agg_cfg.get("max_gap_m", 2.5)),
+                    max_angle_diff_deg=float(agg_cfg.get("max_angle_diff_deg", 15.0)),
+                    min_length_m=float(agg_cfg.get("min_length_m", 3.0)),
+                    simplify_tol_m=float(agg_cfg.get("simplify_tol_m", 0.2)),
+                )
             clusters = _cluster_geoms(gdf, args.cluster_buffer_m)
             entities = _build_entities_from_clusters(
                 gdf,
@@ -500,9 +704,9 @@ def main() -> int:
             )
             entity_layers[entity_type + ("_line" if line_merge else "_poly")].extend(entities)
 
-        _make_entities_for_class("lane_marking_img", "lane_marking", True)
-        _make_entities_for_class("stop_line_img", "stop_line", True)
-        _make_entities_for_class("crosswalk_img", "crosswalk", False)
+        _make_entities_for_class("lane_marking_img", "lane_marking", True, lane_cfg)
+        _make_entities_for_class("stop_line_img", "stop_line", True, stop_cfg)
+        _make_entities_for_class("crosswalk_img", "crosswalk", False, {})
 
         if road_poly is not None and not road_poly.is_empty:
             evidence_sources = {"image": image_present, "lidar": bool(lidar_points), "aerial": False}
@@ -566,14 +770,6 @@ def main() -> int:
                     "entity_ids": json.dumps(sorted(set(entity_ids)), ensure_ascii=True),
                 }
             )
-
-    def _gdf_from_entities(feats: List[dict], crs: str) -> gpd.GeoDataFrame:
-        if not feats:
-            return gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs=crs)
-        rows = [feat["properties"] for feat in feats]
-        geoms = [feat["geometry"] for feat in feats]
-        return gpd.GeoDataFrame(rows, geometry=geoms, crs=crs)
-
     entity_layers_gdf = {
         "road_surface_poly": _gdf_from_entities(entity_layers["road_surface_poly"], "EPSG:32632"),
         "lane_marking_line": _gdf_from_entities(entity_layers["lane_marking_line"], "EPSG:32632"),
@@ -645,6 +841,14 @@ def main() -> int:
     if lidar_rasters:
         report_lines.append(f"- lidar_rasters: {', '.join(sorted(set(lidar_rasters)))}")
     report_lines.append("")
+    report_lines.append("## Fragmentation Stats (After)")
+    lane_stats = _line_stats_by_drive(entity_layers_gdf["lane_marking_line"])
+    stop_stats = _line_stats_by_drive(entity_layers_gdf["stop_line_line"])
+    report_lines.append("### lane_marking")
+    report_lines.extend(_format_stats(lane_stats))
+    report_lines.append("### stop_line")
+    report_lines.extend(_format_stats(stop_stats))
+    report_lines.append("")
     report_lines.append("## Needs Review (Top 10)")
     needs_review = []
     for layer_name, feats in entity_layers.items():
@@ -656,6 +860,29 @@ def main() -> int:
     if not needs_review:
         report_lines.append("- none")
     report_lines.append("")
+
+    baseline_path = outputs_dir.parent / "baseline_road_entities_utm32.gpkg"
+    if not baseline_path.exists():
+        run_baseline = Path("runs") / "road_entities_baseline_utm32.gpkg"
+        if run_baseline.exists():
+            baseline_path = run_baseline
+    if baseline_path.exists():
+        try:
+            base_layers = _read_map_evidence(baseline_path)
+            report_lines.append("## Fragmentation Stats (Before)")
+            base_lane = base_layers.get("lane_marking_line")
+            base_stop = base_layers.get("stop_line_line")
+            if base_lane is not None:
+                base_lane_stats = _line_stats_by_drive(base_lane)
+                report_lines.append("### lane_marking")
+                report_lines.extend(_format_stats(base_lane_stats))
+            if base_stop is not None:
+                base_stop_stats = _line_stats_by_drive(base_stop)
+                report_lines.append("### stop_line")
+                report_lines.extend(_format_stats(base_stop_stats))
+            report_lines.append("")
+        except Exception as exc:
+            report_lines.append(f"- baseline_read_failed: {exc}")
     (outputs_dir / "road_entities_report.md").write_text("\n".join(report_lines), encoding="utf-8")
 
     log.info("road entities written: %s", outputs_dir)
