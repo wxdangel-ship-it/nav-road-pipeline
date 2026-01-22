@@ -133,6 +133,11 @@ def _build_feature_store_map(
     out_store: Path,
     camera: str,
     max_frames: int,
+    map_mode: str,
+    map_min_points: str,
+    map_min_length: str,
+    map_line_buffer: str,
+    debug_root: str,
 ) -> int:
     cmd = [
         sys.executable,
@@ -145,9 +150,19 @@ def _build_feature_store_map(
         str(out_store),
         "--camera",
         camera,
+        "--map-mode",
+        map_mode,
+        "--min-points",
+        map_min_points,
+        "--min-length",
+        map_min_length,
+        "--line-buffer-px",
+        map_line_buffer,
     ]
     if max_frames and max_frames > 0:
         cmd.extend(["--max-frames", str(max_frames)])
+    if debug_root:
+        cmd.extend(["--debug-root", debug_root])
     proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
     return proc.returncode
 
@@ -441,6 +456,10 @@ def main() -> int:
             if fs_map_root.exists() and not args.resume:
                 _safe_rmtree(fs_map_root)
             fs_map_root.mkdir(parents=True, exist_ok=True)
+            map_mode = os.environ.get("MAP_MODE", "auto")
+            map_min_points = os.environ.get("MAP_MIN_POINTS", "10")
+            map_min_length = os.environ.get("MAP_MIN_LENGTH", "2.0")
+            map_line_buffer = os.environ.get("MAP_LINE_BUFFER_PX", "2.0")
             for drive_id, frames in by_drive.items():
                 camera = frames[0].camera if frames else "image_00"
                 code = _build_feature_store_map(
@@ -449,6 +468,11 @@ def main() -> int:
                     fs_map_root,
                     camera,
                     args.max_frames,
+                    map_mode=map_mode,
+                    map_min_points=map_min_points,
+                    map_min_length=map_min_length,
+                    map_line_buffer=map_line_buffer,
+                    debug_root=str(out_run / "debug" / provider_id),
                 )
                 if code != 0:
                     log.warning("feature_store_map failed: provider=%s drive=%s", provider_id, drive_id)

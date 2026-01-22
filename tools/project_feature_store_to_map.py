@@ -2,145 +2,33 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
+import numpy as np
 import geopandas as gpd
 import pandas as pd
+from shapely.geometry import LineString, MultiPoint, Point, Polygon
+from shapely.ops import unary_union
+
 try:
     import pyogrio
 except Exception:
     pyogrio = None
-import numpy as np
-from pyproj import Transformer
-from shapely.geometry import LineString, Polygon
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.build_geom import _find_oxts_dir, _load_kitti360_calib
+from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_pose
 
 
-def _read_oxts_frame(oxts_dir: Path, frame_id: str) -> Optional[Tuple[float, float, float]]:
-    path = oxts_dir / f"{frame_id}.txt"
-    if not path.exists():
-        return None
-    parts = path.read_text(encoding="utf-8").strip().split()
-    if len(parts) < 6:
-        return None
-    lat = float(parts[0])
-    lon = float(parts[1])
-    yaw = float(parts[5])
-    return lat, lon, yaw
-
-
-def _utm32_transform():
-    return Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
-
-
-def _pixel_to_world(
-    u: float,
-    v: float,
-    k: np.ndarray,
-    r_rect: np.ndarray,
-    cam_to_velo: np.ndarray,
-    pose_xy: Tuple[float, float],
-    yaw: float,
-) -> Optional[Tuple[float, float]]:
-    fx, fy = k[0, 0], k[1, 1]
-    cx, cy = k[0, 2], k[1, 2]
-    if fx == 0 or fy == 0:
-        return None
-    dir_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
-    r_rect_inv = np.linalg.inv(r_rect)
-    dir_cam = r_rect_inv.dot(dir_cam)
-    dir_velo = cam_to_velo[:3, :3].dot(dir_cam)
-    c = float(np.cos(yaw))
-    s = float(np.sin(yaw))
-    r_yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
-    dir_world = r_yaw.dot(dir_velo)
-    cam_offset = cam_to_velo[:3, 3]
-    origin_z = -float(cam_offset[2])
-    origin = np.array(
-        [pose_xy[0] + c * cam_offset[0] - s * cam_offset[1], pose_xy[1] + s * cam_offset[0] + c * cam_offset[1], origin_z],
-        dtype=float,
-    )
-    if dir_world[2] >= -1e-6:
-        return None
-    t = -origin[2] / dir_world[2]
-    if t <= 0:
-        return None
-    hit = origin + t * dir_world
-    return float(hit[0]), float(hit[1])
-
-
-def _project_coords(
-    coords: Iterable[Tuple[float, float]],
-    k: np.ndarray,
-    r_rect: np.ndarray,
-    cam_to_velo: np.ndarray,
-    pose_xy: Tuple[float, float],
-    yaw: float,
-) -> list[Tuple[float, float]]:
-    out = []
-    for u, v in coords:
-        pt = _pixel_to_world(u, v, k, r_rect, cam_to_velo, pose_xy, yaw)
-        if pt is not None:
-            out.append(pt)
-    return out
-
-
-def _project_geometry(
-    geom,
-    k: np.ndarray,
-    r_rect: np.ndarray,
-    cam_to_velo: np.ndarray,
-    pose_xy: Tuple[float, float],
-    yaw: float,
-):
-    if geom is None or geom.is_empty:
-        return None
-    if geom.geom_type == "LineString":
-        coords = _project_coords(geom.coords, k, r_rect, cam_to_velo, pose_xy, yaw)
-        if len(coords) < 2:
-            return None
-        return LineString(coords)
-    if geom.geom_type == "Polygon":
-        coords = _project_coords(geom.exterior.coords, k, r_rect, cam_to_velo, pose_xy, yaw)
-        if len(coords) < 3:
-            return None
-        return Polygon(coords)
-    if geom.geom_type == "MultiLineString":
-        parts = []
-        for part in geom.geoms:
-            proj = _project_geometry(part, k, r_rect, cam_to_velo, pose_xy, yaw)
-            if proj is not None:
-                parts.append(proj)
-        if not parts:
-            return None
-        if len(parts) == 1:
-            return parts[0]
-        return LineString([pt for geom in parts for pt in geom.coords])
-    if geom.geom_type == "MultiPolygon":
-        parts = []
-        for part in geom.geoms:
-            proj = _project_geometry(part, k, r_rect, cam_to_velo, pose_xy, yaw)
-            if proj is not None:
-                parts.append(proj)
-        if not parts:
-            return None
-        return parts[0]
-    return None
-
-
-def _write_layers(gdf: gpd.GeoDataFrame, out_path: Path) -> None:
-    if gdf.empty:
-        return
-    for cls, sub in gdf.groupby("class"):
-        sub.to_file(out_path, layer=str(cls), driver="GPKG")
+def _setup_logger() -> logging.Logger:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    return logging.getLogger("project_feature_store_to_map")
 
 
 def _read_all_layers(path: Path) -> gpd.GeoDataFrame:
@@ -171,6 +59,212 @@ def _read_all_layers(path: Path) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(pd.concat(frames, ignore_index=True), geometry="geometry")
 
 
+def _find_velodyne_dir(data_root: Path, drive: str) -> Path:
+    candidates = [
+        data_root / "data_3d_raw" / drive / "velodyne_points" / "data",
+        data_root / "data_3d_raw" / drive / "velodyne_points" / "data" / "1",
+        data_root / drive / "velodyne_points" / "data",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    raise FileNotFoundError(f"missing_file:velodyne_dir:{drive}")
+
+
+def _resolve_velodyne_path(velodyne_dir: Path, frame_id: str) -> Optional[Path]:
+    direct = velodyne_dir / f"{frame_id}.bin"
+    if direct.exists():
+        return direct
+    if frame_id.isdigit():
+        pad = velodyne_dir / f"{int(frame_id):010d}.bin"
+        if pad.exists():
+            return pad
+    return None
+
+
+def _read_velodyne_points(path: Path) -> np.ndarray:
+    raw = np.fromfile(str(path), dtype=np.float32)
+    if raw.size % 4 != 0:
+        raw = raw[: raw.size - (raw.size % 4)]
+    return raw.reshape(-1, 4)
+
+
+def _velo_to_world(points: np.ndarray, pose_xy: Tuple[float, float], yaw: float) -> np.ndarray:
+    x = points[:, 0]
+    y = points[:, 1]
+    z = points[:, 2]
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    xw = c * x - s * y + pose_xy[0]
+    yw = s * x + c * y + pose_xy[1]
+    return np.stack([xw, yw, z], axis=1)
+
+
+def _project_velodyne_to_image(points: np.ndarray, calib: dict) -> Tuple[np.ndarray, np.ndarray]:
+    t_velo_to_cam = calib["t_velo_to_cam"]
+    r_rect = calib["r_rect"]
+    k = calib["k"]
+    homog = np.hstack([points[:, :3], np.ones((points.shape[0], 1), dtype=float)])
+    cam = (t_velo_to_cam @ homog.T).T
+    xyz = cam[:, :3]
+    xyz = (r_rect @ xyz.T).T
+    z = xyz[:, 2]
+    valid = z > 0.1
+    xyz = xyz[valid]
+    z = z[valid]
+    u = (k[0, 0] * xyz[:, 0] / z) + k[0, 2]
+    v = (k[1, 1] * xyz[:, 1] / z) + k[1, 2]
+    return np.stack([u, v], axis=1), valid
+
+
+def _pixel_to_world(u: float, v: float, calib: dict, pose_xy: Tuple[float, float], yaw: float) -> Optional[Tuple[float, float]]:
+    k = calib["k"]
+    r_rect = calib["r_rect"]
+    cam_to_velo = calib["t_cam_to_velo"]
+    fx, fy = k[0, 0], k[1, 1]
+    cx, cy = k[0, 2], k[1, 2]
+    if fx == 0 or fy == 0:
+        return None
+    dir_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+    r_rect_inv = np.linalg.inv(r_rect)
+    dir_cam = r_rect_inv.dot(dir_cam)
+    dir_velo = cam_to_velo[:3, :3].dot(dir_cam)
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    r_yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    dir_world = r_yaw.dot(dir_velo)
+    cam_offset = cam_to_velo[:3, 3]
+    origin_z = float(abs(cam_offset[2]))  # approximate camera height above ground
+    origin = np.array(
+        [
+            pose_xy[0] + c * cam_offset[0] - s * cam_offset[1],
+            pose_xy[1] + s * cam_offset[0] + c * cam_offset[1],
+            origin_z,
+        ],
+        dtype=float,
+    )
+    if dir_world[2] >= -1e-6:
+        return None
+    t = -origin[2] / dir_world[2]
+    if t <= 0:
+        return None
+    hit = origin + t * dir_world
+    return float(hit[0]), float(hit[1])
+
+
+def _project_geometry_ground_plane(geom, calib: dict, pose_xy: Tuple[float, float], yaw: float):
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type == "LineString":
+        coords = []
+        for u, v in geom.coords:
+            pt = _pixel_to_world(u, v, calib, pose_xy, yaw)
+            if pt is not None:
+                coords.append(pt)
+        if len(coords) < 2:
+            return None
+        return LineString(coords)
+    if geom.geom_type == "Polygon":
+        coords = []
+        for u, v in geom.exterior.coords:
+            pt = _pixel_to_world(u, v, calib, pose_xy, yaw)
+            if pt is not None:
+                coords.append(pt)
+        if len(coords) < 3:
+            return None
+        return Polygon(coords)
+    if geom.geom_type == "MultiLineString":
+        parts = []
+        for part in geom.geoms:
+            proj = _project_geometry_ground_plane(part, calib, pose_xy, yaw)
+            if proj is not None:
+                parts.append(proj)
+        if not parts:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        return LineString([pt for g in parts for pt in g.coords])
+    if geom.geom_type == "MultiPolygon":
+        parts = []
+        for part in geom.geoms:
+            proj = _project_geometry_ground_plane(part, calib, pose_xy, yaw)
+            if proj is not None:
+                parts.append(proj)
+        if not parts:
+            return None
+        return parts[0]
+    return None
+
+
+def _points_to_linestring(points: np.ndarray) -> Optional[LineString]:
+    if points.shape[0] < 2:
+        return None
+    coords = points[:, :2]
+    mean = coords.mean(axis=0)
+    cov = np.cov((coords - mean).T)
+    vals, vecs = np.linalg.eig(cov)
+    idx = int(np.argmax(vals))
+    direction = vecs[:, idx]
+    proj = (coords - mean) @ direction
+    order = np.argsort(proj)
+    line = LineString(coords[order].tolist())
+    return line
+
+
+def _points_to_geometry(points: np.ndarray, geom_type: str, min_length: float) -> Optional[object]:
+    if points.shape[0] == 0:
+        return None
+    if geom_type == "LineString":
+        line = _points_to_linestring(points)
+        if line is None or line.length < min_length:
+            return None
+        return line
+    if geom_type == "Polygon":
+        poly = MultiPoint(points[:, :2]).convex_hull
+        if poly.is_empty or (hasattr(poly, "area") and poly.area <= 0):
+            return None
+        return poly
+    return MultiPoint(points[:, :2])
+
+
+def _filter_points_in_geom(uv: np.ndarray, world_pts: np.ndarray, geom, line_buffer_px: float) -> np.ndarray:
+    if geom is None or geom.is_empty:
+        return np.empty((0, 3), dtype=float)
+    if geom.geom_type in {"LineString", "MultiLineString"} and line_buffer_px > 0:
+        geom = geom.buffer(line_buffer_px)
+    minx, miny, maxx, maxy = geom.bounds
+    mask = (
+        (uv[:, 0] >= minx)
+        & (uv[:, 0] <= maxx)
+        & (uv[:, 1] >= miny)
+        & (uv[:, 1] <= maxy)
+    )
+    if not np.any(mask):
+        return np.empty((0, 3), dtype=float)
+    idxs = np.where(mask)[0]
+    pts = []
+    for i in idxs:
+        if geom.contains(Point(float(uv[i, 0]), float(uv[i, 1]))):
+            pts.append(world_pts[i])
+    if not pts:
+        return np.empty((0, 3), dtype=float)
+    return np.asarray(pts, dtype=float)
+
+
+def _write_layers(path: Path, by_class: Dict[str, list]) -> None:
+    if path.exists():
+        path.unlink()
+    for cls, feats in by_class.items():
+        if not feats:
+            continue
+        gdf = gpd.GeoDataFrame(
+            [f["properties"] for f in feats],
+            geometry=[f["geometry"] for f in feats],
+            crs="EPSG:32632",
+        )
+        gdf.to_file(path, layer=cls, driver="GPKG")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--drive", required=True)
@@ -179,11 +273,20 @@ def main() -> int:
     ap.add_argument("--data-root", default="", help="KITTI-360 root (default=POC_DATA_ROOT)")
     ap.add_argument("--camera", default="image_00")
     ap.add_argument("--max-frames", type=int, default=0)
+    ap.add_argument("--map-mode", default="auto", choices=["lidar_project", "ground_plane", "auto"])
+    ap.add_argument("--min-points", type=int, default=10)
+    ap.add_argument("--min-length", type=float, default=2.0)
+    ap.add_argument("--line-buffer-px", type=float, default=2.0)
+    ap.add_argument("--resume", type=int, default=1)
+    ap.add_argument("--debug-root", default="")
+    ap.add_argument("--out-name", default="map_evidence_utm32.gpkg")
     args = ap.parse_args()
 
+    log = _setup_logger()
     data_root = Path(args.data_root) if args.data_root else Path(os.environ.get("POC_DATA_ROOT", ""))
     if not data_root.exists():
-        raise SystemExit("ERROR: POC_DATA_ROOT not set or invalid.")
+        log.error("POC_DATA_ROOT not set or invalid.")
+        return 2
 
     feature_store = Path(args.feature_store)
     out_store = Path(args.out_store)
@@ -191,30 +294,42 @@ def main() -> int:
 
     drive_dir = feature_store / args.drive
     if not drive_dir.exists():
-        raise SystemExit(f"ERROR: feature_store missing drive: {drive_dir}")
+        log.error("feature_store missing drive: %s", drive_dir)
+        return 3
 
-    oxts_dir = _find_oxts_dir(data_root, args.drive)
-    calib = _load_kitti360_calib(data_root, args.drive, args.camera)
-    p_rect = calib["p_rect"]
-    r_rect = calib["r_rect"][:3, :3]
-    cam_to_velo = np.linalg.inv(calib["t_velo_to_cam"])
-    k = p_rect[:3, :3]
-    ll_to_utm = _utm32_transform()
+    try:
+        calib = load_kitti360_calib(data_root, args.camera)
+    except Exception as exc:
+        log.error("calib load failed: %s", exc)
+        return 4
+
+    try:
+        velodyne_dir = _find_velodyne_dir(data_root, args.drive)
+    except Exception as exc:
+        log.warning("velodyne not available: %s", exc)
+        velodyne_dir = None
 
     frames = sorted([p for p in drive_dir.iterdir() if p.is_dir()])
     if args.max_frames > 0:
         frames = frames[: args.max_frames]
 
-    counts = {}
-    frames_with = {}
+    by_class_all: Dict[str, list] = {}
+    errors = []
+    debug_samples: Dict[str, list] = {}
+
     for frame_dir in frames:
         frame_id = frame_dir.name
-        pose = _read_oxts_frame(oxts_dir, frame_id)
-        if pose is None:
+        out_frame = out_store / args.drive / frame_id
+        out_frame.mkdir(parents=True, exist_ok=True)
+        out_path = out_frame / args.out_name
+        if args.resume and out_path.exists():
             continue
-        lat, lon, yaw = pose
-        x, y = ll_to_utm.transform(lon, lat)
-        pose_xy = (float(x), float(y))
+
+        try:
+            pose_xy = load_kitti360_pose(data_root, args.drive, frame_id)
+        except Exception as exc:
+            errors.append(f"{args.drive}:{frame_id}:pose:{exc}")
+            continue
 
         in_gpkg = frame_dir / "image_features.gpkg"
         in_geojson = frame_dir / "image_features.geojson"
@@ -227,40 +342,95 @@ def main() -> int:
         if gdf.empty:
             continue
 
-        mapped_rows = []
+        lidar_ok = False
+        uv = None
+        world_pts = None
+        if velodyne_dir is not None:
+            bin_path = _resolve_velodyne_path(velodyne_dir, frame_id)
+            if bin_path and bin_path.exists():
+                pts = _read_velodyne_points(bin_path)
+                world_pts = _velo_to_world(pts[:, :3], (pose_xy[0], pose_xy[1]), pose_xy[2])
+                uv, valid = _project_velodyne_to_image(pts[:, :3], calib)
+                world_pts = world_pts[valid]
+                lidar_ok = True
+
+        by_class: Dict[str, list] = {}
         for _, row in gdf.iterrows():
             props = dict(row.drop(labels=["geometry"], errors="ignore"))
             geom = row.geometry
-            frame = str(props.get("geometry_frame") or "image_px").lower()
-            if frame != "image_px":
-                mapped = geom
-            else:
-                mapped = _project_geometry(geom, k, r_rect, cam_to_velo, pose_xy, yaw)
+            cls = str(props.get("class") or "unknown")
+            geom_type = geom.geom_type
+            map_mode = args.map_mode
+            map_reason = ""
+            mapped = None
+            points_count = 0
+
+            if map_mode in {"lidar_project", "auto"} and lidar_ok:
+                pts = _filter_points_in_geom(uv, world_pts, geom, args.line_buffer_px)
+                points_count = int(pts.shape[0])
+                if points_count >= args.min_points:
+                    mapped = _points_to_geometry(pts, geom_type, args.min_length)
+                    map_mode = "lidar_project"
+                else:
+                    map_reason = "lidar_points_insufficient"
+                    if map_mode == "lidar_project":
+                        mapped = None
+            if mapped is None and map_mode in {"ground_plane", "auto"}:
+                mapped = _project_geometry_ground_plane(geom, calib, (pose_xy[0], pose_xy[1]), pose_xy[2])
+                if mapped is not None:
+                    map_mode = "ground_plane"
+                    if not map_reason:
+                        map_reason = "plane_assumed"
+
             if mapped is None or mapped.is_empty:
                 continue
-            props["geometry_frame"] = "map"
-            mapped_rows.append({**props, "geometry": mapped})
-            cls = str(props.get("class") or "unknown")
-            counts[cls] = counts.get(cls, 0) + 1
-            frames_with[cls] = frames_with.get(cls, 0) + 1
 
-        if not mapped_rows:
-            continue
-        out_frame = out_store / args.drive / frame_id
-        out_frame.mkdir(parents=True, exist_ok=True)
-        out_gpkg = out_frame / "image_features.gpkg"
-        out_gdf = gpd.GeoDataFrame(mapped_rows, geometry="geometry", crs="EPSG:32632")
-        _write_layers(out_gdf, out_gpkg)
+            props["geometry_frame"] = "map"
+            props["map_mode"] = map_mode
+            props["map_reason"] = map_reason
+            props["points_count"] = points_count
+            props["drive_id"] = props.get("drive_id") or args.drive
+            props["frame_id"] = props.get("frame_id") or frame_id
+            feat = {"geometry": mapped, "properties": props}
+            by_class.setdefault(cls, []).append(feat)
+            by_class_all.setdefault(cls, []).append(feat)
+
+            if args.debug_root:
+                debug_root = Path(args.debug_root)
+                overlay = debug_root / args.drive / f"{frame_id}_overlay.png"
+                if overlay.exists():
+                    debug_samples.setdefault(cls, []).append(
+                        {
+                            "drive_id": args.drive,
+                            "frame_id": frame_id,
+                            "class": cls,
+                            "points_count": points_count,
+                            "overlay": str(overlay),
+                        }
+                    )
+
+        _write_layers(out_path, by_class)
+
+    drive_root = out_store / args.drive
+    drive_root.mkdir(parents=True, exist_ok=True)
+    out_drive = drive_root / args.out_name
+    _write_layers(out_drive, by_class_all)
 
     index = {
         "drive_id": args.drive,
         "geometry_frame": "map",
-        "counts": counts,
-        "frames": frames_with,
+        "map_mode": args.map_mode,
+        "counts": {cls: len(feats) for cls, feats in by_class_all.items()},
     }
     (out_store / "index.json").write_text(json.dumps(index, indent=2), encoding="utf-8")
-    print(f"[FEATURE_STORE_MAP] wrote: {out_store}")
-    print(f"[FEATURE_STORE_MAP] counts: {counts}")
+
+    if debug_samples:
+        (drive_root / "map_debug_samples.json").write_text(json.dumps(debug_samples, indent=2), encoding="utf-8")
+
+    if errors:
+        (drive_root / "map_errors.txt").write_text("\n".join(errors), encoding="utf-8")
+
+    log.info("feature_store_map written: %s", out_drive)
     return 0
 
 
