@@ -33,6 +33,7 @@ models:
     min_area_m2: 1.0
     grid_cell_size_m: 4.0
     merge_radius_m: 8.0
+    min_frames_hit: 2
     max_instances_per_frame: 6
     z_min: -2.0
     z_max: 2.5

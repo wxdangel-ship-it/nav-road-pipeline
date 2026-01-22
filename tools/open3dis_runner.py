@@ -152,6 +152,7 @@ def main() -> int:
     ap.add_argument("--max-instances", type=int, default=6)
     ap.add_argument("--min-area-m2", type=float, default=1.0)
     ap.add_argument("--merge-radius-m", type=float, default=0.0)
+    ap.add_argument("--min-frames-hit", type=int, default=1)
     ap.add_argument("--z-min", type=float, default=-2.0)
     ap.add_argument("--z-max", type=float, default=2.5)
     args = ap.parse_args()
@@ -241,6 +242,8 @@ def main() -> int:
     for instance_id, info in instances.items():
         geom = unary_union(info["geoms"]) if info["geoms"] else None
         if geom is None or geom.is_empty:
+            continue
+        if len(info["frames"]) < args.min_frames_hit:
             continue
         frames = sorted(info["frames"].keys())
         centroids = [list(info["frames"][fid]) for fid in frames]
