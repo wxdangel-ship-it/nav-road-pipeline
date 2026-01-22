@@ -25,3 +25,19 @@ crosswalk:
 
 heading:
   cam_id: image_02
+
+gates:
+  road_buffer_m: 1.0
+  lane_marking_min_inside_ratio: 0.6
+  stop_line_min_inside_ratio: 0.5
+  crosswalk_min_inside_ratio: 0.5
+
+frames_hit:
+  lane_marking: 3
+  stop_line: 2
+  crosswalk: 2
+
+clustering:
+  lane_marking_eps_m: 5.0
+  stop_line_eps_m: 4.0
+  crosswalk_eps_m: 3.0

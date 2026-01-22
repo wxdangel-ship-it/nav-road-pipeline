@@ -1,0 +1,6 @@
+focus:
+  drives:
+    - 2013_05_28_drive_0000_sync
+  max_frames_per_drive: 50
+  stride: 1
+  include_top_crosswalk_drive: true
