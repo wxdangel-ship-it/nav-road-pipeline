@@ -593,6 +593,50 @@ def _filter_lines_by_heading(
     return gpd.GeoDataFrame(keep_rows, geometry="geometry", crs=gdf.crs)
 
 
+def _annotate_heading_for_lines(
+    gdf: gpd.GeoDataFrame,
+    heading_segments: List[Tuple[LineString, float]],
+    max_diff_deg: float,
+    mode: str,
+) -> gpd.GeoDataFrame:
+    if gdf.empty or not heading_segments:
+        gdf = gdf.copy()
+        gdf["heading_ok"] = True
+        gdf["heading_diff_deg"] = ""
+        return gdf
+    rows = []
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        if isinstance(geom, MultiLineString):
+            geom = linemerge(list(geom.geoms))
+            if geom is None or geom.is_empty:
+                continue
+        if not isinstance(geom, LineString):
+            continue
+        line_heading = _line_direction_deg(geom)
+        if line_heading is None:
+            continue
+        road_heading = _nearest_heading(heading_segments, geom)
+        if road_heading is None:
+            row = row.copy()
+            row["heading_ok"] = True
+            row["heading_diff_deg"] = ""
+            rows.append(row)
+            continue
+        diff = _angle_diff_deg(line_heading, road_heading)
+        if mode == "perpendicular":
+            diff = abs(diff - 90.0)
+        row = row.copy()
+        row["heading_diff_deg"] = diff
+        row["heading_ok"] = diff <= max_diff_deg
+        rows.append(row)
+    if not rows:
+        return gpd.GeoDataFrame(columns=gdf.columns, geometry=[], crs=gdf.crs)
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=gdf.crs)
+
+
 def _aggregate_lines(
     gdf: gpd.GeoDataFrame,
     max_merge_dist_m: float,
@@ -1372,9 +1416,21 @@ def main() -> int:
             )
             if gdf.empty:
                 return gdf
+            if line_merge:
+                heading_max = float(agg_cfg.get("heading_max_diff_deg", agg_cfg.get("max_angle_diff_deg", 15.0)))
+                mode = "parallel"
+                if entity_type == "stop_line":
+                    mode = "perpendicular"
+                if entity_type == "lane_marking":
+                    gdf = _annotate_heading_for_lines(gdf, heading_segments, heading_max, mode)
+                else:
+                    gdf = _filter_lines_by_heading(gdf, heading_segments, heading_max, mode)
             gdf = gdf.copy()
             gdf["entity_type"] = entity_type
-            gdf["qa_flag"] = "gated"
+            if "heading_ok" in gdf.columns:
+                gdf["qa_flag"] = gdf["heading_ok"].apply(lambda v: "gated" if v else "angle_mismatch")
+            else:
+                gdf["qa_flag"] = "gated"
             return gdf
 
         lane_min_ratio = float(gate_cfg.get("lane_marking_min_inside_ratio", 0.6))
@@ -1404,6 +1460,10 @@ def main() -> int:
         ) -> None:
             if gdf.empty:
                 return
+            if entity_type == "lane_marking" and "heading_ok" in gdf.columns:
+                gdf = gdf[gdf["heading_ok"]]
+                if gdf.empty:
+                    return
             clusters = _cluster_by_centroid(gdf, eps_m)
             entities = _build_entities_from_index_clusters(
                 gdf,
@@ -1604,7 +1664,8 @@ def main() -> int:
                         for layer_name, frames_list in frame_layers_drive.items():
                             for gdf in frames_list:
                                 matches = gdf[gdf["frame_id"] == frame_id]
-                                for geom in matches.geometry:
+                                for _, row in matches.iterrows():
+                                    geom = row.geometry
                                     pts = _geom_to_image_points(geom, pose, calib)
                                     if len(pts) < 2:
                                         continue
@@ -1613,7 +1674,9 @@ def main() -> int:
                                     elif layer_name == "stop_line_frame":
                                         gated_draw.line(pts, fill=(255, 0, 0, 200), width=3)
                                     elif layer_name == "lane_marking_frame":
-                                        gated_draw.line(pts, fill=(255, 255, 0, 200), width=2)
+                                        heading_ok = bool(row.get("heading_ok", True))
+                                        color = (255, 255, 0, 200) if heading_ok else (160, 160, 160, 200)
+                                        gated_draw.line(pts, fill=color, width=2)
                         gated_out = Image.alpha_composite(base_img, gated_overlay)
                         overlay_gated_path = str(qa_images_dir / f"{frame_id}_overlay_gated.png")
                         gated_out.save(overlay_gated_path)
