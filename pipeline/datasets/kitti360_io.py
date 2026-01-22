@@ -48,6 +48,58 @@ def load_kitti360_pose(data_root: Path, drive_id: str, frame_id: str) -> Tuple[f
     return float(x), float(y), float(yaw)
 
 
+def _find_velodyne_dir(data_root: Path, drive: str) -> Path:
+    candidates = [
+        data_root / "data_3d_raw" / drive / "velodyne_points" / "data",
+        data_root / "data_3d_raw" / drive / "velodyne_points" / "data" / "1",
+        data_root / drive / "velodyne_points" / "data",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    raise FileNotFoundError(f"missing_file:velodyne_dir:{drive}")
+
+
+def _resolve_velodyne_path(velodyne_dir: Path, frame_id: str) -> Optional[Path]:
+    direct = velodyne_dir / f"{frame_id}.bin"
+    if direct.exists():
+        return direct
+    if frame_id.isdigit():
+        pad = velodyne_dir / f"{int(frame_id):010d}.bin"
+        if pad.exists():
+            return pad
+    return None
+
+
+def _read_velodyne_points(path: Path) -> np.ndarray:
+    raw = np.fromfile(str(path), dtype=np.float32)
+    if raw.size % 4 != 0:
+        raw = raw[: raw.size - (raw.size % 4)]
+    return raw.reshape(-1, 4)
+
+
+def load_kitti360_lidar_points(data_root: Path, drive_id: str, frame_id: str) -> np.ndarray:
+    velodyne_dir = _find_velodyne_dir(data_root, drive_id)
+    bin_path = _resolve_velodyne_path(velodyne_dir, frame_id)
+    if bin_path is None or not bin_path.exists():
+        raise FileNotFoundError(f"missing_file:velodyne:{drive_id}:{frame_id}")
+    return _read_velodyne_points(bin_path)
+
+
+def load_kitti360_lidar_points_world(data_root: Path, drive_id: str, frame_id: str) -> np.ndarray:
+    points = load_kitti360_lidar_points(data_root, drive_id, frame_id)
+    if points.size == 0:
+        return np.empty((0, 3), dtype=float)
+    x, y, yaw = load_kitti360_pose(data_root, drive_id, frame_id)
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    pts = points[:, :3]
+    xw = c * pts[:, 0] - s * pts[:, 1] + x
+    yw = s * pts[:, 0] + c * pts[:, 1] + y
+    zw = pts[:, 2]
+    return np.stack([xw, yw, zw], axis=1)
+
+
 def _parse_perspective(path: Path) -> Dict[str, np.ndarray]:
     if not path.exists():
         raise FileNotFoundError(f"missing_file:perspective:{path}")

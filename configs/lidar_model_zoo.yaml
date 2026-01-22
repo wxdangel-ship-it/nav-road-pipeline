@@ -1,0 +1,22 @@
+models:
+  - model_id: pc_simple_ground_v1
+    family: pc_simple_ground
+    model_version: v1
+    device: cpu
+    z_min: -2.0
+    z_max: 0.5
+    min_points: 500
+    max_points: 10000
+    label: ground_surface
+    score: 0.6
+
+  - model_id: dummy_lidar_v1
+    family: dummy_lidar
+    model_version: v1
+    device: cpu
+
+  - model_id: pc_open3dis_v1
+    family: pc_open3dis
+    model_version: v1
+    device: cpu
+    backend: auto

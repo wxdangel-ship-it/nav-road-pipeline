@@ -74,3 +74,23 @@
   "generated_at": "2026-01-21T23:45:11"
 }
 ```
+
+## 6. LiDAR / 3D Evidence Schema (Map)
+
+This section defines the minimum fields for LiDAR evidence that is projected into map
+coordinates (UTM32). The output is used by downstream geometry consumers.
+
+- `provider_id` / `model_id` / `model_version` / `ckpt_hash`
+- `drive_id`, `frame_id`, `timestamp` (optional)
+- `label` or `prompt` (open-vocab providers should include prompt/label)
+- `score`
+- `geometry_utm32`: map geometry in EPSG:32632 (LineString/Polygon/Point)
+- `bbox3d` (optional): 3D bbox or footprint attributes if available
+- `points_count` (optional): number of points used by this instance
+- `evidence_strength`: `strong` / `weak`
+- `backend_status`: `real` / `fallback` / `unavailable`
+- `fallback_used` / `fallback_from` / `fallback_to` / `backend_reason`
+- `debug_assets_path` (optional): local debug assets for inspection
+
+**CRS rule**: any file with `_utm32` must be EPSG:32632. Any file with `_wgs84` must
+be true EPSG:4326 (lon/lat range check), otherwise rename or reproject.
