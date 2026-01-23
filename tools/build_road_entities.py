@@ -523,6 +523,115 @@ def _nearest_heading(segments: List[Tuple[LineString, float]], geom: Polygon) ->
             best_heading = segments[idx][1]
     return best_heading
 
+
+def _nearest_yaw_heading(
+    data_root: Path,
+    drive_id: str,
+    frames: List[dict],
+    geom: Polygon,
+) -> Optional[float]:
+    if geom is None or geom.is_empty:
+        return None
+    points = []
+    for row in frames:
+        frame_id = str(row.get("frame_id"))
+        try:
+            x, y, yaw = load_kitti360_pose(data_root, drive_id, frame_id)
+        except Exception:
+            continue
+        heading = float(np.degrees(yaw))
+        if heading < 0:
+            heading += 180.0
+        points.append((Point(x, y), heading))
+    if not points:
+        return None
+    try:
+        from shapely.strtree import STRtree
+
+        pts = [p[0] for p in points]
+        tree = STRtree(pts)
+        pt_id = {id(p): idx for idx, p in enumerate(pts)}
+        candidates = tree.query(geom.centroid)
+        if len(candidates) == 0:
+            candidates = pts
+    except Exception:
+        candidates = [p[0] for p in points]
+        pt_id = {id(p[0]): idx for idx, p in enumerate(points)}
+    best_heading = None
+    best_dist = float("inf")
+    for cand in candidates:
+        idx = pt_id.get(id(cand))
+        if idx is None:
+            continue
+        dist = geom.centroid.distance(cand)
+        if dist < best_dist:
+            best_dist = dist
+            best_heading = points[idx][1]
+    return best_heading
+
+
+def _trajectory_heading_near(
+    data_root: Path,
+    drive_id: str,
+    frames: List[dict],
+    geom: Polygon,
+    radius_m: float,
+) -> Optional[float]:
+    if geom is None or geom.is_empty:
+        return None
+    center = geom.centroid
+    pts = []
+    for row in frames:
+        frame_id = str(row.get("frame_id"))
+        try:
+            x, y, _ = load_kitti360_pose(data_root, drive_id, frame_id)
+        except Exception:
+            continue
+        if center.distance(Point(x, y)) <= radius_m:
+            pts.append([x, y])
+    if len(pts) < 2:
+        return None
+    coords = np.array(pts, dtype=float)
+    mean = coords.mean(axis=0)
+    cov = np.cov((coords - mean).T)
+    vals, vecs = np.linalg.eig(cov)
+    idx = int(np.argmax(vals))
+    direction = vecs[:, idx]
+    angle = float(np.degrees(np.arctan2(direction[1], direction[0])))
+    if angle < 0:
+        angle += 180.0
+    return angle
+
+
+def _road_poly_heading(
+    road_poly: Optional[Polygon],
+    geom: Polygon,
+    radius_m: float,
+) -> Optional[float]:
+    if road_poly is None or road_poly.is_empty or geom is None or geom.is_empty:
+        return None
+    clip = road_poly.intersection(geom.centroid.buffer(radius_m))
+    if clip is None or clip.is_empty:
+        return None
+    coords = []
+    geoms = [clip] if isinstance(clip, Polygon) else list(getattr(clip, "geoms", []))
+    for poly in geoms:
+        if not isinstance(poly, Polygon):
+            continue
+        coords.extend(list(poly.exterior.coords))
+    if len(coords) < 2:
+        return None
+    arr = np.array(coords, dtype=float)
+    mean = arr.mean(axis=0)
+    cov = np.cov((arr - mean).T)
+    vals, vecs = np.linalg.eig(cov)
+    idx = int(np.argmax(vals))
+    direction = vecs[:, idx]
+    angle = float(np.degrees(np.arctan2(direction[1], direction[0])))
+    if angle < 0:
+        angle += 180.0
+    return angle
+
 def _line_endpoints(geom: LineString) -> Tuple[Tuple[float, float], Tuple[float, float]]:
     coords = list(geom.coords)
     return (coords[0][0], coords[0][1]), (coords[-1][0], coords[-1][1])
@@ -1073,6 +1182,30 @@ def _gate_against_road(
     return gpd.GeoDataFrame(keep_rows, geometry="geometry", crs=gdf.crs)
 
 
+def _rect_metrics(rect: Polygon, union_geom: Polygon) -> dict:
+    rect_area = rect.area if rect is not None else 0.0
+    area = union_geom.area if union_geom is not None else 0.0
+    rectangularity = area / rect_area if rect_area > 0 else 0.0
+    rect_coords = list(rect.exterior.coords) if rect is not None else []
+    edge_lengths = []
+    for i in range(len(rect_coords) - 1):
+        p0 = rect_coords[i]
+        p1 = rect_coords[i + 1]
+        edge_lengths.append(float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])))
+    edge_lengths = sorted(edge_lengths, reverse=True)
+    rect_l = edge_lengths[0] if edge_lengths else 0.0
+    rect_w = edge_lengths[-1] if edge_lengths else 0.0
+    aspect = rect_l / max(1e-6, rect_w) if rect_w > 0 else 0.0
+    return {
+        "area_m2": area,
+        "rect_area_m2": rect_area,
+        "rectangularity": rectangularity,
+        "rect_l_m": rect_l,
+        "rect_w_m": rect_w,
+        "aspect": aspect,
+    }
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--index", required=True)
@@ -1132,6 +1265,7 @@ def main() -> int:
     gate_cfg = cfg.get("gates", {})
     frames_cfg = cfg.get("frames_hit", {})
     cluster_cfg = cfg.get("clustering", {})
+    cross_final_cfg = cfg.get("crosswalk_final", {})
 
     image_layers_all: Dict[str, List[gpd.GeoDataFrame]] = {
         "lane_marking_img": [],
@@ -1164,6 +1298,7 @@ def main() -> int:
     entity_layers: Dict[str, List[dict]] = {
         "road_surface_poly": [],
         "lane_marking_line": [],
+        "crosswalk_candidate_poly": [],
         "crosswalk_poly": [],
         "stop_line_line": [],
     }
@@ -1288,6 +1423,14 @@ def main() -> int:
                     gdf_drive["frame_id"] = ""
                 image_layers_all[target].append(gdf_drive)
                 image_layers_drive[target].append(gdf_drive)
+            for row in frames:
+                frame_id = str(row.get("frame_id"))
+                frame_dir = image_map_root / drive_id / frame_id
+                map_path = frame_dir / "map_evidence_utm32.gpkg"
+                if not map_path.exists():
+                    continue
+                image_layers = _read_map_evidence(map_path)
+                _push_layer("crosswalk", "crosswalk_img", frame_id)
         else:
             for row in frames:
                 frame_id = str(row.get("frame_id"))
@@ -1503,80 +1646,229 @@ def main() -> int:
         def _aggregate_crosswalk() -> None:
             if cross_frame.empty:
                 return
-            clusters = _cluster_by_centroid(cross_frame, float(cluster_cfg.get("crosswalk_eps_m", 3.0)))
-            entities = []
-            for idx, indices in enumerate(clusters):
-                hits = cross_frame.iloc[indices]
-                if hits.empty:
-                    continue
+            candidates = []
+            for frame_id, hits in cross_frame.groupby("frame_id"):
                 union_geom = unary_union(hits.geometry.values)
                 if union_geom is None or union_geom.is_empty:
                     continue
+                if road_poly is not None and not road_poly.is_empty:
+                    shrink_m = float(cross_final_cfg.get("road_shrink_m", 0.0))
+                    road_ref = road_poly.buffer(-shrink_m) if shrink_m > 0 else road_poly
+                    if road_ref.is_empty:
+                        road_ref = road_poly
+                    clipped = union_geom.intersection(road_ref)
+                    if not clipped.is_empty:
+                        union_geom = clipped
+                rect_raw = union_geom.minimum_rotated_rectangle
+                if rect_raw is None or rect_raw.is_empty:
+                    continue
+                metrics_raw = _rect_metrics(rect_raw, union_geom)
+                buffer_m = float(cross_final_cfg.get("rect_buffer_m", 0.0))
+                if buffer_m > 0:
+                    union_geom = union_geom.buffer(buffer_m)
                 rect = union_geom.minimum_rotated_rectangle
-                rect_area = rect.area if rect is not None else 0.0
-                area = union_geom.area
-                if rect_area <= 0:
-                    continue
-                rectangularity = area / rect_area if rect_area > 0 else 0.0
-                min_area = float(cross_cfg.get("min_area_m2", 2.0))
-                max_area = float(cross_cfg.get("max_area_m2", 200.0))
-                min_rect = float(cross_cfg.get("min_rectangularity", 0.6))
-                min_ratio = float(cross_cfg.get("min_aspect_ratio", 1.5))
-                max_ratio = float(cross_cfg.get("max_aspect_ratio", 10.0))
-                if area < min_area or area > max_area:
-                    continue
-                if rectangularity < min_rect:
-                    continue
-                rect_coords = list(rect.exterior.coords)
-                edge_lengths = []
-                for i in range(len(rect_coords) - 1):
-                    p0 = rect_coords[i]
-                    p1 = rect_coords[i + 1]
-                    edge_lengths.append(float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])))
-                edge_lengths = sorted(edge_lengths, reverse=True)
-                if len(edge_lengths) < 2:
-                    continue
-                ratio = edge_lengths[0] / max(1e-6, edge_lengths[-1])
-                if ratio < min_ratio or ratio > max_ratio:
+                if rect is None or rect.is_empty:
+                    rect = rect_raw
+                metrics = metrics_raw
+                max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 25.0))
+                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 8.0))
+                if metrics["rect_l_m"] > max_rect_l or metrics["rect_w_m"] > max_rect_w:
+                    clip_r = max_rect_l / 2.0
+                    clipped = union_geom.intersection(rect.centroid.buffer(clip_r))
+                    if not clipped.is_empty:
+                        union_geom = clipped
+                        rect_raw = union_geom.minimum_rotated_rectangle
+                        if rect_raw is None or rect_raw.is_empty:
+                            continue
+                        metrics_raw = _rect_metrics(rect_raw, union_geom)
+                        rect = rect_raw
+                        metrics = metrics_raw
+                if metrics["rect_area_m2"] <= 0:
                     continue
                 rect_heading = _rect_heading_deg(rect)
-                road_heading = _nearest_heading(heading_segments, rect)
-                heading_diff = None
+                road_heading = _road_poly_heading(
+                    road_poly,
+                    rect,
+                    float(cross_final_cfg.get("road_heading_radius_m", 15.0)),
+                )
+                if road_heading is None:
+                    road_heading = _trajectory_heading_near(data_root, drive_id, frame_rows, rect, 20.0)
+                if road_heading is None:
+                    road_heading = _nearest_yaw_heading(data_root, drive_id, frame_rows, rect)
+                heading_diff = ""
                 if rect_heading is not None and road_heading is not None:
                     diff = _angle_diff_deg(rect_heading, road_heading)
-                    heading_diff = abs(diff - 90.0)
-                frames = set()
-                providers = {}
-                for _, row in hits.iterrows():
-                    frame_id = row.get("frame_id")
-                    if frame_id:
-                        frames.add(str(frame_id))
-                    model_id = row.get("model_id") or row.get("provider_id")
-                    if model_id:
-                        providers[str(model_id)] = providers.get(str(model_id), 0) + 1
-                frames_hit = len(frames)
-                if frames_hit < int(frames_cfg.get("crosswalk", 2)):
-                    frames_hit = _frames_hit_by_proximity(rect, data_root, drive_id, frame_rows, 10.0)
-                if frames_hit < int(frames_cfg.get("crosswalk", 2)):
-                    continue
-                entities.append(
+                    heading_diff = min(diff, abs(diff - 90.0))
+                inside_ratio = 0.0
+                if road_poly is not None and not road_poly.is_empty:
+                    inside_ratio = rect.intersection(road_poly).area / max(1e-6, rect.area)
+                reject = []
+                if inside_ratio < float(cross_final_cfg.get("min_inside_ratio", 0.5)):
+                    reject.append("off_road")
+                if heading_diff != "" and heading_diff > float(cross_final_cfg.get("max_heading_diff_deg", 25.0)):
+                    reject.append("angle")
+                if metrics["rectangularity"] < float(cross_final_cfg.get("min_rectangularity", 0.45)):
+                    reject.append("rect")
+                if metrics["rect_w_m"] < float(cross_final_cfg.get("min_rect_w_m", 1.5)) or metrics["rect_w_m"] > float(
+                    cross_final_cfg.get("max_rect_w_m", 8.0)
+                ):
+                    reject.append("size")
+                if metrics["rect_l_m"] < float(cross_final_cfg.get("min_rect_l_m", 3.0)) or metrics["rect_l_m"] > float(
+                    cross_final_cfg.get("max_rect_l_m", 25.0)
+                ):
+                    reject.append("size")
+                if metrics["aspect"] < float(cross_final_cfg.get("min_aspect", 1.3)) or metrics["aspect"] > float(
+                    cross_final_cfg.get("max_aspect", 15.0)
+                ):
+                    reject.append("aspect")
+                candidates.append(
                     {
                         "geometry": rect,
                         "properties": {
-                            "entity_id": _entity_id(f"{drive_id}_crosswalk", idx),
+                            "candidate_id": _entity_id(f"{drive_id}_crosswalk_cand", len(candidates)),
                             "drive_id": drive_id,
+                            "frame_id": frame_id,
                             "entity_type": "crosswalk",
-                            "confidence": 0.7,
-                            "evidence_sources": json.dumps({"image": True, "lidar": False, "aerial": False}, ensure_ascii=True),
-                            "frames_hit": frames_hit,
-                            "provider_hits": json.dumps(providers, ensure_ascii=True),
-                            "created_from_run": str(run_dir),
-                            "qa_flag": "ok",
-                            "rectangularity": rectangularity,
-                            "heading_diff_deg": heading_diff if heading_diff is not None else "",
+                            "area_m2": metrics["area_m2"],
+                            "rect_w_m": metrics["rect_w_m"],
+                            "rect_l_m": metrics["rect_l_m"],
+                            "aspect": metrics["aspect"],
+                            "rectangularity": metrics["rectangularity"],
+                            "heading_diff_to_perp_deg": heading_diff,
+                            "inside_road_ratio": inside_ratio,
+                            "reject_reasons": ",".join(reject),
+                            "qa_flag": "ok" if not reject else reject[0],
                         },
                     }
                 )
+            if candidates:
+                entity_layers["crosswalk_candidate_poly"].extend(candidates)
+
+            candidate_gdf = _gdf_from_entities(entity_layers["crosswalk_candidate_poly"], "EPSG:32632")
+            candidate_gdf = candidate_gdf[candidate_gdf["drive_id"] == drive_id]
+            if candidate_gdf.empty:
+                return
+            candidate_gdf = candidate_gdf[candidate_gdf["reject_reasons"] == ""]
+            if candidate_gdf.empty:
+                return
+            clusters = _cluster_by_centroid(candidate_gdf, float(cluster_cfg.get("crosswalk_eps_m", 6.0)))
+            entities = []
+            for idx, indices in enumerate(clusters):
+                hits = candidate_gdf.iloc[indices]
+                union_geom = unary_union(hits.geometry.values)
+                if union_geom is None or union_geom.is_empty:
+                    continue
+                if road_poly is not None and not road_poly.is_empty:
+                    shrink_m = float(cross_final_cfg.get("road_shrink_m", 0.0))
+                    road_ref = road_poly.buffer(-shrink_m) if shrink_m > 0 else road_poly
+                    if road_ref.is_empty:
+                        road_ref = road_poly
+                    clipped = union_geom.intersection(road_ref)
+                    if not clipped.is_empty:
+                        union_geom = clipped
+                rect_raw = union_geom.minimum_rotated_rectangle
+                if rect_raw is None or rect_raw.is_empty:
+                    continue
+                metrics_raw = _rect_metrics(rect_raw, union_geom)
+                buffer_m = float(cross_final_cfg.get("rect_buffer_m", 0.0))
+                if buffer_m > 0:
+                    union_geom = union_geom.buffer(buffer_m)
+                rect = union_geom.minimum_rotated_rectangle
+                if rect is None or rect.is_empty:
+                    rect = rect_raw
+                metrics = metrics_raw
+                max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 25.0))
+                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 8.0))
+                if metrics["rect_l_m"] > max_rect_l or metrics["rect_w_m"] > max_rect_w:
+                    clip_r = max_rect_l / 2.0
+                    clipped = union_geom.intersection(rect.centroid.buffer(clip_r))
+                    if not clipped.is_empty:
+                        union_geom = clipped
+                        rect_raw = union_geom.minimum_rotated_rectangle
+                        if rect_raw is None or rect_raw.is_empty:
+                            continue
+                        metrics_raw = _rect_metrics(rect_raw, union_geom)
+                        rect = rect_raw
+                        metrics = metrics_raw
+                if metrics["rect_area_m2"] <= 0:
+                    continue
+                rect_heading = _rect_heading_deg(rect)
+                road_heading = _road_poly_heading(
+                    road_poly,
+                    rect,
+                    float(cross_final_cfg.get("road_heading_radius_m", 15.0)),
+                )
+                if road_heading is None:
+                    road_heading = _trajectory_heading_near(data_root, drive_id, frame_rows, rect, 20.0)
+                if road_heading is None:
+                    road_heading = _nearest_yaw_heading(data_root, drive_id, frame_rows, rect)
+                heading_diff = ""
+                if rect_heading is not None and road_heading is not None:
+                    diff = _angle_diff_deg(rect_heading, road_heading)
+                    heading_diff = min(diff, abs(diff - 90.0))
+                inside_ratio = 0.0
+                if road_poly is not None and not road_poly.is_empty:
+                    inside_ratio = rect.intersection(road_poly).area / max(1e-6, rect.area)
+                frames = set(hits["frame_id"].tolist())
+                frames_hit = len(frames)
+                if frames_hit < int(frames_cfg.get("crosswalk", 2)):
+                    frames_hit = _frames_hit_by_proximity(rect, data_root, drive_id, frame_rows, 10.0)
+                reject = []
+                if metrics["area_m2"] > float(cross_final_cfg.get("giant_area_m2", 300.0)) or metrics["rect_l_m"] > float(
+                    cross_final_cfg.get("giant_rect_l_m", 40.0)
+                ):
+                    reject.append("giant")
+                if inside_ratio < float(cross_final_cfg.get("min_inside_ratio", 0.5)):
+                    reject.append("off_road")
+                if heading_diff != "" and heading_diff > float(cross_final_cfg.get("max_heading_diff_deg", 25.0)):
+                    reject.append("angle")
+                if metrics["rect_w_m"] < float(cross_final_cfg.get("min_rect_w_m", 1.5)) or metrics["rect_w_m"] > float(
+                    cross_final_cfg.get("max_rect_w_m", 8.0)
+                ):
+                    reject.append("size")
+                if metrics["rect_l_m"] < float(cross_final_cfg.get("min_rect_l_m", 3.0)) or metrics["rect_l_m"] > float(
+                    cross_final_cfg.get("max_rect_l_m", 25.0)
+                ):
+                    reject.append("size")
+                if metrics["aspect"] < float(cross_final_cfg.get("min_aspect", 1.3)) or metrics["aspect"] > float(
+                    cross_final_cfg.get("max_aspect", 15.0)
+                ):
+                    reject.append("aspect")
+                if metrics["rectangularity"] < float(cross_final_cfg.get("min_rectangularity", 0.45)):
+                    reject.append("rect")
+                if frames_hit < int(frames_cfg.get("crosswalk", 2)):
+                    reject.append("low_hit")
+
+                score_total = min(1.0, frames_hit / max(1.0, float(frames_cfg.get("crosswalk", 2)) * 2.0))
+                if reject:
+                    qa_flag = reject[0]
+                else:
+                    qa_flag = "ok"
+                if not reject:
+                    entities.append(
+                        {
+                            "geometry": rect,
+                            "properties": {
+                                "entity_id": _entity_id(f"{drive_id}_crosswalk", idx),
+                                "drive_id": drive_id,
+                                "entity_type": "crosswalk",
+                                "confidence": score_total,
+                                "evidence_sources": json.dumps({"image": True, "lidar": False, "aerial": False}, ensure_ascii=True),
+                                "frames_hit": frames_hit,
+                                "frame_ids": f"{min(frames)}..{max(frames)} ({len(frames)})" if frames else "",
+                                "area_m2": metrics["area_m2"],
+                                "rect_w_m": metrics["rect_w_m"],
+                                "rect_l_m": metrics["rect_l_m"],
+                                "aspect": metrics["aspect"],
+                                "rectangularity": metrics["rectangularity"],
+                                "heading_diff_to_perp_deg": heading_diff,
+                                "inside_road_ratio": inside_ratio,
+                                "score_total": score_total,
+                                "reject_reasons": ",".join(reject),
+                                "qa_flag": qa_flag,
+                            },
+                        }
+                    )
             if entities:
                 entity_layers["crosswalk_poly"].extend(entities)
 
@@ -1624,19 +1916,26 @@ def main() -> int:
             entity_ids = []
             sanity_notes = []
             point = Point(x, y)
+            crosswalk_candidate_ids = []
+            crosswalk_final_ids = []
             for layer_name, feats in entity_layers.items():
                 for feat in feats:
                     geom = feat["geometry"]
                     if geom is None or geom.is_empty:
                         continue
                     if geom.distance(point) <= args.qa_radius_m:
-                        entity_ids.append(feat["properties"]["entity_id"])
+                        entity_ids.append(feat["properties"].get("entity_id", feat["properties"].get("candidate_id", "")))
+                        if layer_name == "crosswalk_candidate_poly":
+                            crosswalk_candidate_ids.append(feat["properties"].get("candidate_id", feat["properties"].get("entity_id", "")))
+                        if layer_name == "crosswalk_poly":
+                            crosswalk_final_ids.append(feat["properties"]["entity_id"])
                         rect = feat["properties"].get("rectangularity")
                         hd = feat["properties"].get("heading_diff_deg")
+                        ent_id = feat["properties"].get("entity_id", feat["properties"].get("candidate_id", ""))
                         if rect:
-                            sanity_notes.append(f"{feat['properties']['entity_id']}:rect={rect}")
+                            sanity_notes.append(f"{ent_id}:rect={rect}")
                         if hd != "" and hd is not None:
-                            sanity_notes.append(f"{feat['properties']['entity_id']}:hd={hd}")
+                            sanity_notes.append(f"{ent_id}:hd={hd}")
 
             qa_images_dir = outputs_dir / "qa_images" / drive_id
             overlay_raw_path = ""
@@ -1677,6 +1976,17 @@ def main() -> int:
                                         heading_ok = bool(row.get("heading_ok", True))
                                         color = (255, 255, 0, 200) if heading_ok else (160, 160, 160, 200)
                                         gated_draw.line(pts, fill=color, width=2)
+                        for feat in entity_layers.get("crosswalk_candidate_poly", []):
+                            props = feat["properties"]
+                            if props.get("drive_id") != drive_id or props.get("frame_id") != frame_id:
+                                continue
+                            geom = feat["geometry"]
+                            pts = _geom_to_image_points(geom, pose, calib)
+                            if len(pts) < 2:
+                                continue
+                            reject = props.get("reject_reasons", "")
+                            color = (0, 255, 255, 200) if not reject else (160, 160, 160, 200)
+                            gated_draw.polygon(pts, outline=color)
                         gated_out = Image.alpha_composite(base_img, gated_overlay)
                         overlay_gated_path = str(qa_images_dir / f"{frame_id}_overlay_gated.png")
                         gated_out.save(overlay_gated_path)
@@ -1721,12 +2031,15 @@ def main() -> int:
                     "overlay_entities_path": overlay_entities_path,
                     "lidar_raster_path": str(lidar_raster) if lidar_raster.exists() else "",
                     "entity_ids": json.dumps(sorted(set(entity_ids)), ensure_ascii=True),
+                    "crosswalk_candidate_ids_nearby": json.dumps(sorted(set(crosswalk_candidate_ids)), ensure_ascii=True),
+                    "crosswalk_final_ids_nearby": json.dumps(sorted(set(crosswalk_final_ids)), ensure_ascii=True),
                     "sanity_note": ";".join(sanity_notes),
                 }
             )
     entity_layers_gdf = {
         "road_surface_poly": _gdf_from_entities(entity_layers["road_surface_poly"], "EPSG:32632"),
         "lane_marking_line": _gdf_from_entities(entity_layers["lane_marking_line"], "EPSG:32632"),
+        "crosswalk_candidate_poly": _gdf_from_entities(entity_layers["crosswalk_candidate_poly"], "EPSG:32632"),
         "crosswalk_poly": _gdf_from_entities(entity_layers["crosswalk_poly"], "EPSG:32632"),
         "stop_line_line": _gdf_from_entities(entity_layers["stop_line_line"], "EPSG:32632"),
     }
@@ -1849,6 +2162,18 @@ def main() -> int:
     if not needs_review:
         report_lines.append("- none")
     report_lines.append("")
+
+    if not entity_layers_gdf["crosswalk_candidate_poly"].empty:
+        report_lines.append("## Crosswalk Candidate Summary")
+        report_lines.append(f"- candidate_count: {len(entity_layers_gdf['crosswalk_candidate_poly'])}")
+        reasons = entity_layers_gdf["crosswalk_candidate_poly"]["reject_reasons"].fillna("")
+        reason_counts = {}
+        for reason in reasons.tolist():
+            for token in [r for r in reason.split(",") if r]:
+                reason_counts[token] = reason_counts.get(token, 0) + 1
+        for reason, count in sorted(reason_counts.items()):
+            report_lines.append(f"- reject_{reason}: {count}")
+        report_lines.append("")
 
     baseline_path = outputs_dir.parent / "baseline_road_entities_utm32.gpkg"
     if not baseline_path.exists():
