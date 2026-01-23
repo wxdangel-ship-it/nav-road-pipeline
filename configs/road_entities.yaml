@@ -43,6 +43,7 @@ clustering:
   crosswalk_eps_m: 3.0
 
 crosswalk_final:
+  min_frames_hit: 3
   giant_area_m2: 300.0
   giant_rect_l_m: 40.0
   min_inside_ratio: 0.5

@@ -167,7 +167,10 @@ def _cluster_by_centroid(gdf: gpd.GeoDataFrame, eps_m: float) -> List[List[int]]
         candidates = []
         if tree is not None:
             for cand in tree.query(center.buffer(eps_m)):
-                idx = geom_id.get(id(cand))
+                if isinstance(cand, (int, np.integer)):
+                    idx = int(cand)
+                else:
+                    idx = geom_id.get(id(cand))
                 if idx is not None:
                     candidates.append(idx)
         else:
@@ -353,7 +356,12 @@ def _load_yaml(path: Path) -> dict:
 
 def _write_gpkg_layers(path: Path, layers: Dict[str, gpd.GeoDataFrame], crs: str) -> None:
     if path.exists():
-        path.unlink()
+        try:
+            path.unlink()
+        except PermissionError:
+            new_path = path.with_suffix(".new.gpkg")
+            LOG.warning("gpkg locked, writing to %s", new_path)
+            path = new_path
     for name, gdf in layers.items():
         if gdf is None:
             gdf = gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs=crs)
@@ -1076,6 +1084,41 @@ def _frames_hit_stats(gdf: gpd.GeoDataFrame) -> Dict[str, float]:
     return {"p50": _percentile(vals, 50), "p90": _percentile(vals, 90)}
 
 
+def _nearest_qa_for_entity(
+    qa_rows: List[dict],
+    entity_geom: Polygon,
+    drive_id: str,
+    max_dist_m: float,
+) -> Optional[dict]:
+    if entity_geom is None or entity_geom.is_empty:
+        return None
+    center = entity_geom.centroid
+    best = None
+    best_dist = float("inf")
+    for row in qa_rows:
+        if row.get("drive_id") != drive_id:
+            continue
+        try:
+            lon = float(row.get("lon"))
+            lat = float(row.get("lat"))
+        except Exception:
+            continue
+        # qa_rows lon/lat are wgs84, but entity is utm32. Skip if not set.
+        if not (-180.0 <= lon <= 180.0 and -90.0 <= lat <= 90.0):
+            continue
+        # qa_rows also have x/y via road_entities computation, but we didn't store; fallback to distance in utm32 via point if present.
+        # Use stored entity_ids proximity; this is best-effort for report linking.
+        ent_ids = row.get("entity_ids", "")
+        if isinstance(ent_ids, str) and ent_ids:
+            if str(ent_ids).find(drive_id) >= 0:
+                return row
+        dist = 0.0
+        if dist < best_dist:
+            best = row
+            best_dist = dist
+    return best
+
+
 def _frames_hit_by_proximity(
     geom: Polygon,
     data_root: Path,
@@ -1204,6 +1247,13 @@ def _rect_metrics(rect: Polygon, union_geom: Polygon) -> dict:
         "rect_w_m": rect_w,
         "aspect": aspect,
     }
+
+
+def _append_reject_reason(reason: str, existing: str) -> str:
+    tokens = [t for t in existing.split(",") if t]
+    if reason and reason not in tokens:
+        tokens.append(reason)
+    return ",".join(tokens)
 
 
 def main() -> int:
@@ -1744,18 +1794,69 @@ def main() -> int:
             if candidates:
                 entity_layers["crosswalk_candidate_poly"].extend(candidates)
 
+            candidate_map = {}
+            for feat in entity_layers["crosswalk_candidate_poly"]:
+                cand_id = feat["properties"].get("candidate_id")
+                if cand_id:
+                    candidate_map[cand_id] = feat
+
             candidate_gdf = _gdf_from_entities(entity_layers["crosswalk_candidate_poly"], "EPSG:32632")
             candidate_gdf = candidate_gdf[candidate_gdf["drive_id"] == drive_id]
             if candidate_gdf.empty:
                 return
-            candidate_gdf = candidate_gdf[candidate_gdf["reject_reasons"] == ""]
+            candidate_gdf = candidate_gdf[~candidate_gdf["reject_reasons"].str.contains("off_road|giant", na=False)]
             if candidate_gdf.empty:
                 return
-            clusters = _cluster_by_centroid(candidate_gdf, float(cluster_cfg.get("crosswalk_eps_m", 6.0)))
+            candidate_gdf_strict = candidate_gdf[candidate_gdf["reject_reasons"].fillna("") == ""]
+            cross_eps = float(cluster_cfg.get("crosswalk_eps_m", 6.0))
+            cross_buf = float(cross_cfg.get("cluster_buffer_m", 3.0))
+            clusters = _cluster_by_centroid(candidate_gdf, max(cross_eps, cross_buf * 2.0))
             entities = []
             for idx, indices in enumerate(clusters):
                 hits = candidate_gdf.iloc[indices]
-                union_geom = unary_union(hits.geometry.values)
+                max_heading = float(cross_final_cfg.get("max_heading_diff_deg", 25.0))
+                min_rect_w = float(cross_final_cfg.get("min_rect_w_m", 1.5))
+                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 8.0))
+                min_rect_l = float(cross_final_cfg.get("min_rect_l_m", 3.0))
+                max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 25.0))
+                min_aspect = float(cross_final_cfg.get("min_aspect", 1.3))
+                max_aspect = float(cross_final_cfg.get("max_aspect", 15.0))
+                min_rectangularity = float(cross_final_cfg.get("min_rectangularity", 0.45))
+                min_inside = float(cross_final_cfg.get("min_inside_ratio", 0.5))
+
+                hits_geom = hits.copy()
+                if "heading_diff_to_perp_deg" in hits_geom.columns:
+                    hits_geom = hits_geom[
+                        (hits_geom["heading_diff_to_perp_deg"].isna())
+                        | (hits_geom["heading_diff_to_perp_deg"] <= max_heading)
+                    ]
+                if "rect_w_m" in hits_geom.columns:
+                    hits_geom = hits_geom[(hits_geom["rect_w_m"] >= min_rect_w) & (hits_geom["rect_w_m"] <= max_rect_w)]
+                if "rect_l_m" in hits_geom.columns:
+                    hits_geom = hits_geom[(hits_geom["rect_l_m"] >= min_rect_l) & (hits_geom["rect_l_m"] <= max_rect_l)]
+                if "aspect" in hits_geom.columns:
+                    hits_geom = hits_geom[(hits_geom["aspect"] >= min_aspect) & (hits_geom["aspect"] <= max_aspect)]
+                if "rectangularity" in hits_geom.columns:
+                    hits_geom = hits_geom[hits_geom["rectangularity"] >= min_rectangularity]
+                if "inside_road_ratio" in hits_geom.columns:
+                    hits_geom = hits_geom[hits_geom["inside_road_ratio"] >= min_inside]
+
+                strict_idx = candidate_gdf_strict.index.intersection(hits.index)
+                hits_strict = candidate_gdf_strict.loc[strict_idx]
+                geom_hits = hits_strict if not hits_strict.empty else hits_geom
+                if geom_hits.empty:
+                    geom_hits = hits
+                rep_geom = None
+                if not geom_hits.empty and "rect_w_m" in geom_hits.columns and "rect_l_m" in geom_hits.columns:
+                    med_w = float(geom_hits["rect_w_m"].median())
+                    med_l = float(geom_hits["rect_l_m"].median())
+                    geom_hits = geom_hits.copy()
+                    geom_hits["_size_dist"] = (geom_hits["rect_w_m"] - med_w).abs() + (geom_hits["rect_l_m"] - med_l).abs()
+                    best = geom_hits.sort_values("_size_dist").iloc[0]
+                    rep_geom = best.geometry
+                union_geom = unary_union(geom_hits.geometry.values)
+                if (union_geom is None or union_geom.is_empty) and rep_geom is not None:
+                    union_geom = rep_geom
                 if union_geom is None or union_geom.is_empty:
                     continue
                 if road_poly is not None and not road_poly.is_empty:
@@ -1779,6 +1880,14 @@ def main() -> int:
                 metrics = metrics_raw
                 max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 25.0))
                 max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 8.0))
+                if (metrics["rect_l_m"] > max_rect_l or metrics["rect_w_m"] > max_rect_w) and rep_geom is not None:
+                    union_geom = rep_geom
+                    rect_raw = union_geom.minimum_rotated_rectangle
+                    if rect_raw is None or rect_raw.is_empty:
+                        continue
+                    metrics_raw = _rect_metrics(rect_raw, union_geom)
+                    rect = rect_raw
+                    metrics = metrics_raw
                 if metrics["rect_l_m"] > max_rect_l or metrics["rect_w_m"] > max_rect_w:
                     clip_r = max_rect_l / 2.0
                     clipped = union_geom.intersection(rect.centroid.buffer(clip_r))
@@ -1811,9 +1920,8 @@ def main() -> int:
                     inside_ratio = rect.intersection(road_poly).area / max(1e-6, rect.area)
                 frames = set(hits["frame_id"].tolist())
                 frames_hit = len(frames)
-                if frames_hit < int(frames_cfg.get("crosswalk", 2)):
-                    frames_hit = _frames_hit_by_proximity(rect, data_root, drive_id, frame_rows, 10.0)
                 reject = []
+                min_frames_hit = int(cross_final_cfg.get("min_frames_hit", frames_cfg.get("crosswalk", 2)))
                 if metrics["area_m2"] > float(cross_final_cfg.get("giant_area_m2", 300.0)) or metrics["rect_l_m"] > float(
                     cross_final_cfg.get("giant_rect_l_m", 40.0)
                 ):
@@ -1836,10 +1944,20 @@ def main() -> int:
                     reject.append("aspect")
                 if metrics["rectangularity"] < float(cross_final_cfg.get("min_rectangularity", 0.45)):
                     reject.append("rect")
-                if frames_hit < int(frames_cfg.get("crosswalk", 2)):
+                if frames_hit < min_frames_hit:
                     reject.append("low_hit")
+                    for _, row in hits.iterrows():
+                        cand_id = row.get("candidate_id")
+                        if not cand_id:
+                            continue
+                        feat = candidate_map.get(cand_id)
+                        if not feat:
+                            continue
+                        current = feat["properties"].get("reject_reasons", "")
+                        feat["properties"]["reject_reasons"] = _append_reject_reason("low_hit", current)
+                        feat["properties"]["qa_flag"] = "low_hit"
 
-                score_total = min(1.0, frames_hit / max(1.0, float(frames_cfg.get("crosswalk", 2)) * 2.0))
+                score_total = min(1.0, frames_hit / max(1.0, float(min_frames_hit) * 2.0))
                 if reject:
                     qa_flag = reject[0]
                 else:
@@ -1987,6 +2105,11 @@ def main() -> int:
                             reject = props.get("reject_reasons", "")
                             color = (0, 255, 255, 200) if not reject else (160, 160, 160, 200)
                             gated_draw.polygon(pts, outline=color)
+                            if "low_hit" in reject:
+                                c = geom.centroid
+                                pt = _geom_to_image_points(c, pose, calib)
+                                if pt:
+                                    gated_draw.text(pt[0], "low_hit", fill=(255, 64, 64, 220))
                         gated_out = Image.alpha_composite(base_img, gated_overlay)
                         overlay_gated_path = str(qa_images_dir / f"{frame_id}_overlay_gated.png")
                         gated_out.save(overlay_gated_path)
@@ -2173,6 +2296,16 @@ def main() -> int:
                 reason_counts[token] = reason_counts.get(token, 0) + 1
         for reason, count in sorted(reason_counts.items()):
             report_lines.append(f"- reject_{reason}: {count}")
+        report_lines.append("")
+
+    if not entity_layers_gdf["crosswalk_poly"].empty:
+        report_lines.append("## Crosswalk Final Summary")
+        report_lines.append(f"- final_count: {len(entity_layers_gdf['crosswalk_poly'])}")
+        top_final = entity_layers_gdf["crosswalk_poly"].head(5)
+        for _, row in top_final.iterrows():
+            report_lines.append(
+                f"- {row.get('entity_id')}: frames_hit={row.get('frames_hit')} area_m2={row.get('area_m2')} rect={row.get('rect_w_m')}x{row.get('rect_l_m')} heading_diff={row.get('heading_diff_to_perp_deg')}"
+            )
         report_lines.append("")
 
     baseline_path = outputs_dir.parent / "baseline_road_entities_utm32.gpkg"
