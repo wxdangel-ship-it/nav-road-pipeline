@@ -1,8 +1,10 @@
 ﻿drive_id: "2013_05_28_drive_0010_sync"
 kitti_root: "E:\\KITTI360\\KITTI-360"
 camera: "image_00"
-stage1_stride: 1
+stride: 1
 export_all_frames: true
+on_demand_infer: true
+raw_mode: auto
 min_frames_hit_final: 3
 raw_fallback_text: true
 draw_rejected_candidates: true
