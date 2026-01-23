@@ -1,0 +1,15 @@
+drive_id: "2013_05_28_drive_0010_sync"
+frame_start: 250
+frame_end: 300
+kitti_root: "E:\\KITTI360\\KITTI-360"
+camera: "image_00"
+stage1_stride: 1
+export_all_frames: true
+min_frames_hit_final: 3
+write_wgs84: true
+raw_fallback_text: true
+image_run: "runs\\image_evidence_20260122_114726"
+image_provider: "grounded_sam2_v1"
+image_evidence_gpkg: "runs\\full_stack_20260121_000548\\evidence_clean\\evidence_clean_golden8.gpkg"
+road_root: "runs\\full_stack_20260121_000548"
+config: "configs\\road_entities.yaml"
