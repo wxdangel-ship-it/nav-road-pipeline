@@ -17,13 +17,13 @@ import pandas as pd
 import yaml
 from PIL import Image, ImageDraw
 from shapely import affinity
-from shapely.geometry import Polygon, box
+from shapely.geometry import MultiPoint, Point, Polygon, box
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_pose
+from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_lidar_points, load_kitti360_pose
 from tools.build_image_sample_index import _extract_frame_id, _find_image_dir, _list_images
 from tools.build_road_entities import _geom_to_image_points
 
@@ -161,6 +161,66 @@ def _load_crosswalk_raw(
     return cache[key]
 
 
+def _project_world_to_image(
+    points: np.ndarray,
+    pose_xy_yaw: Tuple[float, float, float],
+    calib: Dict[str, np.ndarray],
+) -> np.ndarray:
+    x0, y0, yaw = pose_xy_yaw
+    c = float(np.cos(-yaw))
+    s = float(np.sin(-yaw))
+    dx = points[:, 0] - x0
+    dy = points[:, 1] - y0
+    x_ego = c * dx - s * dy
+    y_ego = s * dx + c * dy
+    z_ego = points[:, 2]
+    ones = np.ones_like(x_ego)
+    pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
+    cam = calib["t_velo_to_cam"] @ pts_h
+    proj = calib["p_rect"] @ np.vstack([cam[:3, :], np.ones((1, cam.shape[1]))])
+    zs = proj[2, :]
+    valid = zs > 1e-3
+    us = np.zeros_like(zs)
+    vs = np.zeros_like(zs)
+    us[valid] = proj[0, valid] / zs[valid]
+    vs[valid] = proj[1, valid] / zs[valid]
+    return np.stack([us, vs, valid], axis=1)
+
+
+def _load_image_size(image_path: str) -> Tuple[int, int]:
+    if image_path and Path(image_path).exists():
+        try:
+            with Image.open(image_path) as img:
+                return img.size
+        except Exception:
+            pass
+    return 1280, 720
+
+
+def _lidar_points_world_with_intensity(
+    data_root: Path,
+    drive_id: str,
+    frame_id: str,
+    pose: Tuple[float, float, float] | None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if pose is None:
+        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    try:
+        pts = load_kitti360_lidar_points(data_root, drive_id, frame_id)
+    except Exception:
+        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    if pts.size == 0:
+        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    x0, y0, yaw = pose
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    xyz = pts[:, :3]
+    xw = c * xyz[:, 0] - s * xyz[:, 1] + x0
+    yw = s * xyz[:, 0] + c * xyz[:, 1] + y0
+    zw = xyz[:, 2]
+    return np.stack([xw, yw, zw], axis=1), pts[:, 3].astype(float)
+
+
 def _render_text_overlay(
     image_path: str,
     out_path: Path,
@@ -236,6 +296,148 @@ def _render_raw_overlay(
     base.save(out_path)
 
 
+def _build_lidar_candidate_for_frame(
+    data_root: Path,
+    drive_id: str,
+    frame_id: str,
+    image_path: str,
+    raw_info: dict,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+    lidar_cfg: dict,
+) -> Tuple[dict | None, dict]:
+    stats = {
+        "proj_method": "none",
+        "pose_ok": 1 if pose is not None else 0,
+        "calib_ok": 1 if calib is not None else 0,
+        "proj_in_image_ratio": 0.0,
+        "points_total": 0,
+        "points_in_bbox": 0,
+        "points_in_mask": 0,
+        "mask_dilate_px": int(lidar_cfg.get("MASK_DILATE_PX", 5)),
+        "intensity_top_pct": 0,
+        "geom_ok": 0,
+        "geom_area_m2": 0.0,
+        "drop_reason_code": "GEOM_INVALID",
+        "accum_frames_used": 1,
+        "points_accum_total": 0,
+    }
+    raw_gdf = raw_info.get("gdf") if raw_info else None
+    bbox_px = raw_info.get("bbox_px") if raw_info else None
+    if raw_gdf is None or raw_gdf.empty or pose is None or calib is None:
+        if raw_gdf is None or raw_gdf.empty:
+            stats["drop_reason_code"] = "GEOM_INVALID"
+        elif pose is None:
+            stats["drop_reason_code"] = "PLANE_FALLBACK_USED"
+        elif calib is None:
+            stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
+        return None, stats
+
+    points_world, intensities = _lidar_points_world_with_intensity(data_root, drive_id, frame_id, pose)
+    if points_world.size == 0:
+        stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
+        return None, stats
+
+    proj = _project_world_to_image(points_world, pose, calib)
+    u = proj[:, 0]
+    v = proj[:, 1]
+    valid = proj[:, 2].astype(bool)
+    width, height = _load_image_size(image_path)
+    in_image = valid & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+    stats["points_total"] = int(points_world.shape[0])
+    stats["proj_in_image_ratio"] = float(np.mean(in_image)) if points_world.shape[0] > 0 else 0.0
+
+    if stats["proj_in_image_ratio"] < float(lidar_cfg.get("MIN_IN_IMAGE_RATIO", 0.1)):
+        stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
+        return None, stats
+
+    if not (isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4):
+        bounds = raw_gdf.total_bounds if hasattr(raw_gdf, "total_bounds") else None
+        if bounds is not None and len(bounds) == 4:
+            bbox_px = [float(bounds[0]), float(bounds[1]), float(bounds[2]), float(bounds[3])]
+    if not (isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4):
+        stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
+        return None, stats
+
+    minx, miny, maxx, maxy = bbox_px
+    in_bbox = in_image & (u >= minx) & (u <= maxx) & (v >= miny) & (v <= maxy)
+    stats["points_in_bbox"] = int(np.sum(in_bbox))
+    min_points_bbox = int(lidar_cfg.get("MIN_POINTS_BBOX", 20))
+    if stats["points_in_bbox"] < min_points_bbox:
+        stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
+        return None, stats
+
+    mask_geom = raw_gdf.geometry.union_all() if not raw_gdf.empty else None
+    if mask_geom is None or mask_geom.is_empty:
+        stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
+        return None, stats
+    dilate_px = int(lidar_cfg.get("MASK_DILATE_PX", 5))
+    if dilate_px > 0:
+        mask_geom = mask_geom.buffer(float(dilate_px))
+    mask_hits = []
+    for idx, ok in enumerate(in_bbox):
+        if not ok:
+            continue
+        if mask_geom.contains(Point(float(u[idx]), float(v[idx]))):
+            mask_hits.append(idx)
+    stats["points_in_mask"] = int(len(mask_hits))
+    min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
+    support_idx = mask_hits
+    if stats["points_in_mask"] < min_points_mask:
+        intensity_pct = int(lidar_cfg.get("INTENSITY_TOP_PCT", 20))
+        stats["intensity_top_pct"] = intensity_pct
+        bbox_indices = np.where(in_bbox)[0]
+        if bbox_indices.size > 0:
+            vals = intensities[bbox_indices]
+            thr = np.percentile(vals, 100 - intensity_pct) if vals.size > 0 else None
+            if thr is not None:
+                support_idx = bbox_indices[vals >= thr].tolist()
+        if len(support_idx) < min_points_mask:
+            stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
+            return None, stats
+
+    support_pts = points_world[support_idx][:, :2]
+    if support_pts.shape[0] < 3:
+        stats["drop_reason_code"] = "GEOM_INVALID"
+        return None, stats
+    hull = MultiPoint([Point(float(x), float(y)) for x, y in support_pts]).convex_hull
+    rect = hull.minimum_rotated_rectangle
+    if rect is None or rect.is_empty:
+        stats["drop_reason_code"] = "GEOM_INVALID"
+        return None, stats
+    if not rect.is_valid:
+        rect = rect.buffer(0)
+    if rect is None or rect.is_empty or not rect.is_valid:
+        stats["drop_reason_code"] = "GEOM_INVALID"
+        return None, stats
+
+    stats["proj_method"] = "lidar"
+    stats["geom_ok"] = 1
+    stats["geom_area_m2"] = float(rect.area)
+    stats["drop_reason_code"] = "LIDAR_OK"
+    candidate = {
+        "geometry": rect,
+        "properties": {
+            "candidate_id": f"{drive_id}_crosswalk_lidar_{frame_id}",
+            "drive_id": drive_id,
+            "frame_id": frame_id,
+            "entity_type": "crosswalk",
+            "reject_reasons": "",
+            "proj_method": "lidar",
+            "points_in_bbox": stats["points_in_bbox"],
+            "points_in_mask": stats["points_in_mask"],
+            "mask_dilate_px": stats["mask_dilate_px"],
+            "intensity_top_pct": stats["intensity_top_pct"],
+            "drop_reason_code": stats["drop_reason_code"],
+            "geom_ok": stats["geom_ok"],
+            "geom_area_m2": stats["geom_area_m2"],
+            "bbox_px": bbox_px,
+            "qa_flag": "ok",
+        },
+    }
+    return candidate, stats
+
+
 def _ensure_raw_overlays(
     qa_index_path: Path,
     outputs_dir: Path,
@@ -298,6 +500,41 @@ def _ensure_raw_overlays(
         columns=["drive_id", "frame_id", "raw_status", "image_path"],
     ).to_csv(missing_path, index=False)
     return raw_stats, raw_frames
+
+
+def _build_lidar_candidates_for_range(
+    data_root: Path,
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+    index_lookup: Dict[Tuple[str, str], str],
+    raw_frames: Dict[Tuple[str, str], dict],
+    pose_map: Dict[str, Tuple[float, float, float] | None],
+    calib: Dict[str, np.ndarray] | None,
+    lidar_cfg: dict,
+) -> Tuple[List[dict], Dict[str, dict]]:
+    candidates = []
+    stats_by_frame: Dict[str, dict] = {}
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        raw_info = raw_frames.get((drive_id, frame_id))
+        if not raw_info:
+            continue
+        image_path = index_lookup.get((drive_id, frame_id), "")
+        cand, stats = _build_lidar_candidate_for_frame(
+            data_root,
+            drive_id,
+            frame_id,
+            image_path,
+            raw_info,
+            pose_map.get(frame_id),
+            calib,
+            lidar_cfg,
+        )
+        stats_by_frame[frame_id] = stats
+        if cand:
+            candidates.append(cand)
+    return candidates, stats_by_frame
 
 
 def _read_candidates(path: Path) -> gpd.GeoDataFrame:
@@ -376,6 +613,7 @@ def _ensure_gated_entities_images(
     outputs_dir: Path,
     candidate_gdf: gpd.GeoDataFrame,
     raw_frames: Dict[Tuple[str, str], dict],
+    lidar_stats: Dict[str, dict],
     final_support: Dict[Tuple[str, str], List[str]],
     index_lookup: Dict[Tuple[str, str], str],
     final_gdf: gpd.GeoDataFrame,
@@ -432,6 +670,7 @@ def _ensure_gated_entities_images(
             frame_id,
             candidates,
             raw_frames.get((drive_id, frame_id)),
+            lidar_stats.get(frame_id, {}),
             pose_map.get(frame_id),
             calib,
         )
@@ -524,6 +763,7 @@ def _render_gated_overlay(
     frame_id: str,
     candidates: gpd.GeoDataFrame,
     raw_info: dict | None,
+    lidar_info: dict | None,
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
 ) -> Tuple[int, List[str]]:
@@ -544,6 +784,7 @@ def _render_gated_overlay(
     kept = 0
     reject_reasons: List[str] = []
     drawn = False
+    diag = lidar_info or {}
     for _, row in candidates.iterrows():
         geom = row.geometry
         reasons = str(row.get("reject_reasons") or "")
@@ -576,6 +817,17 @@ def _render_gated_overlay(
         draw.rectangle([minx, miny, maxx, maxy], outline=(160, 160, 160, 200), width=2)
         draw.text((10, 10), "PROJ_FAIL/GEOM_EMPTY", fill=(200, 200, 200, 220))
         reject_reasons.append("proj_fail")
+
+    if diag:
+        proj_method = str(diag.get("proj_method") or "none")
+        points_in_bbox = int(diag.get("points_in_bbox", 0))
+        points_in_mask = int(diag.get("points_in_mask", 0))
+        drop_reason = str(diag.get("drop_reason_code") or "")
+        draw.text((10, 60), f"{proj_method} bbox={points_in_bbox} mask={points_in_mask}", fill=(200, 200, 200, 220))
+        if drop_reason:
+            draw.text((10, 86), drop_reason, fill=(200, 120, 120, 220))
+        if proj_method in {"plane", "bbox_only"}:
+            draw.text((10, 112), "WEAK_PROJ", fill=(255, 128, 0, 220))
 
     if len(candidates) == 0 and not drawn:
         draw.text((10, 10), "NO_GATED_CANDIDATE", fill=(255, 128, 0, 220))
@@ -658,6 +910,7 @@ def _fallback_candidate_from_pose(
     pose: Tuple[float, float, float] | None,
     use_plane: bool,
     bbox_px: List[float] | None,
+    extra_reject: str,
     size_m: float = 2.0,
 ) -> dict | None:
     if pose is None:
@@ -682,7 +935,8 @@ def _fallback_candidate_from_pose(
             "frame_id": frame_id,
             "entity_type": "crosswalk",
             "reject_reasons": f"{reject_extra}proj_fail,geom_fallback"
-            + (",proj_fallback_plane" if proj_method == "plane" else ",proj_fail_bbox_only"),
+            + (",proj_fallback_plane" if proj_method == "plane" else ",proj_fail_bbox_only")
+            + (f",{extra_reject}" if extra_reject else ""),
             "proj_method": proj_method,
             "plane_ok": plane_ok,
             "geom_ok": 0 if proj_method == "bbox_only" else 1,
@@ -699,6 +953,7 @@ def _augment_candidates_with_fallback(
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib_ok: bool,
     raw_frames: Dict[Tuple[str, str], dict],
+    lidar_stats: Dict[str, dict],
     drive_id: str,
     frame_start: int,
     frame_end: int,
@@ -721,6 +976,8 @@ def _augment_candidates_with_fallback(
         if frame_id in existing:
             continue
         raw_info_frame = raw_frames.get((drive_id, frame_id), {})
+        lidar_info = lidar_stats.get(frame_id, {})
+        extra_reject = str(lidar_info.get("drop_reason_code") or "")
         score = float(raw_info.get("raw_top_score", 0.0) or 0.0)
         pose_ok = pose_map.get(frame_id) is not None
         use_plane = bool(calib_ok and pose_ok and score >= 0.3)
@@ -730,6 +987,7 @@ def _augment_candidates_with_fallback(
             pose_map.get(frame_id),
             use_plane,
             raw_info_frame.get("bbox_px"),
+            extra_reject,
         )
         if fallback_row is None:
             continue
@@ -761,6 +1019,7 @@ def _build_trace_records(
     fallback_frames: set[str],
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib_ok: bool,
+    lidar_stats: Dict[str, dict],
 ) -> List[dict]:
     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
@@ -788,6 +1047,7 @@ def _build_trace_records(
             key,
             {"raw_has_crosswalk": 0.0, "raw_top_score": 0.0, "raw_status": "unknown"},
         )
+        lidar_info = lidar_stats.get(frame_id, {})
         map_path = feature_store_map_root / drive_id / frame_id / "map_evidence_utm32.gpkg"
         project_ok = 1 if map_path.exists() else 0
         cand_ids = sorted(set(candidate_ids.get(key, [])))
@@ -798,10 +1058,9 @@ def _build_trace_records(
         kept = 0
         geom_ok = 0
         geom_area = 0.0
-        proj_method = "none"
-        plane_ok = 0
+        proj_method = str(lidar_info.get("proj_method") or "none")
+        plane_ok = int(lidar_info.get("plane_ok") or 0)
         if not candidates.empty:
-            proj_method = "lidar"
             for _, row in candidates.iterrows():
                 reasons = str(row.get("reject_reasons") or "")
                 if not reasons:
@@ -830,25 +1089,29 @@ def _build_trace_records(
             proj_method = "plane" if calib_ok and pose_ok else "bbox_only"
             plane_ok = 1 if proj_method == "plane" else 0
             geom_ok = 0 if proj_method == "bbox_only" else geom_ok
-        proj_points = -1
-        if proj_method == "lidar":
+        proj_points = int(lidar_info.get("points_in_mask", -1))
+        if proj_method == "lidar" and proj_points < 0:
             proj_points = 0 if project_ok == 0 else 1
         drop_reason = ""
-        if not cand_ids:
-            if int(raw_info.get("raw_has_crosswalk", 0)) == 0:
-                drop_reason = "RAW_EMPTY"
-            elif pose_ok == 0:
+        if int(raw_info.get("raw_has_crosswalk", 0)) == 0:
+            drop_reason = "RAW_EMPTY"
+        elif lidar_info.get("drop_reason_code"):
+            drop_reason = str(lidar_info.get("drop_reason_code"))
+        elif not cand_ids:
+            if pose_ok == 0:
                 drop_reason = "POSE_MISSING"
             elif not calib_ok:
                 drop_reason = "CALIB_MISSING"
             elif proj_method == "plane" and plane_ok == 0:
-                drop_reason = "PLANE_INTERSECTION_FAIL"
+                drop_reason = "PLANE_FAIL"
             elif proj_method == "bbox_only":
-                drop_reason = "GEOM_EMPTY_OR_INVALID"
+                drop_reason = "GEOM_INVALID"
             elif project_ok == 0:
-                drop_reason = "LIDAR_NO_SUPPORT_POINTS"
+                drop_reason = "LIDAR_NO_POINTS_BBOX"
             else:
                 drop_reason = "WRITE_CANDIDATE_FAIL"
+        if proj_method == "plane" and drop_reason not in {"PLANE_FAIL", "RAW_EMPTY"}:
+            drop_reason = "PLANE_FALLBACK_USED"
         records.append(
             {
                 "drive_id": drive_id,
@@ -861,10 +1124,15 @@ def _build_trace_records(
                 "pose_ok": pose_ok,
                 "calib_ok": 1 if calib_ok else 0,
                 "proj_method": proj_method,
-                "proj_points": proj_points,
+                "proj_in_image_ratio": float(lidar_info.get("proj_in_image_ratio", 0.0)),
+                "points_total": int(lidar_info.get("points_total", 0)),
+                "points_in_bbox": int(lidar_info.get("points_in_bbox", 0)),
+                "points_in_mask": int(lidar_info.get("points_in_mask", 0)),
+                "mask_dilate_px": int(lidar_info.get("mask_dilate_px", 0)),
+                "intensity_top_pct": int(lidar_info.get("intensity_top_pct", 0)),
                 "plane_ok": plane_ok,
-                "geom_ok": geom_ok,
-                "geom_area_m2": geom_area,
+                "geom_ok": geom_ok if geom_ok else int(lidar_info.get("geom_ok", 0)),
+                "geom_area_m2": geom_area if geom_area else float(lidar_info.get("geom_area_m2", 0.0)),
                 "candidate_written": 1 if cand_ids else 0,
                 "candidate_count": candidate_count,
                 "candidate_id": "|".join(cand_ids),
@@ -873,6 +1141,8 @@ def _build_trace_records(
                 "final_support": 1 if final_ids else 0,
                 "final_entity_ids": "|".join(final_ids),
                 "drop_reason_code": drop_reason,
+                "accum_frames_used": int(lidar_info.get("accum_frames_used", 1)),
+                "points_accum_total": int(lidar_info.get("points_accum_total", 0)),
             }
         )
     return records
@@ -917,10 +1187,19 @@ def _build_report(
     lines.append(f"- N_pos: {n_pos}")
     lines.append(f"- N_miss: {n_miss}")
     lines.append("")
+    lidar_ok = [
+        r
+        for r in trace_records
+        if r.get("proj_method") == "lidar"
+        and int(r.get("geom_ok", 0)) == 1
+        and int(r.get("points_in_bbox", 0)) >= 20
+    ]
+    lines.append(f"- lidar_ok_count: {len(lidar_ok)}")
+    lines.append("")
     cand_missing = [r for r in trace_records if int(r.get("candidate_written", 0)) == 0]
     lines.append(f"- candidate_written_zero: {len(cand_missing)}")
     drop_counts: Dict[str, int] = {}
-    for row in cand_missing:
+    for row in trace_records:
         reason = str(row.get("drop_reason_code") or "")
         if reason:
             drop_counts[reason] = drop_counts.get(reason, 0) + 1
@@ -938,18 +1217,24 @@ def _build_report(
         for method, count in sorted(proj_counts.items(), key=lambda x: x[1], reverse=True):
             lines.append(f"- {method}: {count}")
         lines.append("")
-    points = []
-    for row in trace_records:
-        try:
-            val = int(row.get("proj_points", -1))
-        except Exception:
-            val = -1
-        if val >= 0:
-            points.append(val)
-    if points:
+    subset = [r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
+    pts_bbox = [int(r.get("points_in_bbox", 0)) for r in subset if int(r.get("points_in_bbox", -1)) >= 0]
+    pts_mask = [int(r.get("points_in_mask", 0)) for r in subset if int(r.get("points_in_mask", -1)) >= 0]
+    ratios = [float(r.get("proj_in_image_ratio", 0.0)) for r in subset]
+    if pts_bbox:
+        lines.append("## points_in_bbox Summary")
+        lines.append(f"- p50: {np.percentile(pts_bbox, 50):.1f}")
+        lines.append(f"- p90: {np.percentile(pts_bbox, 90):.1f}")
+        lines.append("")
+    if pts_mask:
         lines.append("## points_in_mask Summary")
-        lines.append(f"- p50: {np.percentile(points, 50):.1f}")
-        lines.append(f"- p90: {np.percentile(points, 90):.1f}")
+        lines.append(f"- p50: {np.percentile(pts_mask, 50):.1f}")
+        lines.append(f"- p90: {np.percentile(pts_mask, 90):.1f}")
+        lines.append("")
+    if ratios:
+        lines.append("## proj_in_image_ratio Summary")
+        lines.append(f"- p50: {np.percentile(ratios, 50):.3f}")
+        lines.append(f"- p90: {np.percentile(ratios, 90):.3f}")
         lines.append("")
     reject_counts: Dict[str, int] = {}
     for row in trace_records:
@@ -1137,16 +1422,40 @@ def main() -> int:
         except Exception:
             pose_map[frame_id] = None
     try:
-        _ = load_kitti360_calib(kitti_root, camera)
+        calib = load_kitti360_calib(kitti_root, camera)
         calib_ok = True
     except Exception:
+        calib = None
         calib_ok = False
+    lidar_cfg = merged.get("lidar_proj", {}) if isinstance(merged.get("lidar_proj"), dict) else {}
+    lidar_candidates, lidar_stats = _build_lidar_candidates_for_range(
+        kitti_root,
+        drive_id,
+        frame_start,
+        frame_end,
+        index_lookup,
+        raw_frames,
+        pose_map,
+        calib,
+        lidar_cfg,
+    )
+    if lidar_candidates:
+        lidar_gdf = gpd.GeoDataFrame.from_features(lidar_candidates, crs="EPSG:32632")
+        if candidate_gdf.empty:
+            candidate_gdf = lidar_gdf
+        else:
+            candidate_gdf = gpd.GeoDataFrame(
+                pd.concat([candidate_gdf, lidar_gdf], ignore_index=True),
+                geometry="geometry",
+                crs="EPSG:32632",
+            )
     candidate_gdf, fallback_frames = _augment_candidates_with_fallback(
         candidate_gdf,
         raw_stats,
         pose_map,
         calib_ok,
         raw_frames,
+        lidar_stats,
         drive_id,
         frame_start,
         frame_end,
@@ -1171,6 +1480,7 @@ def main() -> int:
         outputs_dir,
         candidate_gdf,
         raw_frames,
+        lidar_stats,
         final_support,
         index_lookup,
         final_gdf,
@@ -1191,6 +1501,7 @@ def main() -> int:
         fallback_frames,
         pose_map,
         calib_ok,
+        lidar_stats,
     )
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)

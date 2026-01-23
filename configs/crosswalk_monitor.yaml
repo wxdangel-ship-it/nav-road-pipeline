@@ -13,3 +13,10 @@ image_provider: "grounded_sam2_v1"
 image_evidence_gpkg: "runs\\full_stack_20260121_000548\\evidence_clean\\evidence_clean_golden8.gpkg"
 road_root: "runs\\full_stack_20260121_000548"
 config: "configs\\road_entities.yaml"
+lidar_proj:
+  MASK_DILATE_PX: 5
+  MIN_POINTS_BBOX: 20
+  MIN_POINTS_MASK: 5
+  INTENSITY_TOP_PCT: 20
+  MIN_IN_IMAGE_RATIO: 0.1
+  ACCUM_FRAMES: 3
