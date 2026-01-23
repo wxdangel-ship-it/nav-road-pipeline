@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from PIL import Image, ImageDraw
+from shapely import affinity
 from shapely.geometry import Polygon, box
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -242,7 +243,7 @@ def _ensure_raw_overlays(
     provider_id: str,
     index_lookup: Dict[Tuple[str, str], str],
     raw_fallback_text: bool,
-) -> Tuple[Dict[Tuple[str, str], Dict[str, float]], Dict[Tuple[str, str], gpd.GeoDataFrame]]:
+) -> Tuple[Dict[Tuple[str, str], Dict[str, float]], Dict[Tuple[str, str], dict]]:
     if not qa_index_path.exists():
         return {}, {}
     qa_gdf = gpd.read_file(qa_index_path)
@@ -253,7 +254,7 @@ def _ensure_raw_overlays(
     qa_dir.mkdir(parents=True, exist_ok=True)
     raw_cache: Dict[Tuple[str, str], Tuple[gpd.GeoDataFrame, float, str]] = {}
     raw_stats: Dict[Tuple[str, str], Dict[str, float]] = {}
-    raw_frames: Dict[Tuple[str, str], gpd.GeoDataFrame] = {}
+    raw_frames: Dict[Tuple[str, str], dict] = {}
     missing_rows = []
     for idx, row in qa_gdf.iterrows():
         drive_id = str(row.get("drive_id") or "")
@@ -270,7 +271,12 @@ def _ensure_raw_overlays(
             "raw_status": raw_status,
         }
         if not raw_gdf.empty:
-            raw_frames[(drive_id, frame_id)] = raw_gdf.copy()
+            bounds = raw_gdf.total_bounds if hasattr(raw_gdf, "total_bounds") else None
+            bbox_px = None
+            if bounds is not None and len(bounds) == 4:
+                minx, miny, maxx, maxy = bounds
+                bbox_px = [float(minx), float(miny), float(maxx), float(maxy)]
+            raw_frames[(drive_id, frame_id)] = {"gdf": raw_gdf.copy(), "bbox_px": bbox_px}
         qa_gdf.at[idx, "raw_has_crosswalk"] = int(0 if raw_gdf.empty else 1)
         qa_gdf.at[idx, "raw_top_score"] = float(raw_score)
         qa_gdf.at[idx, "raw_status"] = raw_status
@@ -369,7 +375,7 @@ def _ensure_gated_entities_images(
     qa_index_path: Path,
     outputs_dir: Path,
     candidate_gdf: gpd.GeoDataFrame,
-    raw_frames: Dict[Tuple[str, str], gpd.GeoDataFrame],
+    raw_frames: Dict[Tuple[str, str], dict],
     final_support: Dict[Tuple[str, str], List[str]],
     index_lookup: Dict[Tuple[str, str], str],
     final_gdf: gpd.GeoDataFrame,
@@ -517,7 +523,7 @@ def _render_gated_overlay(
     image_path: str,
     frame_id: str,
     candidates: gpd.GeoDataFrame,
-    raw_gdf: gpd.GeoDataFrame | None,
+    raw_info: dict | None,
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
 ) -> Tuple[int, List[str]]:
@@ -542,33 +548,32 @@ def _render_gated_overlay(
         geom = row.geometry
         reasons = str(row.get("reject_reasons") or "")
         is_rejected = bool(reasons)
-        if geom is None or geom.is_empty:
-            continue
-        pts = _geom_to_image_points(geom, pose, calib)
-        if len(pts) < 2:
-            continue
-        drawn = True
-        color = (0, 255, 255, 200) if not is_rejected else (160, 160, 160, 200)
-        draw.polygon(pts, outline=color)
-        if is_rejected:
+        bbox_px = row.get("bbox_px")
+        if isinstance(bbox_px, str) and bbox_px.startswith("["):
+            try:
+                bbox_px = json.loads(bbox_px)
+            except Exception:
+                bbox_px = None
+        if isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4:
+            minx, miny, maxx, maxy = bbox_px
+            draw.rectangle([minx, miny, maxx, maxy], outline=(160, 160, 160, 200), width=2)
+            drawn = True
             reject_reasons.extend([r for r in reasons.split(",") if r])
-        else:
-            kept += 1
+        elif geom is not None and not geom.is_empty:
+            pts = _geom_to_image_points(geom, pose, calib)
+            if len(pts) >= 2:
+                drawn = True
+                color = (0, 255, 255, 200) if not is_rejected else (160, 160, 160, 200)
+                draw.polygon(pts, outline=color)
+                if is_rejected:
+                    reject_reasons.extend([r for r in reasons.split(",") if r])
+                else:
+                    kept += 1
 
-    if not drawn and raw_gdf is not None and not raw_gdf.empty:
-        for _, row in raw_gdf.iterrows():
-            geom = row.geometry
-            if geom is None or geom.is_empty:
-                continue
-            if geom.geom_type == "Polygon":
-                coords = [(float(x), float(y)) for x, y in geom.exterior.coords]
-                if len(coords) >= 2:
-                    draw.line(coords, fill=(160, 160, 160, 200), width=2)
-            elif geom.geom_type == "MultiPolygon":
-                for poly in geom.geoms:
-                    coords = [(float(x), float(y)) for x, y in poly.exterior.coords]
-                    if len(coords) >= 2:
-                        draw.line(coords, fill=(160, 160, 160, 200), width=2)
+    bbox_px = raw_info.get("bbox_px") if raw_info else None
+    if isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4 and not drawn:
+        minx, miny, maxx, maxy = bbox_px
+        draw.rectangle([minx, miny, maxx, maxy], outline=(160, 160, 160, 200), width=2)
         draw.text((10, 10), "PROJ_FAIL/GEOM_EMPTY", fill=(200, 200, 200, 220))
         reject_reasons.append("proj_fail")
 
@@ -651,16 +656,24 @@ def _fallback_candidate_from_pose(
     drive_id: str,
     frame_id: str,
     pose: Tuple[float, float, float] | None,
+    use_plane: bool,
+    bbox_px: List[float] | None,
     size_m: float = 2.0,
 ) -> dict | None:
     if pose is None:
-        x, y = 500000.0, 0.0
+        x, y, yaw = 500000.0, 0.0, 0.0
         reject_extra = "pose_missing,"
+        proj_method = "bbox_only"
+        plane_ok = 0
     else:
-        x, y, _ = pose
+        x, y, yaw = pose
         reject_extra = ""
+        proj_method = "plane" if use_plane else "bbox_only"
+        plane_ok = 1 if use_plane else 0
     half = max(0.5, size_m / 2.0)
     geom = box(x - half, y - half, x + half, y + half)
+    if proj_method == "plane":
+        geom = affinity.rotate(geom, np.degrees(yaw), origin=(x, y))
     return {
         "geometry": geom,
         "properties": {
@@ -668,7 +681,13 @@ def _fallback_candidate_from_pose(
             "drive_id": drive_id,
             "frame_id": frame_id,
             "entity_type": "crosswalk",
-            "reject_reasons": f"{reject_extra}proj_fail,geom_fallback",
+            "reject_reasons": f"{reject_extra}proj_fail,geom_fallback"
+            + (",proj_fallback_plane" if proj_method == "plane" else ",proj_fail_bbox_only"),
+            "proj_method": proj_method,
+            "plane_ok": plane_ok,
+            "geom_ok": 0 if proj_method == "bbox_only" else 1,
+            "geom_area_m2": float(geom.area) if proj_method != "bbox_only" else 0.0,
+            "bbox_px": bbox_px,
             "qa_flag": "proj_fail",
         },
     }
@@ -678,6 +697,8 @@ def _augment_candidates_with_fallback(
     candidate_gdf: gpd.GeoDataFrame,
     raw_stats: Dict[Tuple[str, str], Dict[str, float]],
     pose_map: Dict[str, Tuple[float, float, float] | None],
+    calib_ok: bool,
+    raw_frames: Dict[Tuple[str, str], dict],
     drive_id: str,
     frame_start: int,
     frame_end: int,
@@ -695,9 +716,21 @@ def _augment_candidates_with_fallback(
         raw_info = raw_stats.get(key, {})
         if int(raw_info.get("raw_has_crosswalk", 0)) != 1:
             continue
+        if raw_info.get("raw_status") not in {"ok", "on_demand_infer_ok"}:
+            continue
         if frame_id in existing:
             continue
-        fallback_row = _fallback_candidate_from_pose(drive_id, frame_id, pose_map.get(frame_id))
+        raw_info_frame = raw_frames.get((drive_id, frame_id), {})
+        score = float(raw_info.get("raw_top_score", 0.0) or 0.0)
+        pose_ok = pose_map.get(frame_id) is not None
+        use_plane = bool(calib_ok and pose_ok and score >= 0.3)
+        fallback_row = _fallback_candidate_from_pose(
+            drive_id,
+            frame_id,
+            pose_map.get(frame_id),
+            use_plane,
+            raw_info_frame.get("bbox_px"),
+        )
         if fallback_row is None:
             continue
         fallback.append(fallback_row)
@@ -726,6 +759,8 @@ def _build_trace_records(
     final_support: Dict[Tuple[str, str], List[str]],
     feature_store_map_root: Path,
     fallback_frames: set[str],
+    pose_map: Dict[str, Tuple[float, float, float] | None],
+    calib_ok: bool,
 ) -> List[dict]:
     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
@@ -763,8 +798,10 @@ def _build_trace_records(
         kept = 0
         geom_ok = 0
         geom_area = 0.0
+        proj_method = "none"
+        plane_ok = 0
         if not candidates.empty:
-            geom_ok = 1
+            proj_method = "lidar"
             for _, row in candidates.iterrows():
                 reasons = str(row.get("reject_reasons") or "")
                 if not reasons:
@@ -772,20 +809,46 @@ def _build_trace_records(
                 geom = row.geometry
                 if geom is not None and not geom.is_empty:
                     geom_area = max(geom_area, float(geom.area))
-        proj_method = "none"
-        if frame_id in fallback_frames:
-            proj_method = "none"
-            geom_ok = 0
-        elif cand_ids:
-            proj_method = "lidar" if project_ok == 1 else "none"
+                if "geom_ok" in row and pd.notna(row.get("geom_ok")):
+                    try:
+                        geom_ok = max(geom_ok, int(row.get("geom_ok")))
+                    except Exception:
+                        pass
+                else:
+                    geom_ok = 1 if geom_area > 0 else geom_ok
+                if "proj_method" in row and pd.notna(row.get("proj_method")):
+                    val = str(row.get("proj_method"))
+                    if val:
+                        proj_method = val
+                if "plane_ok" in row and pd.notna(row.get("plane_ok")):
+                    try:
+                        plane_ok = max(plane_ok, int(row.get("plane_ok")))
+                    except Exception:
+                        pass
+        pose_ok = 1 if pose_map.get(frame_id) is not None else 0
+        if frame_id in fallback_frames and proj_method == "none":
+            proj_method = "plane" if calib_ok and pose_ok else "bbox_only"
+            plane_ok = 1 if proj_method == "plane" else 0
+            geom_ok = 0 if proj_method == "bbox_only" else geom_ok
+        proj_points = -1
+        if proj_method == "lidar":
+            proj_points = 0 if project_ok == 0 else 1
         drop_reason = ""
         if not cand_ids:
             if int(raw_info.get("raw_has_crosswalk", 0)) == 0:
-                drop_reason = "raw_empty"
+                drop_reason = "RAW_EMPTY"
+            elif pose_ok == 0:
+                drop_reason = "POSE_MISSING"
+            elif not calib_ok:
+                drop_reason = "CALIB_MISSING"
+            elif proj_method == "plane" and plane_ok == 0:
+                drop_reason = "PLANE_INTERSECTION_FAIL"
+            elif proj_method == "bbox_only":
+                drop_reason = "GEOM_EMPTY_OR_INVALID"
             elif project_ok == 0:
-                drop_reason = "project_failed"
+                drop_reason = "LIDAR_NO_SUPPORT_POINTS"
             else:
-                drop_reason = "candidate_missing"
+                drop_reason = "WRITE_CANDIDATE_FAIL"
         records.append(
             {
                 "drive_id": drive_id,
@@ -795,8 +858,11 @@ def _build_trace_records(
                 "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
                 "project_ok": project_ok,
+                "pose_ok": pose_ok,
+                "calib_ok": 1 if calib_ok else 0,
                 "proj_method": proj_method,
-                "proj_points": -1,
+                "proj_points": proj_points,
+                "plane_ok": plane_ok,
                 "geom_ok": geom_ok,
                 "geom_area_m2": geom_area,
                 "candidate_written": 1 if cand_ids else 0,
@@ -806,7 +872,7 @@ def _build_trace_records(
                 "gated_kept": 1 if kept > 0 else 0,
                 "final_support": 1 if final_ids else 0,
                 "final_entity_ids": "|".join(final_ids),
-                "drop_reason": drop_reason,
+                "drop_reason_code": drop_reason,
             }
         )
     return records
@@ -832,18 +898,58 @@ def _build_report(
     raw_hits = [r["frame_id"] for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
     lines.append(f"- raw_has_crosswalk_count: {len(raw_hits)}")
     lines.append(f"- raw_has_crosswalk_frames: {', '.join(raw_hits)}")
+    n_pos = len(
+        [
+            r
+            for r in trace_records
+            if int(r.get("raw_has_crosswalk", 0)) == 1 and r.get("raw_status") in {"ok", "on_demand_infer_ok"}
+        ]
+    )
+    n_miss = len(
+        [
+            r
+            for r in trace_records
+            if int(r.get("raw_has_crosswalk", 0)) == 1
+            and r.get("raw_status") in {"ok", "on_demand_infer_ok"}
+            and int(r.get("candidate_written", 0)) == 0
+        ]
+    )
+    lines.append(f"- N_pos: {n_pos}")
+    lines.append(f"- N_miss: {n_miss}")
     lines.append("")
     cand_missing = [r for r in trace_records if int(r.get("candidate_written", 0)) == 0]
     lines.append(f"- candidate_written_zero: {len(cand_missing)}")
     drop_counts: Dict[str, int] = {}
     for row in cand_missing:
-        reason = str(row.get("drop_reason") or "")
+        reason = str(row.get("drop_reason_code") or "")
         if reason:
             drop_counts[reason] = drop_counts.get(reason, 0) + 1
     if drop_counts:
-        lines.append("## Candidate Drop Reasons")
+        lines.append("## Drop Reason Summary")
         for reason, count in sorted(drop_counts.items(), key=lambda x: x[1], reverse=True):
             lines.append(f"- {reason}: {count}")
+        lines.append("")
+    proj_counts: Dict[str, int] = {}
+    for row in trace_records:
+        method = str(row.get("proj_method") or "none")
+        proj_counts[method] = proj_counts.get(method, 0) + 1
+    if proj_counts:
+        lines.append("## Projection Method Summary")
+        for method, count in sorted(proj_counts.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"- {method}: {count}")
+        lines.append("")
+    points = []
+    for row in trace_records:
+        try:
+            val = int(row.get("proj_points", -1))
+        except Exception:
+            val = -1
+        if val >= 0:
+            points.append(val)
+    if points:
+        lines.append("## points_in_mask Summary")
+        lines.append(f"- p50: {np.percentile(points, 50):.1f}")
+        lines.append(f"- p90: {np.percentile(points, 90):.1f}")
         lines.append("")
     reject_counts: Dict[str, int] = {}
     for row in trace_records:
@@ -1030,10 +1136,17 @@ def main() -> int:
             pose_map[frame_id] = (x, y, yaw)
         except Exception:
             pose_map[frame_id] = None
+    try:
+        _ = load_kitti360_calib(kitti_root, camera)
+        calib_ok = True
+    except Exception:
+        calib_ok = False
     candidate_gdf, fallback_frames = _augment_candidates_with_fallback(
         candidate_gdf,
         raw_stats,
         pose_map,
+        calib_ok,
+        raw_frames,
         drive_id,
         frame_start,
         frame_end,
@@ -1076,6 +1189,8 @@ def main() -> int:
         final_support,
         feature_store_map_root,
         fallback_frames,
+        pose_map,
+        calib_ok,
     )
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)
