@@ -13,8 +13,10 @@ from typing import Dict, List, Tuple
 
 import geopandas as gpd
 import numpy as np
+import pandas as pd
 import yaml
 from PIL import Image, ImageDraw
+from shapely.geometry import Polygon, box
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -240,17 +242,18 @@ def _ensure_raw_overlays(
     provider_id: str,
     index_lookup: Dict[Tuple[str, str], str],
     raw_fallback_text: bool,
-) -> Dict[Tuple[str, str], Dict[str, float]]:
+) -> Tuple[Dict[Tuple[str, str], Dict[str, float]], Dict[Tuple[str, str], gpd.GeoDataFrame]]:
     if not qa_index_path.exists():
-        return {}
+        return {}, {}
     qa_gdf = gpd.read_file(qa_index_path)
     if qa_gdf.empty:
-        return {}
+        return {}, {}
     feature_store_root = image_run / f"feature_store_{provider_id}"
     qa_dir = outputs_dir / "qa_images"
     qa_dir.mkdir(parents=True, exist_ok=True)
     raw_cache: Dict[Tuple[str, str], Tuple[gpd.GeoDataFrame, float, str]] = {}
     raw_stats: Dict[Tuple[str, str], Dict[str, float]] = {}
+    raw_frames: Dict[Tuple[str, str], gpd.GeoDataFrame] = {}
     missing_rows = []
     for idx, row in qa_gdf.iterrows():
         drive_id = str(row.get("drive_id") or "")
@@ -266,6 +269,8 @@ def _ensure_raw_overlays(
             "raw_top_score": float(raw_score),
             "raw_status": raw_status,
         }
+        if not raw_gdf.empty:
+            raw_frames[(drive_id, frame_id)] = raw_gdf.copy()
         qa_gdf.at[idx, "raw_has_crosswalk"] = int(0 if raw_gdf.empty else 1)
         qa_gdf.at[idx, "raw_top_score"] = float(raw_score)
         qa_gdf.at[idx, "raw_status"] = raw_status
@@ -282,13 +287,11 @@ def _ensure_raw_overlays(
         qa_gdf.at[idx, "overlay_raw_path"] = str(out_path)
     qa_index_path.write_text(qa_gdf.to_json(), encoding="utf-8")
     missing_path = outputs_dir / "missing_feature_store_list.csv"
-    import pandas as pd
-
     pd.DataFrame(
         missing_rows,
         columns=["drive_id", "frame_id", "raw_status", "image_path"],
     ).to_csv(missing_path, index=False)
-    return raw_stats
+    return raw_stats, raw_frames
 
 
 def _read_candidates(path: Path) -> gpd.GeoDataFrame:
@@ -320,15 +323,13 @@ def _ensure_wgs84_range(gdf: gpd.GeoDataFrame) -> bool:
     return -180.0 <= minx <= 180.0 and -180.0 <= maxx <= 180.0 and -90.0 <= miny <= 90.0 and -90.0 <= maxy <= 90.0
 
 
-def _write_crosswalk_gpkg(src_gpkg: Path, out_gpkg: Path) -> None:
+def _write_crosswalk_gpkg(candidate_gdf: gpd.GeoDataFrame, final_gdf: gpd.GeoDataFrame, out_gpkg: Path) -> None:
     if out_gpkg.exists():
         out_gpkg.unlink()
-    for layer in ("crosswalk_candidate_poly", "crosswalk_poly"):
-        try:
-            gdf = gpd.read_file(src_gpkg, layer=layer)
-        except Exception:
-            gdf = gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:32632")
-        gdf.to_file(out_gpkg, layer=layer, driver="GPKG")
+    cand = candidate_gdf if not candidate_gdf.empty else gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:32632")
+    final = final_gdf if not final_gdf.empty else gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:32632")
+    cand.to_file(out_gpkg, layer="crosswalk_candidate_poly", driver="GPKG")
+    final.to_file(out_gpkg, layer="crosswalk_poly", driver="GPKG")
 
 
 def _update_qa_index_with_final(
@@ -368,6 +369,7 @@ def _ensure_gated_entities_images(
     qa_index_path: Path,
     outputs_dir: Path,
     candidate_gdf: gpd.GeoDataFrame,
+    raw_frames: Dict[Tuple[str, str], gpd.GeoDataFrame],
     final_support: Dict[Tuple[str, str], List[str]],
     index_lookup: Dict[Tuple[str, str], str],
     final_gdf: gpd.GeoDataFrame,
@@ -377,20 +379,29 @@ def _ensure_gated_entities_images(
     if not qa_index_path.exists():
         return
     qa = gpd.read_file(qa_index_path)
+    pose_map: Dict[str, Tuple[float, float, float]] = {}
+    try:
+        calib = load_kitti360_calib(kitti_root, camera)
+    except Exception:
+        calib = None
     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
+    candidate_by_frame: Dict[str, gpd.GeoDataFrame] = {}
     if not candidate_gdf.empty:
-        for _, row in candidate_gdf.iterrows():
-            drive_id = str(row.get("drive_id") or "")
-            frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
-            if not drive_id or not frame_id:
-                continue
-            key = (drive_id, frame_id)
-            candidate_ids.setdefault(key, []).append(str(row.get("candidate_id") or ""))
-            reasons = str(row.get("reject_reasons") or "")
-            if reasons:
-                for token in [r for r in reasons.split(",") if r]:
-                    candidate_rejects.setdefault(key, []).append(token)
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+        for frame_id, group in candidate_gdf.groupby("frame_id_norm"):
+            candidate_by_frame[str(frame_id)] = group
+            for _, row in group.iterrows():
+                drive_id = str(row.get("drive_id") or "")
+                if not drive_id:
+                    continue
+                key = (drive_id, str(frame_id))
+                candidate_ids.setdefault(key, []).append(str(row.get("candidate_id") or ""))
+                reasons = str(row.get("reject_reasons") or "")
+                if reasons:
+                    for token in [r for r in reasons.split(",") if r]:
+                        candidate_rejects.setdefault(key, []).append(token)
     for idx, row in qa.iterrows():
         drive_id = str(row.get("drive_id") or "")
         frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
@@ -401,14 +412,24 @@ def _ensure_gated_entities_images(
         qa_dir.mkdir(parents=True, exist_ok=True)
         gated_path = qa_dir / f"{frame_id}_overlay_gated.png"
         entities_path = qa_dir / f"{frame_id}_overlay_entities.png"
-        if not gated_path.exists():
-            rejects = sorted(set(candidate_rejects.get((drive_id, frame_id), [])))
-            lines = [
-                "NO_GATED_RENDER",
-                f"REJECT_REASONS:{'|'.join(rejects) if rejects else 'none'}",
-            ]
-            _render_text_overlay(image_path, gated_path, lines)
-            qa.at[idx, "overlay_gated_path"] = str(gated_path)
+        raw_has = int(row.get("raw_has_crosswalk", 0) or 0)
+        if frame_id not in pose_map:
+            try:
+                x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
+                pose_map[frame_id] = (x, y, yaw)
+            except Exception:
+                pose_map[frame_id] = None
+        candidates = candidate_by_frame.get(frame_id, gpd.GeoDataFrame())
+        kept, _ = _render_gated_overlay(
+            gated_path,
+            image_path,
+            frame_id,
+            candidates,
+            raw_frames.get((drive_id, frame_id)),
+            pose_map.get(frame_id),
+            calib,
+        )
+        qa.at[idx, "overlay_gated_path"] = str(gated_path)
         support_ids = final_support.get((drive_id, frame_id), [])
         if support_ids:
             _render_final_entities_image(
@@ -422,7 +443,17 @@ def _ensure_gated_entities_images(
             )
             qa.at[idx, "overlay_entities_path"] = str(entities_path)
         elif not entities_path.exists():
-            _render_text_overlay(image_path, entities_path, ["NO_FINAL_ENTITY"])
+            _render_entities_overlay(
+                entities_path,
+                image_path,
+                drive_id,
+                frame_id,
+                final_gdf,
+                final_support,
+                raw_has,
+                pose_map.get(frame_id),
+                calib,
+            )
             qa.at[idx, "overlay_entities_path"] = str(entities_path)
         qa.at[idx, "candidate_ids_nearby"] = json.dumps(sorted(set(candidate_ids.get((drive_id, frame_id), []))), ensure_ascii=True)
     qa.to_file(qa_index_path, driver="GeoJSON")
@@ -481,6 +512,130 @@ def _render_final_entities_image(
     base.save(out_path)
 
 
+def _render_gated_overlay(
+    out_path: Path,
+    image_path: str,
+    frame_id: str,
+    candidates: gpd.GeoDataFrame,
+    raw_gdf: gpd.GeoDataFrame | None,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+) -> Tuple[int, List[str]]:
+    if out_path.exists():
+        out_path.unlink()
+    if image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    if pose is None or calib is None:
+        _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+        return 0, []
+
+    kept = 0
+    reject_reasons: List[str] = []
+    drawn = False
+    for _, row in candidates.iterrows():
+        geom = row.geometry
+        reasons = str(row.get("reject_reasons") or "")
+        is_rejected = bool(reasons)
+        if geom is None or geom.is_empty:
+            continue
+        pts = _geom_to_image_points(geom, pose, calib)
+        if len(pts) < 2:
+            continue
+        drawn = True
+        color = (0, 255, 255, 200) if not is_rejected else (160, 160, 160, 200)
+        draw.polygon(pts, outline=color)
+        if is_rejected:
+            reject_reasons.extend([r for r in reasons.split(",") if r])
+        else:
+            kept += 1
+
+    if not drawn and raw_gdf is not None and not raw_gdf.empty:
+        for _, row in raw_gdf.iterrows():
+            geom = row.geometry
+            if geom is None or geom.is_empty:
+                continue
+            if geom.geom_type == "Polygon":
+                coords = [(float(x), float(y)) for x, y in geom.exterior.coords]
+                if len(coords) >= 2:
+                    draw.line(coords, fill=(160, 160, 160, 200), width=2)
+            elif geom.geom_type == "MultiPolygon":
+                for poly in geom.geoms:
+                    coords = [(float(x), float(y)) for x, y in poly.exterior.coords]
+                    if len(coords) >= 2:
+                        draw.line(coords, fill=(160, 160, 160, 200), width=2)
+        draw.text((10, 10), "PROJ_FAIL/GEOM_EMPTY", fill=(200, 200, 200, 220))
+        reject_reasons.append("proj_fail")
+
+    if len(candidates) == 0 and not drawn:
+        draw.text((10, 10), "NO_GATED_CANDIDATE", fill=(255, 128, 0, 220))
+    elif kept == 0:
+        top_reject = sorted(set(reject_reasons))
+        draw.text((10, 10), "NO_GATED_CANDIDATE", fill=(255, 128, 0, 220))
+        if top_reject:
+            draw.text((10, 36), "REJECT_REASONS:" + "|".join(top_reject[:5]), fill=(200, 200, 200, 220))
+    base.save(out_path)
+    return kept, sorted(set(reject_reasons))
+
+
+def _render_entities_overlay(
+    out_path: Path,
+    image_path: str,
+    drive_id: str,
+    frame_id: str,
+    final_gdf: gpd.GeoDataFrame,
+    final_support: Dict[Tuple[str, str], List[str]],
+    raw_has_crosswalk: int,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    if pose is None or calib is None:
+        _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+        return
+
+    support_ids = final_support.get((drive_id, frame_id), [])
+    if not support_ids:
+        tag = "RAW_HAS_CROSSWALK=1" if raw_has_crosswalk == 1 else "RAW_HAS_CROSSWALK=0"
+        draw.text((10, 10), "NO_FINAL_ENTITY", fill=(255, 128, 0, 220))
+        draw.text((10, 36), tag, fill=(255, 200, 0, 220))
+        base.save(out_path)
+        return
+
+    for _, row in final_gdf.iterrows():
+        if str(row.get("drive_id") or "") != drive_id:
+            continue
+        frames_raw = row.get("support_frames", "")
+        frames = []
+        if isinstance(frames_raw, str) and frames_raw:
+            try:
+                frames = json.loads(frames_raw)
+            except Exception:
+                frames = []
+        if frame_id not in {str(f) for f in frames}:
+            continue
+        geom = row.geometry
+        pts = _geom_to_image_points(geom, pose, calib)
+        if len(pts) < 2:
+            continue
+        draw.polygon(pts, outline=(0, 128, 255, 220), fill=(0, 128, 255, 80))
+    base.save(out_path)
+
+
 def _build_trace(
     out_path: Path,
     records: List[dict],
@@ -492,6 +647,75 @@ def _build_trace(
     pd.DataFrame(records).to_csv(out_path, index=False)
 
 
+def _fallback_candidate_from_pose(
+    drive_id: str,
+    frame_id: str,
+    pose: Tuple[float, float, float] | None,
+    size_m: float = 2.0,
+) -> dict | None:
+    if pose is None:
+        x, y = 500000.0, 0.0
+        reject_extra = "pose_missing,"
+    else:
+        x, y, _ = pose
+        reject_extra = ""
+    half = max(0.5, size_m / 2.0)
+    geom = box(x - half, y - half, x + half, y + half)
+    return {
+        "geometry": geom,
+        "properties": {
+            "candidate_id": f"{drive_id}_crosswalk_fallback_{frame_id}",
+            "drive_id": drive_id,
+            "frame_id": frame_id,
+            "entity_type": "crosswalk",
+            "reject_reasons": f"{reject_extra}proj_fail,geom_fallback",
+            "qa_flag": "proj_fail",
+        },
+    }
+
+
+def _augment_candidates_with_fallback(
+    candidate_gdf: gpd.GeoDataFrame,
+    raw_stats: Dict[Tuple[str, str], Dict[str, float]],
+    pose_map: Dict[str, Tuple[float, float, float] | None],
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+) -> Tuple[gpd.GeoDataFrame, set[str]]:
+    fallback = []
+    fallback_frames: set[str] = set()
+    existing = set()
+    if not candidate_gdf.empty:
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+        existing = set(candidate_gdf["frame_id_norm"].tolist())
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        key = (drive_id, frame_id)
+        raw_info = raw_stats.get(key, {})
+        if int(raw_info.get("raw_has_crosswalk", 0)) != 1:
+            continue
+        if frame_id in existing:
+            continue
+        fallback_row = _fallback_candidate_from_pose(drive_id, frame_id, pose_map.get(frame_id))
+        if fallback_row is None:
+            continue
+        fallback.append(fallback_row)
+        fallback_frames.add(frame_id)
+    if not fallback:
+        return candidate_gdf, fallback_frames
+    fallback_gdf = gpd.GeoDataFrame.from_features(fallback, crs="EPSG:32632")
+    if candidate_gdf.empty:
+        merged = fallback_gdf
+    else:
+        merged = gpd.GeoDataFrame(
+            pd.concat([candidate_gdf.drop(columns=["frame_id_norm"]), fallback_gdf], ignore_index=True),
+            geometry="geometry",
+            crs="EPSG:32632",
+        )
+    return merged, fallback_frames
+
+
 def _build_trace_records(
     drive_id: str,
     frame_start: int,
@@ -501,21 +725,26 @@ def _build_trace_records(
     candidate_gdf: gpd.GeoDataFrame,
     final_support: Dict[Tuple[str, str], List[str]],
     feature_store_map_root: Path,
+    fallback_frames: set[str],
 ) -> List[dict]:
     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
+    candidate_by_frame: Dict[str, gpd.GeoDataFrame] = {}
     if not candidate_gdf.empty:
-        for _, row in candidate_gdf.iterrows():
-            d = str(row.get("drive_id") or "")
-            f = _normalize_frame_id(str(row.get("frame_id") or ""))
-            if not d or not f:
-                continue
-            key = (d, f)
-            candidate_ids.setdefault(key, []).append(str(row.get("candidate_id") or ""))
-            reasons = str(row.get("reject_reasons") or "")
-            if reasons:
-                for token in [r for r in reasons.split(",") if r]:
-                    candidate_rejects.setdefault(key, []).append(token)
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+        for frame_id, group in candidate_gdf.groupby("frame_id_norm"):
+            candidate_by_frame[str(frame_id)] = group
+            for _, row in group.iterrows():
+                d = str(row.get("drive_id") or "")
+                if not d:
+                    continue
+                key = (d, str(frame_id))
+                candidate_ids.setdefault(key, []).append(str(row.get("candidate_id") or ""))
+                reasons = str(row.get("reject_reasons") or "")
+                if reasons:
+                    for token in [r for r in reasons.split(",") if r]:
+                        candidate_rejects.setdefault(key, []).append(token)
     records: List[dict] = []
     for frame in range(frame_start, frame_end + 1):
         frame_id = _normalize_frame_id(str(frame))
@@ -529,6 +758,26 @@ def _build_trace_records(
         cand_ids = sorted(set(candidate_ids.get(key, [])))
         rejects = sorted(set(candidate_rejects.get(key, [])))
         final_ids = sorted(set(final_support.get(key, [])))
+        candidates = candidate_by_frame.get(frame_id, gpd.GeoDataFrame())
+        candidate_count = int(len(candidates)) if not candidates.empty else 0
+        kept = 0
+        geom_ok = 0
+        geom_area = 0.0
+        if not candidates.empty:
+            geom_ok = 1
+            for _, row in candidates.iterrows():
+                reasons = str(row.get("reject_reasons") or "")
+                if not reasons:
+                    kept += 1
+                geom = row.geometry
+                if geom is not None and not geom.is_empty:
+                    geom_area = max(geom_area, float(geom.area))
+        proj_method = "none"
+        if frame_id in fallback_frames:
+            proj_method = "none"
+            geom_ok = 0
+        elif cand_ids:
+            proj_method = "lidar" if project_ok == 1 else "none"
         drop_reason = ""
         if not cand_ids:
             if int(raw_info.get("raw_has_crosswalk", 0)) == 0:
@@ -546,9 +795,15 @@ def _build_trace_records(
                 "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
                 "project_ok": project_ok,
+                "proj_method": proj_method,
+                "proj_points": -1,
+                "geom_ok": geom_ok,
+                "geom_area_m2": geom_area,
                 "candidate_written": 1 if cand_ids else 0,
+                "candidate_count": candidate_count,
                 "candidate_id": "|".join(cand_ids),
                 "reject_reasons": "|".join(rejects),
+                "gated_kept": 1 if kept > 0 else 0,
                 "final_support": 1 if final_ids else 0,
                 "final_entity_ids": "|".join(final_ids),
                 "drop_reason": drop_reason,
@@ -599,6 +854,19 @@ def _build_report(
         for reason, count in sorted(reject_counts.items(), key=lambda x: x[1], reverse=True):
             lines.append(f"- {reason}: {count}")
         lines.append("")
+    lines.append("## Raw Has But Final Missing Samples")
+    miss_final = [
+        r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1 and int(r.get("final_support", 0)) == 0
+    ]
+    for row in miss_final[:10]:
+        frame_id = row.get("frame_id")
+        qa_dir = outputs_dir / "qa_images" / drive_id
+        lines.append(
+            f"- {frame_id} raw={qa_dir / f'{frame_id}_overlay_raw.png'} gated={qa_dir / f'{frame_id}_overlay_gated.png'} entities={qa_dir / f'{frame_id}_overlay_entities.png'}"
+        )
+    if not miss_final:
+        lines.append("- none")
+    lines.append("")
     lines.append("## Final Summary")
     lines.append(f"- final_count: {len(final_gdf)}")
     if not final_gdf.empty:
@@ -742,7 +1010,7 @@ def main() -> int:
         shutil.copy2(qa_index_path, qa_out_path)
 
     index_lookup = {(r["drive_id"], _normalize_frame_id(r["frame_id"])): r.get("image_path", "") for r in index_records}
-    raw_stats = _ensure_raw_overlays(
+    raw_stats, raw_frames = _ensure_raw_overlays(
         qa_out_path,
         outputs_dir,
         image_run,
@@ -754,8 +1022,24 @@ def main() -> int:
     stage_gpkg = stage_outputs / "road_entities_utm32.gpkg"
     candidate_gdf = _read_candidates(stage_gpkg)
     final_gdf = _read_final(stage_gpkg)
+    pose_map: Dict[str, Tuple[float, float, float] | None] = {}
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        try:
+            x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
+            pose_map[frame_id] = (x, y, yaw)
+        except Exception:
+            pose_map[frame_id] = None
+    candidate_gdf, fallback_frames = _augment_candidates_with_fallback(
+        candidate_gdf,
+        raw_stats,
+        pose_map,
+        drive_id,
+        frame_start,
+        frame_end,
+    )
     out_gpkg = outputs_dir / "crosswalk_entities_utm32.gpkg"
-    _write_crosswalk_gpkg(stage_gpkg, out_gpkg)
+    _write_crosswalk_gpkg(candidate_gdf, final_gdf, out_gpkg)
     if write_wgs84:
         out_wgs84 = outputs_dir / "crosswalk_entities_wgs84.gpkg"
         if out_wgs84.exists():
@@ -773,6 +1057,7 @@ def main() -> int:
         qa_out_path,
         outputs_dir,
         candidate_gdf,
+        raw_frames,
         final_support,
         index_lookup,
         final_gdf,
@@ -790,6 +1075,7 @@ def main() -> int:
         candidate_gdf,
         final_support,
         feature_store_map_root,
+        fallback_frames,
     )
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)
@@ -812,6 +1098,18 @@ def main() -> int:
         top_reject,
         outputs_dir,
     )
+
+    miss_frames = [
+        r["frame_id"]
+        for r in trace_records
+        if int(r.get("raw_has_crosswalk", 0)) == 1
+        and r.get("raw_status") in {"ok", "on_demand_infer_ok"}
+        and int(r.get("candidate_written", 0)) == 0
+    ]
+    if miss_frames:
+        log.error("candidate_missing_count=%d", len(miss_frames))
+        log.error("candidate_missing_frames=%s", ",".join(miss_frames[:20]))
+        return 6
 
     if export_all_frames and qa_out_path.exists():
         qa = gpd.read_file(qa_out_path)
