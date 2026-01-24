@@ -4,6 +4,7 @@ import argparse
 import datetime as dt
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -311,6 +312,82 @@ def _choose_stage2_seed(
     }
 
 
+def _choose_stage2_seeds(
+    drive_id: str,
+    cluster_id: str,
+    candidate_gdf: gpd.GeoDataFrame,
+    raw_stats: Dict[Tuple[str, str], Dict[str, float]],
+    raw_frames: Dict[Tuple[str, str], dict],
+    index_lookup: Dict[Tuple[str, str], str],
+    seed_dir: Path,
+    seeds_per_cluster: int,
+    min_seed_dist_m: float,
+) -> List[dict]:
+    if seeds_per_cluster <= 0:
+        return []
+    if seeds_per_cluster == 1:
+        seed = _choose_stage2_seed(drive_id, cluster_id, candidate_gdf, raw_stats, raw_frames, index_lookup, seed_dir)
+        return [seed] if seed else []
+    if candidate_gdf.empty:
+        return []
+    subset = candidate_gdf[candidate_gdf.get("cluster_id", "") == cluster_id]
+    if subset.empty:
+        return []
+    scored = []
+    for _, row in subset.iterrows():
+        frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
+        if not frame_id:
+            continue
+        raw_info = raw_stats.get((drive_id, frame_id), {})
+        score = float(raw_info.get("raw_top_score", 0.0))
+        rectangularity = float(row.get("rectangularity") or 0.0)
+        gore_like = bool(row.get("gore_like", False))
+        base = score + rectangularity
+        if gore_like:
+            base *= 0.2
+        geom = row.get("geometry")
+        centroid = geom.centroid if geom is not None else None
+        scored.append((base, frame_id, row, centroid))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    chosen: List[dict] = []
+    chosen_centroids: List[Point] = []
+    for _, frame_id, row, centroid in scored:
+        if len(chosen) >= seeds_per_cluster:
+            break
+        if centroid is not None and chosen_centroids:
+            if any(centroid.distance(c) < min_seed_dist_m for c in chosen_centroids):
+                continue
+        image_path = index_lookup.get((drive_id, frame_id), "")
+        bbox_px = row.get("bbox_px")
+        if isinstance(bbox_px, str) and bbox_px.startswith("["):
+            try:
+                bbox_px = json.loads(bbox_px)
+            except Exception:
+                bbox_px = None
+        raw_info = raw_frames.get((drive_id, frame_id), {})
+        seed_mask_path = None
+        raw_gdf = raw_info.get("gdf")
+        if raw_gdf is not None and not raw_gdf.empty and image_path:
+            seed_mask_path = _raw_gdf_to_mask(
+                raw_gdf,
+                image_path,
+                seed_dir / f"{cluster_id}_seed_{frame_id}.png",
+            )
+        chosen.append(
+            {
+                "cluster_id": cluster_id,
+                "seed_frame_id": frame_id,
+                "seed_bbox_px": bbox_px,
+                "seed_mask_path": str(seed_mask_path) if seed_mask_path else "",
+                "seed_score": float(raw_stats.get((drive_id, frame_id), {}).get("raw_top_score", 0.0)),
+                "seed_is_gore_like": int(bool(row.get("gore_like", False))),
+            }
+        )
+        if centroid is not None:
+            chosen_centroids.append(centroid)
+    return chosen
+
+
 def _write_seeds_jsonl(seeds: List[dict], out_path: Path) -> None:
     out_path.write_text(
         "\n".join([json.dumps(s, ensure_ascii=True) for s in seeds if s]) + "\n",
@@ -354,6 +431,40 @@ def _roi_bbox_from_geom(
     if area > max_area_ratio * float(width * height):
         return None
     return [minx, miny, maxx, maxy]
+
+
+def _mask_to_bbox(mask: np.ndarray) -> List[float] | None:
+    if mask is None or mask.size == 0:
+        return None
+    if mask.ndim >= 3:
+        mask = np.squeeze(mask)
+    ys, xs = np.where(mask)
+    if xs.size == 0 or ys.size == 0:
+        return None
+    minx = float(np.min(xs))
+    maxx = float(np.max(xs))
+    miny = float(np.min(ys))
+    maxy = float(np.max(ys))
+    if maxx <= minx or maxy <= miny:
+        return None
+    return [minx, miny, maxx, maxy]
+
+
+def _expand_bbox(bbox: List[float], margin: float, width: int, height: int) -> List[float]:
+    minx, miny, maxx, maxy = bbox
+    minx = max(0.0, minx - margin)
+    miny = max(0.0, miny - margin)
+    maxx = min(float(width - 1), maxx + margin)
+    maxy = min(float(height - 1), maxy + margin)
+    if maxx <= minx:
+        maxx = minx + 1.0
+    if maxy <= miny:
+        maxy = miny + 1.0
+    return [minx, miny, maxx, maxy]
+
+
+def _bbox_contains_point(bbox: List[float], pt: Tuple[float, float]) -> bool:
+    return bbox[0] <= pt[0] <= bbox[2] and bbox[1] <= pt[1] <= bbox[3]
 def _normalize_frame_id(frame_id: str) -> str:
     digits = "".join(ch for ch in str(frame_id) if ch.isdigit())
     if not digits:
@@ -2918,6 +3029,7 @@ def _build_trace_records(
                 "prop_ok": int(stage2.get("prop_ok", 0)),
                 "prop_area_px": float(stage2.get("prop_area_px", 0.0)),
                 "prop_drift_flag": int(stage2.get("prop_drift_flag", 0)),
+                "prop_reason": str(stage2.get("prop_reason", "")),
                 "frames_hit_support_after": cluster_frames_hit,
                 "candidate_written": 1 if cand_ids else 0,
                 "candidate_count": candidate_count,
@@ -3606,13 +3718,21 @@ def main() -> int:
     stage2_window = int(stage2_cfg.get("stage2_window", 50))
     prop_min_area = float(stage2_cfg.get("prop_min_area_px", 400.0))
     prop_max_ratio = float(stage2_cfg.get("prop_max_area_ratio", 0.6))
+    prop_min_ratio = float(stage2_cfg.get("prop_min_area_ratio", stage2_cfg.get("AREA_RATIO_MIN", 0.0)))
+    rel_area_min = float(stage2_cfg.get("area_ratio_min", stage2_cfg.get("AREA_RATIO_MIN", 0.0)))
+    rel_area_max = float(stage2_cfg.get("area_ratio_max", stage2_cfg.get("AREA_RATIO_MAX", 3.0)))
     rect_min_support = float(stage2_cfg.get("rectangularity_min_support", 0.35))
     allow_gore_support = bool(stage2_cfg.get("allow_gore_like_support", False))
+    roi_margin_px = int(stage2_cfg.get("roi_margin_px", stage2_cfg.get("ROI_MARGIN_PX", 80)))
+    iou_prev_min = float(stage2_cfg.get("iou_prev_min", stage2_cfg.get("IOU_PREV_MIN", 0.05)))
+    center_drift_ratio = float(stage2_cfg.get("center_drift_ratio", stage2_cfg.get("CENTER_DRIFT_RATIO", 0.35)))
+    drift_consec_stop = int(stage2_cfg.get("drift_consec_stop", stage2_cfg.get("DRIFT_CONSEC_STOP", 3)))
     stage2_stats: Dict[Tuple[str, str], dict] = {}
     stage2_overlay: Dict[str, List[dict]] = {}
 
     image_dir = _find_image_dir(kitti_root, drive_id, camera)
     frame_ids = [_normalize_frame_id(str(frame)) for frame in range(frame_start, frame_end + 1)]
+    frame_index = {frame_id: idx for idx, frame_id in enumerate(frame_ids)}
     stage2_video_dir = debug_dir / "stage2_video_frames"
     prepare_video_frames(image_dir, frame_ids, stage2_video_dir)
     predictor = build_video_predictor(image_provider)
@@ -3620,9 +3740,19 @@ def main() -> int:
     seeds = []
     seed_dir = outputs_dir / "stage2_seeds"
     for cid in cluster_info.keys():
-        seed = _choose_stage2_seed(drive_id, cid, candidate_gdf, raw_stats, raw_frames, index_lookup, seed_dir)
-        if seed:
-            seeds.append(seed)
+        seeds.extend(
+            _choose_stage2_seeds(
+                drive_id,
+                cid,
+                candidate_gdf,
+                raw_stats,
+                raw_frames,
+                index_lookup,
+                seed_dir,
+                int(stage2_cfg.get("seeds_per_cluster", 1)),
+                float(stage2_cfg.get("min_seed_dist_m", 5.0)),
+            )
+        )
     _write_seeds_jsonl(seeds, outputs_dir / "seeds.jsonl")
 
     stage2_candidate_rows: List[dict] = []
@@ -3635,6 +3765,10 @@ def main() -> int:
                 continue
             seed_mask_path = Path(seed["seed_mask_path"]) if seed.get("seed_mask_path") else None
             seed_bbox = seed.get("seed_bbox_px")
+            if seed_bbox is None and seed_mask_path is not None and seed_mask_path.exists():
+                seed_mask = np.array(Image.open(seed_mask_path).convert("L")) > 0
+                seed_bbox = _mask_to_bbox(seed_mask)
+            seed_bbox = seed_bbox if isinstance(seed_bbox, list) else None
             masks = propagate_seed(
                 predictor,
                 stage2_video_dir,
@@ -3645,24 +3779,83 @@ def main() -> int:
             )
             out_mask_dir = outputs_dir / "stage2_masks" / cid
             saved = save_masks(masks, frame_ids, out_mask_dir)
-            for frame_id, mask_path in saved.items():
+            if not saved:
+                continue
+            image_path = index_lookup.get((drive_id, seed_frame), "")
+            width, height = _load_image_size(image_path)
+            roi_bbox = None
+            if seed_bbox is not None and width > 0 and height > 0 and roi_margin_px > 0:
+                roi_bbox = _expand_bbox(seed_bbox, float(roi_margin_px), width, height)
+            prev_bbox = None
+            prev_area = None
+            consec_drift = 0
+            for frame_id, mask_path in sorted(saved.items(), key=lambda item: frame_index.get(item[0], 1_000_000)):
                 mask = np.array(Image.open(mask_path).convert("L")) > 0
                 area = mask_area_px(mask)
-                width, height = _load_image_size(index_lookup.get((drive_id, frame_id), ""))
-                area_max = float(width * height) * prop_max_ratio if width > 0 and height > 0 else 0.0
-                prop_ok = int(area >= prop_min_area and (area_max == 0.0 or area <= area_max))
-                prop_drift = int(area_max > 0.0 and area > area_max)
+                image_path = index_lookup.get((drive_id, frame_id), "")
+                width, height = _load_image_size(image_path)
+                image_area = float(width * height) if width > 0 and height > 0 else 0.0
+                area_ratio = (area / image_area) if image_area > 0 else 0.0
+                area_max = image_area * prop_max_ratio if image_area > 0 else 0.0
+                mask_bbox = _mask_to_bbox(mask)
+                drift_reasons = []
+                if area < prop_min_area:
+                    drift_reasons.append("area_min")
+                if image_area > 0 and area_ratio < prop_min_ratio:
+                    drift_reasons.append("area_ratio_min")
+                if area_max > 0.0 and area > area_max:
+                    drift_reasons.append("area_ratio_max")
+                if mask_bbox is None:
+                    drift_reasons.append("bbox_missing")
+                if roi_bbox is not None and mask_bbox is not None:
+                    center = _bbox_center(mask_bbox)
+                    if not _bbox_contains_point(roi_bbox, center):
+                        drift_reasons.append("roi_center")
+                if prev_bbox is not None and mask_bbox is not None:
+                    if _bbox_iou(prev_bbox, mask_bbox) < iou_prev_min:
+                        drift_reasons.append("iou_prev")
+                    center = _bbox_center(mask_bbox)
+                    prev_center = _bbox_center(prev_bbox)
+                    max_dim = float(max(width, height)) if width > 0 and height > 0 else 0.0
+                    if roi_bbox is not None:
+                        max_dim = float(max(roi_bbox[2] - roi_bbox[0], roi_bbox[3] - roi_bbox[1]))
+                    if max_dim > 0:
+                        dist = math.hypot(center[0] - prev_center[0], center[1] - prev_center[1])
+                        if dist / max_dim > center_drift_ratio:
+                            drift_reasons.append("center_drift")
+                if prev_area is not None and prev_area > 0:
+                    ratio = area / prev_area if prev_area > 0 else 0.0
+                    if ratio < rel_area_min or ratio > rel_area_max:
+                        drift_reasons.append("area_ratio_prev")
+                prop_ok = int(len(drift_reasons) == 0)
+                prop_drift = int(len(drift_reasons) > 0)
+                if prop_drift:
+                    consec_drift += 1
+                else:
+                    consec_drift = 0
+                if drift_consec_stop > 0 and consec_drift >= drift_consec_stop:
+                    break
                 key = (drive_id, frame_id)
                 stat = stage2_stats.setdefault(
                     key,
-                    {"cluster_id": cid, "stage2_added": 0, "prop_ok": 0, "prop_area_px": 0.0, "prop_drift_flag": 0},
+                    {
+                        "cluster_id": cid,
+                        "stage2_added": 0,
+                        "prop_ok": 0,
+                        "prop_area_px": 0.0,
+                        "prop_drift_flag": 0,
+                        "prop_reason": "",
+                    },
                 )
                 stat["cluster_id"] = cid
                 stat["prop_area_px"] = area
                 stat["prop_drift_flag"] = prop_drift
                 stat["prop_ok"] = prop_ok
+                stat["prop_reason"] = ",".join(drift_reasons)
                 if prop_ok:
                     stat["stage2_added"] = 1
+                    prev_bbox = mask_bbox or prev_bbox
+                    prev_area = area
                     info = cluster_info.get(cid, {})
                     info["stage2_added_frames_count"] = int(info.get("stage2_added_frames_count", 0)) + 1
                     poly = _mask_to_polygon(mask)

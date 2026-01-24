@@ -1,0 +1,42 @@
+base_config: configs/crosswalk_stage2_sam2video.yaml
+
+run_overrides:
+  drive_id: "2013_05_28_drive_0010_sync"
+  frame_start: 250
+  frame_end: 500
+  kitti_root: "E:\\KITTI360\\KITTI-360"
+  camera: "image_00"
+  lidar_world_mode: "fullpose"
+  export_all_frames: false
+  write_wgs84: true
+  on_demand_infer: false
+
+autotune:
+  max_trials: 12
+  seed: 42
+  stop:
+    recall_min: 0.8
+    max_fp: 1
+    min_final_count: 2
+  expected:
+    min_frames_hit_stage1: 3
+    max_gore_like_ratio: 0.7
+    match_dist_m: 8.0
+    fp_dist_m: 15.0
+  scoring:
+    w_recall: 1.0
+    w_fp: 0.8
+    w_drift: 0.5
+    w_stability: 0.3
+  param_space:
+    stage2.ROI_MARGIN_PX: [60, 80, 120]
+    stage2.AREA_RATIO_MAX: [2.5, 3.0, 4.0]
+    stage2.IOU_PREV_MIN: [0.05, 0.10]
+    stage2.CENTER_DRIFT_RATIO: [0.25, 0.35]
+    stage2.DRIFT_CONSEC_STOP: [2, 3]
+    cluster.cluster_eps_m: [6, 8, 10]
+    stage2.seeds_per_cluster: [2, 3]
+    stage2.min_seed_dist_m: [4.0, 6.0]
+    final_gate.heading_diff_to_perp_max_deg: [25, 30, 35]
+    final_gate.rect_min_w: [1.0, 1.5]
+    final_gate.rectangularity_min: [0.35, 0.45]
