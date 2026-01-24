@@ -498,6 +498,7 @@ def _compute_roundtrip_metrics_for_range(
             "reproj_area_ratio": area_ratio,
             "points_in_bbox": int(lidar_info.get("points_in_bbox", 0) or 0),
             "points_in_mask": int(lidar_info.get("points_in_mask", 0) or 0),
+            "proj_in_image_ratio_visible": float(lidar_info.get("proj_in_image_ratio_visible", 0.0) or 0.0),
         }
         rows.append(record)
         by_frame[frame_id] = record
@@ -514,6 +515,8 @@ def _scan_offsets_for_range(
     calib: Dict[str, np.ndarray] | None,
     lidar_cfg: dict,
     index_lookup: Dict[Tuple[str, str], str],
+    lidar_world_mode: str,
+    cam_id: str,
 ) -> Tuple[List[dict], Dict[int, int]]:
     rows = []
     hist: Dict[int, int] = {}
@@ -527,6 +530,7 @@ def _scan_offsets_for_range(
         best_iou = None
         best_points = None
         base_iou = None
+        base_points = None
         for offset in offsets:
             cand_frame = frame + offset
             if cand_frame < 0:
@@ -546,14 +550,17 @@ def _scan_offsets_for_range(
                 pose,
                 calib,
                 lidar_cfg,
+                lidar_world_mode,
+                cam_id,
             )
             geom = cand.get("geometry") if cand else None
             iou, _center, _ratio = _roundtrip_metrics(raw_info, geom, pose, calib, None)
             iou_val = float(iou) if iou is not None else 0.0
-            points = int(stats.get("points_in_bbox", 0) or 0)
+            points = int(stats.get("points_in_mask", 0) or 0)
             score = iou_val * 10000 + points
             if offset == 0:
                 base_iou = iou_val
+                base_points = points
             if best is None or score > best:
                 best = score
                 best_offset = offset
@@ -571,6 +578,8 @@ def _scan_offsets_for_range(
                 "best_points": best_points,
                 "iou_before": base_iou,
                 "iou_after": best_iou,
+                "points_before": base_points,
+                "points_after": best_points,
             }
         )
     return rows, hist
@@ -920,14 +929,29 @@ def _lidar_points_world_with_intensity(
     drive_id: str,
     frame_id: str,
     pose: Tuple[float, float, float] | None,
+    lidar_world_mode: str,
+    cam_id: str,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    if pose is None:
-        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    lidar_world_mode = str(lidar_world_mode or "legacy").lower()
     try:
         pts = load_kitti360_lidar_points(data_root, drive_id, frame_id)
     except Exception:
         return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
     if pts.size == 0:
+        return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    if lidar_world_mode == "fullpose":
+        try:
+            world = load_kitti360_lidar_points_world(
+                data_root,
+                drive_id,
+                frame_id,
+                mode="fullpose",
+                cam_id=cam_id,
+            )
+            return world, pts[:, 3].astype(float)
+        except Exception:
+            return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
+    if pose is None:
         return np.empty((0, 3), dtype=float), np.empty((0,), dtype=float)
     x0, y0, yaw = pose
     c = float(np.cos(yaw))
@@ -1023,12 +1047,15 @@ def _build_lidar_candidate_for_frame(
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
     lidar_cfg: dict,
+    lidar_world_mode: str,
+    cam_id: str,
 ) -> Tuple[dict | None, dict]:
     stats = {
         "proj_method": "none",
         "pose_ok": 1 if pose is not None else 0,
         "calib_ok": 1 if calib is not None else 0,
         "proj_in_image_ratio": 0.0,
+        "proj_in_image_ratio_visible": 0.0,
         "points_total": 0,
         "points_in_bbox": 0,
         "points_in_mask": 0,
@@ -1058,7 +1085,14 @@ def _build_lidar_candidate_for_frame(
             stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
         return None, stats
 
-    points_world, intensities = _lidar_points_world_with_intensity(data_root, drive_id, frame_id, pose)
+    points_world, intensities = _lidar_points_world_with_intensity(
+        data_root,
+        drive_id,
+        frame_id,
+        pose,
+        lidar_world_mode,
+        cam_id,
+    )
     if points_world.size == 0:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
         return None, stats
@@ -1083,6 +1117,25 @@ def _build_lidar_candidate_for_frame(
     in_image = valid & (u >= 0) & (u < width) & (v >= 0) & (v < height)
     stats["points_total"] = int(points_world.shape[0])
     stats["proj_in_image_ratio"] = float(np.mean(in_image)) if points_world.shape[0] > 0 else 0.0
+    x_forward_only = bool(lidar_cfg.get("VISIBLE_X_FORWARD_ONLY", True))
+    min_range = float(lidar_cfg.get("VISIBLE_MIN_RANGE_M", 1.0))
+    max_range = float(lidar_cfg.get("VISIBLE_MAX_RANGE_M", 80.0))
+    c = float(np.cos(pose[2]))
+    s = float(np.sin(pose[2]))
+    dx = points_world[:, 0] - pose[0]
+    dy = points_world[:, 1] - pose[1]
+    x_ego = c * dx + s * dy
+    y_ego = -s * dx + c * dy
+    dist = np.hypot(x_ego, y_ego)
+    visible = np.ones(points_world.shape[0], dtype=bool)
+    if x_forward_only:
+        visible &= x_ego > 0
+    if min_range > 0:
+        visible &= dist >= min_range
+    if max_range > 0:
+        visible &= dist <= max_range
+    if points_world.shape[0] > 0 and np.any(visible):
+        stats["proj_in_image_ratio_visible"] = float(np.mean(in_image[visible]))
 
     if stats["proj_in_image_ratio"] < float(lidar_cfg.get("MIN_IN_IMAGE_RATIO", 0.1)):
         stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
@@ -1302,6 +1355,8 @@ def _build_lidar_candidates_for_range(
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib: Dict[str, np.ndarray] | None,
     lidar_cfg: dict,
+    lidar_world_mode: str,
+    cam_id: str,
 ) -> Tuple[List[dict], Dict[str, dict]]:
     candidates = []
     stats_by_frame: Dict[str, dict] = {}
@@ -1320,6 +1375,8 @@ def _build_lidar_candidates_for_range(
             pose_map.get(frame_id),
             calib,
             lidar_cfg,
+            lidar_world_mode,
+            cam_id,
         )
         stats_by_frame[frame_id] = stats
         if cand:
@@ -2107,6 +2164,8 @@ def _stage2_roi_refine(
                 pose,
                 calib,
                 lidar_cfg,
+                lidar_world_mode,
+                camera,
             )
             if cand is None:
                 reason = str(stats.get("drop_reason_code") or "geom_invalid")
@@ -2352,6 +2411,7 @@ def _build_trace_records(
     calib_ok: bool,
     stage2_stats: Dict[Tuple[str, str], dict],
     roundtrip_by_frame: Dict[str, dict],
+    lidar_world_mode: str,
 ) -> List[dict]:
     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
@@ -2381,6 +2441,7 @@ def _build_trace_records(
         )
         lidar_info = lidar_stats.get(frame_id, {})
         pose_ok = 1 if pose_map.get(frame_id) is not None else 0
+        pose_source = "oxts" if pose_ok else "missing"
         cand_ids = sorted(set(candidate_ids.get(key, [])))
         rejects = sorted(set(candidate_rejects.get(key, [])))
         final_ids = sorted(set(final_support.get(key, [])))
@@ -2428,6 +2489,7 @@ def _build_trace_records(
         cluster_id = ""
         cluster_frames_hit = ""
         jitter_p90 = ""
+        angle_jitter_p90 = ""
         support_flag = 0
         rect_w_m = float(lidar_info.get("rect_w_m", 0.0))
         rect_l_m = float(lidar_info.get("rect_l_m", 0.0))
@@ -2459,9 +2521,12 @@ def _build_trace_records(
                 "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
                 "pose_ok": pose_ok,
+                "pose_source": pose_source,
                 "calib_ok": 1 if calib_ok else 0,
+                "lidar_world_mode": lidar_world_mode,
                 "proj_method": proj_method,
                 "proj_in_image_ratio": float(lidar_info.get("proj_in_image_ratio", 0.0)),
+                "proj_in_image_ratio_visible": float(lidar_info.get("proj_in_image_ratio_visible", 0.0)),
                 "points_in_bbox": int(lidar_info.get("points_in_bbox", 0)),
                 "points_in_mask": int(lidar_info.get("points_in_mask", 0)),
                 "mask_dilate_px": int(lidar_info.get("mask_dilate_px", 0)),
@@ -2628,6 +2693,7 @@ def _write_projection_alignment_report(
     center_err = [r["reproj_center_err_px"] for r in roundtrip_rows if r.get("reproj_center_err_px") is not None]
     points_bbox = [int(r.get("points_in_bbox", 0) or 0) for r in roundtrip_rows]
     proj_ratio = [float(v.get("proj_in_image_ratio", 0.0) or 0.0) for v in lidar_stats.values()]
+    proj_ratio_visible = [float(v.get("proj_in_image_ratio_visible", 0.0) or 0.0) for v in lidar_stats.values()]
 
     iou_lidar_p50 = _percentile(iou_lidar, 50)
     iou_lidar_p90 = _percentile(iou_lidar, 90)
@@ -2638,6 +2704,8 @@ def _write_projection_alignment_report(
     points_p50 = _percentile(points_bbox, 50)
     proj_ratio_p50 = _percentile(proj_ratio, 50)
     proj_ratio_p90 = _percentile(proj_ratio, 90)
+    proj_ratio_visible_p50 = _percentile(proj_ratio_visible, 50)
+    proj_ratio_visible_p90 = _percentile(proj_ratio_visible, 90)
 
     offset_mode = None
     offset_total = sum(offset_hist.values())
@@ -2676,6 +2744,8 @@ def _write_projection_alignment_report(
         f"- center_err_px_p90: {center_p90}",
         f"- proj_in_image_ratio_p50: {proj_ratio_p50}",
         f"- proj_in_image_ratio_p90: {proj_ratio_p90}",
+        f"- proj_in_image_ratio_visible_p50: {proj_ratio_visible_p50}",
+        f"- proj_in_image_ratio_visible_p90: {proj_ratio_visible_p90}",
         "",
         "## Offset Scan",
         f"- best_offset_mode: {offset_mode}",
@@ -2796,6 +2866,7 @@ def main() -> int:
     ap.add_argument("--drive", default=None)
     ap.add_argument("--frame-start", type=int, default=None)
     ap.add_argument("--frame-end", type=int, default=None)
+    ap.add_argument("--auto-frame-range", type=int, default=0)
     ap.add_argument("--kitti-root", default=None)
     ap.add_argument("--out-run", default="")
     args = ap.parse_args()
@@ -2809,12 +2880,13 @@ def main() -> int:
             "frame_start": args.frame_start,
             "frame_end": args.frame_end,
             "kitti_root": args.kitti_root,
+            "auto_frame_range": bool(args.auto_frame_range),
         },
     )
 
     drive_id = str(merged.get("drive_id") or "")
-    frame_start = int(merged.get("frame_start", 0))
-    frame_end = int(merged.get("frame_end", 0))
+    frame_start = int(merged.get("frame_start", 0)) if merged.get("frame_start") is not None else None
+    frame_end = int(merged.get("frame_end", 0)) if merged.get("frame_end") is not None else None
     kitti_root = Path(str(merged.get("kitti_root") or ""))
     camera = str(merged.get("camera") or "image_00")
     stage1_stride = int(merged.get("stage1_stride", 1))
@@ -2822,6 +2894,11 @@ def main() -> int:
     write_wgs84 = bool(merged.get("write_wgs84", True))
     raw_fallback_text = bool(merged.get("raw_fallback_text", True))
     on_demand_infer = bool(merged.get("on_demand_infer", False))
+    lidar_world_mode = str(merged.get("lidar_world_mode") or os.environ.get("LIDAR_WORLD_MODE") or "").strip().lower()
+    if str(os.environ.get("USE_FULLPOSE_LIDAR", "0")).strip() == "1":
+        lidar_world_mode = "fullpose"
+    if not lidar_world_mode:
+        lidar_world_mode = "legacy"
     image_run = Path(str(merged.get("image_run") or ""))
     image_provider = str(merged.get("image_provider") or "grounded_sam2_v1")
     image_evidence_gpkg = str(merged.get("image_evidence_gpkg") or "")
@@ -2833,7 +2910,21 @@ def main() -> int:
     final_cfg = merged.get("final_gate", {}) if isinstance(merged.get("final_gate"), dict) else {}
     review_cfg = merged.get("review_gate", {}) if isinstance(merged.get("review_gate"), dict) else {}
 
-    if not drive_id or frame_end < frame_start:
+    auto_range = bool(merged.get("auto_frame_range", False) or args.auto_frame_range)
+    if auto_range:
+        image_dir = _find_image_dir(kitti_root, drive_id, camera)
+        frames = []
+        for path in _list_images(image_dir):
+            fid = _extract_frame_id(path)
+            if fid is None:
+                continue
+            frames.append(int(str(fid)))
+        if not frames:
+            log.error("auto frame range failed: no images")
+            return 2
+        frame_start = min(frames)
+        frame_end = max(frames)
+    if frame_start is None or frame_end is None or not drive_id or frame_end < frame_start:
         log.error("invalid drive/frame range")
         return 2
     if not kitti_root.exists():
@@ -2954,6 +3045,7 @@ def main() -> int:
             drive_id,
             hit_frames,
             stage_outputs / "frame_id_hit_assert.txt",
+            min_ratio=0.9,
         )
     except Exception as exc:
         log.error("frame_id hit-assert failed: %s", exc)
@@ -2975,6 +3067,8 @@ def main() -> int:
     except Exception:
         calib = None
         calib_ok = False
+    alignment_cfg = merged.get("alignment", {}) if isinstance(merged.get("alignment"), dict) else {}
+    visible_cfg = alignment_cfg.get("visible_filter", {}) if isinstance(alignment_cfg.get("visible_filter"), dict) else {}
     lidar_cfg_norm = {
         "MASK_DILATE_PX": int(lidar_cfg.get("mask_dilate_px", 5)),
         "MIN_POINTS_BBOX": int(lidar_cfg.get("min_points_bbox", 20)),
@@ -2985,6 +3079,9 @@ def main() -> int:
         "DBSCAN_EPS_M": float(lidar_cfg.get("dbscan_eps_m", 0.6)),
         "DBSCAN_MIN_SAMPLES": int(lidar_cfg.get("dbscan_min_samples", 10)),
         "ANGLE_SNAP_DEG": float(lidar_cfg.get("angle_snap_deg", 20)),
+        "VISIBLE_X_FORWARD_ONLY": bool(visible_cfg.get("x_forward_only", True)),
+        "VISIBLE_MIN_RANGE_M": float(visible_cfg.get("min_range_m", 1.0)),
+        "VISIBLE_MAX_RANGE_M": float(visible_cfg.get("max_range_m", 80.0)),
     }
     lidar_candidates, lidar_stats = _build_lidar_candidates_for_range(
         kitti_root,
@@ -2996,6 +3093,8 @@ def main() -> int:
         pose_map,
         calib,
         lidar_cfg_norm,
+        lidar_world_mode,
+        camera,
     )
     if lidar_candidates:
         lidar_gdf = gpd.GeoDataFrame.from_features(lidar_candidates, crs="EPSG:32632")
@@ -3200,6 +3299,8 @@ def main() -> int:
         calib,
         lidar_cfg_norm,
         index_lookup,
+        lidar_world_mode,
+        camera,
     )
     offset_path = outputs_dir / "best_offset_summary.csv"
     pd.DataFrame(offset_rows).to_csv(offset_path, index=False)
@@ -3230,7 +3331,13 @@ def main() -> int:
         if not image_path:
             continue
         try:
-            points_world = load_kitti360_lidar_points_world(kitti_root, drive_id, frame_id)
+            points_world = load_kitti360_lidar_points_world(
+                kitti_root,
+                drive_id,
+                frame_id,
+                mode=lidar_world_mode,
+                cam_id=camera,
+            )
         except Exception:
             points_world = np.empty((0, 3), dtype=float)
         debug_path = outputs_dir / f"debug_lidar_proj_{frame_id}.png"
@@ -3281,6 +3388,7 @@ def main() -> int:
         calib_ok,
         stage2_stats,
         roundtrip_by_frame,
+        lidar_world_mode,
     )
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)
