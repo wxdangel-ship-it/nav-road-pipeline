@@ -1158,23 +1158,25 @@ def _project_world_to_image(
     calib: Dict[str, np.ndarray],
 ) -> np.ndarray:
     x0, y0, yaw = pose_xy_yaw
-    c = float(np.cos(-yaw))
-    s = float(np.sin(-yaw))
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
     dx = points[:, 0] - x0
     dy = points[:, 1] - y0
-    x_ego = c * dx - s * dy
-    y_ego = s * dx + c * dy
+    x_ego = c * dx + s * dy
+    y_ego = -s * dx + c * dy
     z_ego = points[:, 2]
     ones = np.ones_like(x_ego)
     pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
     cam = calib["t_velo_to_cam"] @ pts_h
-    proj = calib["p_rect"] @ np.vstack([cam[:3, :], np.ones((1, cam.shape[1]))])
-    zs = proj[2, :]
+    xyz = cam[:3, :].T
+    xyz = (calib["r_rect"] @ xyz.T).T
+    zs = xyz[:, 2]
     valid = zs > 1e-3
     us = np.zeros_like(zs)
     vs = np.zeros_like(zs)
-    us[valid] = proj[0, valid] / zs[valid]
-    vs[valid] = proj[1, valid] / zs[valid]
+    k = calib["k"]
+    us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
+    vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
     return np.stack([us, vs, valid], axis=1)
 
 

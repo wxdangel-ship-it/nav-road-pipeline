@@ -360,6 +360,7 @@ def _roundtrip_metrics(
     geom: Polygon | None,
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
+    z_override: Optional[float] = None,
 ) -> Tuple[float | None, float | None, float | None]:
     if geom is None or geom.is_empty or pose is None or calib is None:
         return None, None, None
@@ -368,7 +369,17 @@ def _roundtrip_metrics(
         raw_poly = None
     else:
         raw_poly = unary_union(raw_gdf.geometry.values)
-    pts = _geom_to_image_points(geom, pose, calib)
+    geom_use = geom
+    if geom_use.geom_type == "MultiPolygon":
+        parts = list(geom_use.geoms)
+        geom_use = parts[0] if parts else geom_use
+    if z_override is None:
+        pts = _geom_to_image_points(geom_use, pose, calib)
+    else:
+        coords = np.array(list(geom_use.exterior.coords), dtype=float)
+        points = np.column_stack([coords[:, 0], coords[:, 1], np.full(coords.shape[0], float(z_override))])
+        proj = _project_world_to_image(points, pose, calib)
+        pts = [(float(u), float(v)) for u, v, valid in proj if valid]
     reproj_poly = _polygon_from_points(pts)
     if raw_poly is not None and not raw_poly.is_empty and reproj_poly is not None:
         inter = raw_poly.intersection(reproj_poly).area
@@ -475,7 +486,8 @@ def _compute_roundtrip_metrics_for_range(
         proj_method = str(row.get("proj_method") or proj_method) if row is not None else proj_method
         geom_ok = _safe_int(row.get("geom_ok", geom_ok)) if row is not None else geom_ok
         pose = pose_map.get(frame_id)
-        iou, center_err, area_ratio = _roundtrip_metrics(raw_info, geom, pose, calib)
+        z_override = lidar_info.get("ground_z")
+        iou, center_err, area_ratio = _roundtrip_metrics(raw_info, geom, pose, calib, z_override)
         record = {
             "frame_id": frame_id,
             "raw_status": raw_info.get("raw_status", ""),
@@ -536,7 +548,7 @@ def _scan_offsets_for_range(
                 lidar_cfg,
             )
             geom = cand.get("geometry") if cand else None
-            iou, _center, _ratio = _roundtrip_metrics(raw_info, geom, pose, calib)
+            iou, _center, _ratio = _roundtrip_metrics(raw_info, geom, pose, calib, None)
             iou_val = float(iou) if iou is not None else 0.0
             points = int(stats.get("points_in_bbox", 0) or 0)
             score = iou_val * 10000 + points
@@ -765,23 +777,25 @@ def _project_world_to_image(
     calib: Dict[str, np.ndarray],
 ) -> np.ndarray:
     x0, y0, yaw = pose_xy_yaw
-    c = float(np.cos(-yaw))
-    s = float(np.sin(-yaw))
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
     dx = points[:, 0] - x0
     dy = points[:, 1] - y0
-    x_ego = c * dx - s * dy
-    y_ego = s * dx + c * dy
+    x_ego = c * dx + s * dy
+    y_ego = -s * dx + c * dy
     z_ego = points[:, 2]
     ones = np.ones_like(x_ego)
     pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
     cam = calib["t_velo_to_cam"] @ pts_h
-    proj = calib["p_rect"] @ np.vstack([cam[:3, :], np.ones((1, cam.shape[1]))])
-    zs = proj[2, :]
+    xyz = cam[:3, :].T
+    xyz = (calib["r_rect"] @ xyz.T).T
+    zs = xyz[:, 2]
     valid = zs > 1e-3
     us = np.zeros_like(zs)
     vs = np.zeros_like(zs)
-    us[valid] = proj[0, valid] / zs[valid]
-    vs[valid] = proj[1, valid] / zs[valid]
+    k = calib["k"]
+    us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
+    vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
     return np.stack([us, vs, valid], axis=1)
 
 
@@ -1021,6 +1035,7 @@ def _build_lidar_candidate_for_frame(
         "mask_dilate_px": int(lidar_cfg.get("MASK_DILATE_PX", 5)),
         "intensity_top_pct": 0,
         "ground_filter_used": 0,
+        "ground_z": 0.0,
         "dbscan_points": 0,
         "geom_ok": 0,
         "geom_area_m2": 0.0,
@@ -1050,6 +1065,7 @@ def _build_lidar_candidate_for_frame(
 
     z_vals = points_world[:, 2]
     z_ground = float(np.percentile(z_vals, 10)) if z_vals.size > 0 else 0.0
+    stats["ground_z"] = z_ground
     ground_mask = np.abs(z_vals - z_ground) < float(lidar_cfg.get("GROUND_Z_TOL", 0.2))
     if np.any(ground_mask):
         points_world = points_world[ground_mask]
