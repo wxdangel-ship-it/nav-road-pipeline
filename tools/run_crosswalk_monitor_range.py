@@ -18,12 +18,18 @@ import yaml
 from PIL import Image, ImageDraw
 from shapely import affinity
 from shapely.geometry import MultiPoint, Point, Polygon, box
+from shapely.ops import unary_union
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_lidar_points, load_kitti360_pose
+from pipeline.datasets.kitti360_io import (
+    load_kitti360_calib,
+    load_kitti360_lidar_points,
+    load_kitti360_lidar_points_world,
+    load_kitti360_pose,
+)
 from tools.build_image_sample_index import _extract_frame_id, _find_image_dir, _list_images
 from tools.build_road_entities import _geom_to_image_points
 from tools.run_crosswalk_monitor_drive import _run_on_demand_infer
@@ -297,6 +303,267 @@ def _parse_frame_id(frame_id: str) -> Optional[int]:
         return None
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        if isinstance(value, float) and math.isnan(value):
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _bbox_iou(b1: List[float], b2: List[float]) -> float:
+    if not b1 or not b2 or len(b1) != 4 or len(b2) != 4:
+        return 0.0
+    x1 = max(b1[0], b2[0])
+    y1 = max(b1[1], b2[1])
+    x2 = min(b1[2], b2[2])
+    y2 = min(b1[3], b2[3])
+    inter_w = max(0.0, x2 - x1)
+    inter_h = max(0.0, y2 - y1)
+    inter = inter_w * inter_h
+    area1 = max(0.0, b1[2] - b1[0]) * max(0.0, b1[3] - b1[1])
+    area2 = max(0.0, b2[2] - b2[0]) * max(0.0, b2[3] - b2[1])
+    denom = area1 + area2 - inter
+    if denom <= 0:
+        return 0.0
+    return float(inter / denom)
+
+
+def _bbox_center(bbox: List[float]) -> Tuple[float, float]:
+    return ((bbox[0] + bbox[2]) * 0.5, (bbox[1] + bbox[3]) * 0.5)
+
+
+def _polygon_from_points(points: List[Tuple[float, float]]) -> Polygon | None:
+    if points is None or len(points) < 3:
+        return None
+    try:
+        poly = Polygon(points)
+    except Exception:
+        return None
+    if poly.is_empty or not poly.is_valid:
+        return None
+    return poly
+
+
+def _polygon_bbox(poly: Polygon | None) -> List[float] | None:
+    if poly is None or poly.is_empty:
+        return None
+    minx, miny, maxx, maxy = poly.bounds
+    return [float(minx), float(miny), float(maxx), float(maxy)]
+
+
+def _roundtrip_metrics(
+    raw_info: dict,
+    geom: Polygon | None,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+) -> Tuple[float | None, float | None, float | None]:
+    if geom is None or geom.is_empty or pose is None or calib is None:
+        return None, None, None
+    raw_gdf = raw_info.get("gdf")
+    if raw_gdf is None or raw_gdf.empty:
+        raw_poly = None
+    else:
+        raw_poly = unary_union(raw_gdf.geometry.values)
+    pts = _geom_to_image_points(geom, pose, calib)
+    reproj_poly = _polygon_from_points(pts)
+    if raw_poly is not None and not raw_poly.is_empty and reproj_poly is not None:
+        inter = raw_poly.intersection(reproj_poly).area
+        union = raw_poly.union(reproj_poly).area
+        iou = float(inter / union) if union > 0 else 0.0
+        area_ratio = float(reproj_poly.area / raw_poly.area) if raw_poly.area > 0 else None
+    else:
+        bbox_raw = raw_info.get("bbox_px")
+        if not (isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4):
+            bbox_raw = None
+        bbox_reproj = _polygon_bbox(reproj_poly)
+        iou = _bbox_iou(list(bbox_raw) if bbox_raw else [], bbox_reproj or [])
+        if bbox_raw and bbox_reproj:
+            area_raw = (bbox_raw[2] - bbox_raw[0]) * (bbox_raw[3] - bbox_raw[1])
+            area_ratio = (
+                (bbox_reproj[2] - bbox_reproj[0]) * (bbox_reproj[3] - bbox_reproj[1]) / area_raw
+                if area_raw > 0
+                else None
+            )
+        else:
+            area_ratio = None
+    bbox_raw = raw_info.get("bbox_px")
+    bbox_reproj = _polygon_bbox(reproj_poly)
+    if bbox_raw and bbox_reproj and len(bbox_raw) == 4:
+        cx1, cy1 = _bbox_center(list(bbox_raw))
+        cx2, cy2 = _bbox_center(bbox_reproj)
+        center_err = float(np.hypot(cx1 - cx2, cy1 - cy2))
+    else:
+        center_err = None
+    return iou, center_err, area_ratio
+
+
+def _render_lidar_proj_debug(
+    image_path: str,
+    out_path: Path,
+    points_world: np.ndarray,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+    max_points: int = 5000,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if not image_path or not Path(image_path).exists():
+        return
+    if pose is None or calib is None or points_world.size == 0:
+        _render_text_overlay(image_path, out_path, ["NO_LIDAR_OR_POSE"])
+        return
+    img = Image.open(image_path).convert("RGB")
+    draw = ImageDraw.Draw(img, "RGBA")
+    pts = points_world
+    if len(pts) > max_points:
+        idx = np.random.choice(len(pts), size=max_points, replace=False)
+        pts = pts[idx]
+    proj = _project_world_to_image(pts, pose, calib)
+    valid = proj[:, 2].astype(bool)
+    u = proj[:, 0][valid]
+    v = proj[:, 1][valid]
+    for x, y in zip(u, v):
+        draw.point((float(x), float(y)), fill=(0, 255, 0, 120))
+    img.save(out_path)
+
+
+def _select_roundtrip_candidate(candidates: gpd.GeoDataFrame) -> pd.Series | None:
+    if candidates is None or candidates.empty:
+        return None
+    if "geom_ok" in candidates.columns:
+        geom_ok = candidates[candidates["geom_ok"].fillna(0).astype(int) == 1]
+        if not geom_ok.empty:
+            lidar = geom_ok[geom_ok.get("proj_method", "") == "lidar"]
+            if not lidar.empty:
+                return lidar.iloc[0]
+            return geom_ok.iloc[0]
+    return candidates.iloc[0]
+
+
+def _compute_roundtrip_metrics_for_range(
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+    candidate_gdf: gpd.GeoDataFrame,
+    raw_frames: Dict[Tuple[str, str], dict],
+    pose_map: Dict[str, Tuple[float, float, float] | None],
+    calib: Dict[str, np.ndarray] | None,
+    lidar_stats: Dict[str, dict],
+) -> Tuple[List[dict], Dict[str, dict]]:
+    rows = []
+    by_frame: Dict[str, dict] = {}
+    if candidate_gdf.empty:
+        return rows, by_frame
+    candidate_gdf = candidate_gdf.copy()
+    candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        candidates = candidate_gdf[candidate_gdf["frame_id_norm"] == frame_id]
+        raw_info = raw_frames.get((drive_id, frame_id), {})
+        lidar_info = lidar_stats.get(frame_id, {})
+        proj_method = ""
+        geom_ok = 0
+        if candidates is not None and not candidates.empty:
+            proj_method = str(candidates.iloc[0].get("proj_method") or "")
+            geom_ok = _safe_int(candidates.iloc[0].get("geom_ok", 0))
+        row = _select_roundtrip_candidate(candidates)
+        geom = row.geometry if row is not None else None
+        proj_method = str(row.get("proj_method") or proj_method) if row is not None else proj_method
+        geom_ok = _safe_int(row.get("geom_ok", geom_ok)) if row is not None else geom_ok
+        pose = pose_map.get(frame_id)
+        iou, center_err, area_ratio = _roundtrip_metrics(raw_info, geom, pose, calib)
+        record = {
+            "frame_id": frame_id,
+            "raw_status": raw_info.get("raw_status", ""),
+            "proj_method": proj_method,
+            "geom_ok": geom_ok,
+            "reproj_iou": iou,
+            "reproj_center_err_px": center_err,
+            "reproj_area_ratio": area_ratio,
+            "points_in_bbox": int(lidar_info.get("points_in_bbox", 0) or 0),
+            "points_in_mask": int(lidar_info.get("points_in_mask", 0) or 0),
+        }
+        rows.append(record)
+        by_frame[frame_id] = record
+    return rows, by_frame
+
+
+def _scan_offsets_for_range(
+    data_root: Path,
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+    offsets: List[int],
+    raw_frames: Dict[Tuple[str, str], dict],
+    calib: Dict[str, np.ndarray] | None,
+    lidar_cfg: dict,
+    index_lookup: Dict[Tuple[str, str], str],
+) -> Tuple[List[dict], Dict[int, int]]:
+    rows = []
+    hist: Dict[int, int] = {}
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        raw_info = raw_frames.get((drive_id, frame_id))
+        if not raw_info:
+            continue
+        best = None
+        best_offset = None
+        best_iou = None
+        best_points = None
+        base_iou = None
+        for offset in offsets:
+            cand_frame = frame + offset
+            if cand_frame < 0:
+                continue
+            cand_frame_id = _normalize_frame_id(str(cand_frame))
+            try:
+                pose = load_kitti360_pose(data_root, drive_id, cand_frame_id)
+            except Exception:
+                continue
+            image_path = index_lookup.get((drive_id, frame_id), "")
+            cand, stats = _build_lidar_candidate_for_frame(
+                data_root,
+                drive_id,
+                cand_frame_id,
+                image_path,
+                raw_info,
+                pose,
+                calib,
+                lidar_cfg,
+            )
+            geom = cand.get("geometry") if cand else None
+            iou, _center, _ratio = _roundtrip_metrics(raw_info, geom, pose, calib)
+            iou_val = float(iou) if iou is not None else 0.0
+            points = int(stats.get("points_in_bbox", 0) or 0)
+            score = iou_val * 10000 + points
+            if offset == 0:
+                base_iou = iou_val
+            if best is None or score > best:
+                best = score
+                best_offset = offset
+                best_iou = iou_val
+                best_points = points
+        if best_offset is None:
+            continue
+        hist[best_offset] = hist.get(best_offset, 0) + 1
+        rows.append(
+            {
+                "frame_id": frame_id,
+                "best_offset": best_offset,
+                "best_score": best,
+                "best_iou": best_iou,
+                "best_points": best_points,
+                "iou_before": base_iou,
+                "iou_after": best_iou,
+            }
+        )
+    return rows, hist
+
+
 def _merge_config(base: dict, overrides: dict) -> dict:
     out = dict(base)
     for key, val in overrides.items():
@@ -394,6 +661,49 @@ def _assert_frame_evidence_frame_id(
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     if failed:
         raise RuntimeError(f"frame_id_distinct_ratio_low: {out_path}")
+
+
+def _assert_frame_evidence_hit_frames(
+    frame_evidence_path: Path,
+    drive_id: str,
+    hit_frames: List[str],
+    out_path: Path,
+    min_ratio: float = 0.7,
+    min_hits: int = 5,
+) -> None:
+    hit_norm = {_normalize_frame_id(f) for f in hit_frames if _normalize_frame_id(f)}
+    total_hits = len(hit_norm)
+    lines = [f"hit_frames_total={total_hits}"]
+    if total_hits == 0:
+        out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return
+    layers = _list_layers(frame_evidence_path) or [None]
+    target_layers = [l for l in layers if l == "crosswalk_frame"] or layers
+    best_ratio = 0.0
+    failed = False
+    for layer in target_layers:
+        gdf = gpd.read_file(frame_evidence_path, layer=layer) if layer else gpd.read_file(frame_evidence_path)
+        layer_name = layer or "default"
+        if gdf.empty:
+            lines.append(f"{layer_name},records=0,distinct_hits=0,ratio=0.0,missing_frame_id=0")
+            continue
+        if "drive_id" in gdf.columns:
+            gdf = gdf[gdf["drive_id"].astype(str) == drive_id]
+        if "frame_id" not in gdf.columns:
+            lines.append(f"{layer_name},records={len(gdf)},distinct_hits=0,ratio=0.0,missing_frame_id=1")
+            failed = True
+            continue
+        gdf = gdf.copy()
+        gdf["frame_id_norm"] = gdf["frame_id"].apply(_normalize_frame_id)
+        distinct_hits = len(set(gdf["frame_id_norm"].tolist()) & hit_norm)
+        ratio = distinct_hits / max(1, total_hits)
+        best_ratio = max(best_ratio, ratio)
+        lines.append(f"{layer_name},records={len(gdf)},distinct_hits={distinct_hits},ratio={ratio:.3f}")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if total_hits >= min_hits and best_ratio < min_ratio:
+        failed = True
+    if failed:
+        raise RuntimeError(f"frame_id_hit_ratio_low: {out_path}")
 
 
 def _find_crosswalk_layer(path: Path) -> str:
@@ -2025,6 +2335,7 @@ def _build_trace_records(
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib_ok: bool,
     stage2_stats: Dict[Tuple[str, str], dict],
+    roundtrip_by_frame: Dict[str, dict],
 ) -> List[dict]:
     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
@@ -2163,6 +2474,9 @@ def _build_trace_records(
                 "final_support": 1 if final_ids else 0,
                 "final_entity_id": "|".join(final_ids),
                 "drop_reason_code": drop_reason,
+                "reproj_iou": roundtrip_by_frame.get(frame_id, {}).get("reproj_iou"),
+                "reproj_center_err_px": roundtrip_by_frame.get(frame_id, {}).get("reproj_center_err_px"),
+                "reproj_area_ratio": roundtrip_by_frame.get(frame_id, {}).get("reproj_area_ratio"),
             }
         )
     return records
@@ -2272,6 +2586,93 @@ def _build_report(
         for after, cid, before, all_before, all_after in rows[:3]:
             lines.append(f"- {cid}: support_before={before} support_after={after} all_before={all_before} all_after={all_after}")
     lines.append(f"- outputs_dir: {outputs_dir}")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _percentile(values: List[float], pct: float) -> float | None:
+    if not values:
+        return None
+    arr = np.array(values, dtype=float)
+    return float(np.percentile(arr, pct))
+
+
+def _write_projection_alignment_report(
+    out_path: Path,
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+    roundtrip_rows: List[dict],
+    offset_rows: List[dict],
+    offset_hist: Dict[int, int],
+    lidar_stats: Dict[str, dict],
+    outputs_dir: Path,
+) -> None:
+    iou_lidar = [r["reproj_iou"] for r in roundtrip_rows if r.get("proj_method") == "lidar" and r.get("reproj_iou") is not None]
+    iou_plane = [r["reproj_iou"] for r in roundtrip_rows if r.get("proj_method") == "plane" and r.get("reproj_iou") is not None]
+    center_err = [r["reproj_center_err_px"] for r in roundtrip_rows if r.get("reproj_center_err_px") is not None]
+    points_bbox = [int(r.get("points_in_bbox", 0) or 0) for r in roundtrip_rows]
+    proj_ratio = [float(v.get("proj_in_image_ratio", 0.0) or 0.0) for v in lidar_stats.values()]
+
+    iou_lidar_p50 = _percentile(iou_lidar, 50)
+    iou_lidar_p90 = _percentile(iou_lidar, 90)
+    iou_plane_p50 = _percentile(iou_plane, 50)
+    iou_plane_p90 = _percentile(iou_plane, 90)
+    center_p50 = _percentile(center_err, 50)
+    center_p90 = _percentile(center_err, 90)
+    points_p50 = _percentile(points_bbox, 50)
+    proj_ratio_p50 = _percentile(proj_ratio, 50)
+
+    offset_mode = None
+    offset_total = sum(offset_hist.values())
+    if offset_hist:
+        offset_mode = sorted(offset_hist.items(), key=lambda x: (-x[1], x[0]))[0][0]
+    before = [r.get("iou_before") for r in offset_rows if r.get("iou_before") is not None]
+    after = [r.get("iou_after") for r in offset_rows if r.get("iou_after") is not None]
+    before_p50 = _percentile([v for v in before if v is not None], 50)
+    after_p50 = _percentile([v for v in after if v is not None], 50)
+
+    conclusion = "支撑点不足导致几何不稳"
+    suggestion = "增加有效支撑点或放宽点数门槛后复测；确认 bbox/roi 覆盖是否正确。"
+    if offset_mode not in (None, 0) and before_p50 is not None and after_p50 is not None and after_p50 - before_p50 > 0.05:
+        conclusion = "帧对齐偏移"
+        suggestion = "检查 frame_id 与 pose/velodyne 对齐索引；验证是否存在固定偏移。"
+    elif iou_lidar_p50 is not None and iou_lidar_p50 < 0.1:
+        if proj_ratio_p50 is not None and proj_ratio_p50 < 0.1:
+            conclusion = "标定链路错误"
+            suggestion = "检查相机标定矩阵与投影链路；验证 proj_in_image_ratio。"
+        elif center_p50 is not None and center_p50 > 50:
+            conclusion = "像素坐标回填/ROI坐标错误"
+            suggestion = "检查 ROI/crop 的坐标回填到全图是否正确，核对 bbox/mask 是否超界。"
+
+    lines = [
+        "# Projection Alignment Report",
+        f"- report_time: {dt.datetime.now():%Y-%m-%d %H:%M:%S}",
+        f"- drive_id: {drive_id}",
+        f"- frame_range: {frame_start}-{frame_end}",
+        "",
+        "## Roundtrip IoU Summary",
+        f"- lidar_iou_p50: {iou_lidar_p50}",
+        f"- lidar_iou_p90: {iou_lidar_p90}",
+        f"- plane_iou_p50: {iou_plane_p50}",
+        f"- plane_iou_p90: {iou_plane_p90}",
+        f"- center_err_px_p50: {center_p50}",
+        f"- center_err_px_p90: {center_p90}",
+        "",
+        "## Offset Scan",
+        f"- best_offset_mode: {offset_mode}",
+        f"- best_offset_samples: {offset_total}",
+        f"- iou_before_p50: {before_p50}",
+        f"- iou_after_p50: {after_p50}",
+        "",
+        "## Conclusion",
+        f"- category: {conclusion}",
+        f"- suggestion: {suggestion}",
+        "",
+        "## Outputs",
+        f"- roundtrip_metrics: {outputs_dir / 'roundtrip_metrics.csv'}",
+        f"- best_offset_summary: {outputs_dir / 'best_offset_summary.csv'}",
+        f"- best_offset_hist: {outputs_dir / 'best_offset_hist.csv'}",
+    ]
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -2521,6 +2922,23 @@ def main() -> int:
         drive_id,
         camera,
     )
+    try:
+        hit_frames = [
+            frame_id
+            for (d, frame_id), stats in raw_stats.items()
+            if d == drive_id
+            and int(stats.get("raw_has_crosswalk", 0)) == 1
+            and stats.get("raw_status") in {"ok", "on_demand_infer_ok"}
+        ]
+        _assert_frame_evidence_hit_frames(
+            stage_outputs / "frame_evidence_utm32.gpkg",
+            drive_id,
+            hit_frames,
+            stage_outputs / "frame_id_hit_assert.txt",
+        )
+    except Exception as exc:
+        log.error("frame_id hit-assert failed: %s", exc)
+        return 4
 
     stage_gpkg = stage_outputs / "road_entities_utm32.gpkg"
     candidate_gdf = _read_candidates(stage_gpkg)
@@ -2725,6 +3143,79 @@ def main() -> int:
             geometry="geometry",
             crs="EPSG:32632",
         )
+    frame_candidates_path = outputs_dir / "frame_candidates_utm32.gpkg"
+    if frame_candidates_path.exists():
+        frame_candidates_path.unlink()
+    if candidate_gdf.empty:
+        gpd.GeoDataFrame(columns=["geometry"], geometry=[], crs="EPSG:32632").to_file(
+            frame_candidates_path,
+            layer="frame_candidates",
+            driver="GPKG",
+        )
+    else:
+        candidate_gdf.to_file(frame_candidates_path, layer="frame_candidates", driver="GPKG")
+    roundtrip_rows, roundtrip_by_frame = _compute_roundtrip_metrics_for_range(
+        drive_id,
+        frame_start,
+        frame_end,
+        candidate_gdf,
+        raw_frames,
+        pose_map,
+        calib,
+        lidar_stats,
+    )
+    roundtrip_path = outputs_dir / "roundtrip_metrics.csv"
+    pd.DataFrame(roundtrip_rows).to_csv(roundtrip_path, index=False)
+
+    alignment_cfg = merged.get("alignment", {}) if isinstance(merged.get("alignment"), dict) else {}
+    offset_min = int(alignment_cfg.get("offset_scan_min", -5))
+    offset_max = int(alignment_cfg.get("offset_scan_max", 5))
+    offsets = list(range(offset_min, offset_max + 1))
+    offset_rows, offset_hist = _scan_offsets_for_range(
+        kitti_root,
+        drive_id,
+        frame_start,
+        frame_end,
+        offsets,
+        raw_frames,
+        calib,
+        lidar_cfg_norm,
+        index_lookup,
+    )
+    offset_path = outputs_dir / "best_offset_summary.csv"
+    pd.DataFrame(offset_rows).to_csv(offset_path, index=False)
+    hist_path = outputs_dir / "best_offset_hist.csv"
+    pd.DataFrame(
+        [{"offset": k, "count": v} for k, v in sorted(offset_hist.items(), key=lambda x: x[0])]
+    ).to_csv(hist_path, index=False)
+
+    debug_every = int(alignment_cfg.get("debug_every_n", 100))
+    debug_frames = {frame_start}
+    if roundtrip_rows:
+        valid = [r for r in roundtrip_rows if r.get("reproj_iou") is not None]
+        if valid:
+            min_row = min(valid, key=lambda r: r.get("reproj_iou"))
+            max_row = max(valid, key=lambda r: r.get("reproj_iou"))
+            debug_frames.update(
+                [
+                    _parse_frame_id(min_row["frame_id"]) or frame_start,
+                    _parse_frame_id(max_row["frame_id"]) or frame_start,
+                ]
+            )
+    for frame in range(frame_start, frame_end + 1):
+        if debug_every > 0 and (frame - frame_start) % debug_every == 0:
+            debug_frames.add(frame)
+    for frame in sorted(debug_frames):
+        frame_id = _normalize_frame_id(str(frame))
+        image_path = index_lookup.get((drive_id, frame_id), "")
+        if not image_path:
+            continue
+        try:
+            points_world = load_kitti360_lidar_points_world(kitti_root, drive_id, frame_id)
+        except Exception:
+            points_world = np.empty((0, 3), dtype=float)
+        debug_path = outputs_dir / f"debug_lidar_proj_{frame_id}.png"
+        _render_lidar_proj_debug(image_path, debug_path, points_world, pose_map.get(frame_id), calib)
     review_gdf, final_gdf = _build_review_final_layers(drive_id, candidate_gdf, cluster_info, final_cfg, review_cfg)
     out_gpkg = outputs_dir / "crosswalk_entities_utm32.gpkg"
     _write_crosswalk_gpkg(candidate_gdf, review_gdf, final_gdf, out_gpkg)
@@ -2770,6 +3261,7 @@ def main() -> int:
         pose_map,
         calib_ok,
         stage2_stats,
+        roundtrip_by_frame,
     )
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)
@@ -2787,6 +3279,18 @@ def main() -> int:
         cluster_info,
         outputs_dir,
         final_cfg,
+    )
+    alignment_report = outputs_dir / "projection_alignment_report.md"
+    _write_projection_alignment_report(
+        alignment_report,
+        drive_id,
+        frame_start,
+        frame_end,
+        roundtrip_rows,
+        offset_rows,
+        offset_hist,
+        lidar_stats,
+        outputs_dir,
     )
     legacy_report = outputs_dir / "crosswalk_refine_report.md"
     if legacy_report != report_path:

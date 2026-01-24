@@ -1393,7 +1393,9 @@ def main() -> int:
                 continue
             gdf = _fill_evidence_fields(gdf)
             gdf = _assign_drive_by_spatial(gdf, drive_polys)
-            gdf = _assign_frame_by_nearest_pose(gdf, data_root, by_drive)
+            miss_mask = gdf["frame_id"].isna() | (gdf["frame_id"] == "")
+            if miss_mask.any():
+                gdf = _assign_frame_by_nearest_pose(gdf, data_root, by_drive)
             if "frame_id" not in gdf.columns:
                 gdf["frame_id"] = ""
             gdf.loc[gdf["frame_id"] == "", "frame_id"] = "unknown"
@@ -1484,8 +1486,6 @@ def main() -> int:
                     continue
                 if gdf_drive.crs is None:
                     gdf_drive = gdf_drive.set_crs("EPSG:32632")
-                if "frame_id" not in gdf_drive.columns:
-                    gdf_drive["frame_id"] = ""
                 image_layers_all[target].append(gdf_drive)
                 image_layers_drive[target].append(gdf_drive)
             for row in frames:
@@ -1601,6 +1601,7 @@ def main() -> int:
             line_merge: bool,
             agg_cfg: dict,
             min_ratio: float,
+            apply_gate: bool = True,
         ) -> gpd.GeoDataFrame:
             gdf_list = image_layers_drive.get(layer_key, [])
             if not gdf_list:
@@ -1632,30 +1633,34 @@ def main() -> int:
                 gdf["entity_type"] = entity_type
                 gdf["qa_flag"] = "gated"
                 return gdf
-            gdf = _gate_against_road(
-                gdf,
-                road_poly,
-                float(gate_cfg.get("road_buffer_m", 1.0)),
-                min_ratio,
-                "line" if line_merge else "poly",
-            )
-            if gdf.empty:
-                return gdf
-            if line_merge:
-                heading_max = float(agg_cfg.get("heading_max_diff_deg", agg_cfg.get("max_angle_diff_deg", 15.0)))
-                mode = "parallel"
-                if entity_type == "stop_line":
-                    mode = "perpendicular"
-                if entity_type == "lane_marking":
-                    gdf = _annotate_heading_for_lines(gdf, heading_segments, heading_max, mode)
-                else:
-                    gdf = _filter_lines_by_heading(gdf, heading_segments, heading_max, mode)
+            if apply_gate:
+                gdf = _gate_against_road(
+                    gdf,
+                    road_poly,
+                    float(gate_cfg.get("road_buffer_m", 1.0)),
+                    min_ratio,
+                    "line" if line_merge else "poly",
+                )
+                if gdf.empty:
+                    return gdf
+                if line_merge:
+                    heading_max = float(agg_cfg.get("heading_max_diff_deg", agg_cfg.get("max_angle_diff_deg", 15.0)))
+                    mode = "parallel"
+                    if entity_type == "stop_line":
+                        mode = "perpendicular"
+                    if entity_type == "lane_marking":
+                        gdf = _annotate_heading_for_lines(gdf, heading_segments, heading_max, mode)
+                    else:
+                        gdf = _filter_lines_by_heading(gdf, heading_segments, heading_max, mode)
             gdf = gdf.copy()
             gdf["entity_type"] = entity_type
-            if "heading_ok" in gdf.columns:
-                gdf["qa_flag"] = gdf["heading_ok"].apply(lambda v: "gated" if v else "angle_mismatch")
+            if apply_gate:
+                if "heading_ok" in gdf.columns:
+                    gdf["qa_flag"] = gdf["heading_ok"].apply(lambda v: "gated" if v else "angle_mismatch")
+                else:
+                    gdf["qa_flag"] = "gated"
             else:
-                gdf["qa_flag"] = "gated"
+                gdf["qa_flag"] = "raw"
             if not line_merge and "frame_id" in gdf.columns:
                 grouped = []
                 for frame_id, hits in gdf.groupby("frame_id"):
@@ -1673,7 +1678,14 @@ def main() -> int:
         lane_frame = _build_frame_layer("lane_marking_img", "lane_marking", True, lane_cfg, lane_min_ratio)
         stop_frame = _build_frame_layer("stop_line_img", "stop_line", True, stop_cfg, stop_min_ratio)
         cross_frame = _build_frame_layer("crosswalk_img", "crosswalk", False, cross_cfg, cross_min_ratio)
+        cross_frame_raw = _build_frame_layer("crosswalk_img", "crosswalk", False, cross_cfg, 0.0, apply_gate=False)
         gore_frame = _build_frame_layer("gore_marking_img", "gore_marking", False, cross_cfg, 0.0)
+        cross_frame_evidence = cross_frame
+        if not cross_frame_raw.empty:
+            raw_frames = cross_frame_raw["frame_id"].nunique() if "frame_id" in cross_frame_raw.columns else 0
+            gate_frames = cross_frame["frame_id"].nunique() if not cross_frame.empty else 0
+            if gate_frames < max(1, int(raw_frames * 0.7)):
+                cross_frame_evidence = cross_frame_raw
 
         if not lane_frame.empty:
             frame_layers_all["lane_marking_frame"].append(lane_frame)
@@ -1681,9 +1693,9 @@ def main() -> int:
         if not stop_frame.empty:
             frame_layers_all["stop_line_frame"].append(stop_frame)
             frame_layers_drive["stop_line_frame"].append(stop_frame)
-        if not cross_frame.empty:
-            frame_layers_all["crosswalk_frame"].append(cross_frame)
-            frame_layers_drive["crosswalk_frame"].append(cross_frame)
+        if not cross_frame_evidence.empty:
+            frame_layers_all["crosswalk_frame"].append(cross_frame_evidence)
+            frame_layers_drive["crosswalk_frame"].append(cross_frame_evidence)
 
         gore_by_frame: Dict[str, Polygon] = {}
         gore_score_by_frame: Dict[str, float] = {}
