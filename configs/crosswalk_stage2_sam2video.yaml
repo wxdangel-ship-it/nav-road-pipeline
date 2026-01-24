@@ -53,9 +53,9 @@ final_gate:
   min_frames_hit_final: 3
   min_inside_ratio_final: 0.5
   rectangularity_min: 0.45
-  heading_diff_to_perp_max_deg: 25
+  heading_diff_to_perp_max_deg: 30
   jitter_p90_max: 8.0
-  rect_min_w: 1.5
+  rect_min_w: 1.0
   rect_max_w: 30.0
   rect_min_l: 3.0
   rect_max_l: 40.0

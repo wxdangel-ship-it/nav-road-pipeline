@@ -1304,19 +1304,52 @@ def _gate_against_road(
     return gpd.GeoDataFrame(keep_rows, geometry="geometry", crs=gdf.crs)
 
 
-def _rect_metrics(rect: Polygon, union_geom: Polygon) -> dict:
+def _rect_metrics(geom: Polygon) -> dict:
+    if geom is None or geom.is_empty:
+        return {
+            "area_m2": 0.0,
+            "rect_area_m2": 0.0,
+            "rectangularity": 0.0,
+            "rect_l_m": 0.0,
+            "rect_w_m": 0.0,
+            "aspect": 0.0,
+        }
+    if not geom.is_valid:
+        geom = geom.buffer(0)
+    if geom is None or geom.is_empty:
+        return {
+            "area_m2": 0.0,
+            "rect_area_m2": 0.0,
+            "rectangularity": 0.0,
+            "rect_l_m": 0.0,
+            "rect_w_m": 0.0,
+            "aspect": 0.0,
+        }
+    rect = geom.minimum_rotated_rectangle
+    if rect is None or rect.is_empty:
+        return {
+            "area_m2": float(geom.area),
+            "rect_area_m2": 0.0,
+            "rectangularity": 0.0,
+            "rect_l_m": 0.0,
+            "rect_w_m": 0.0,
+            "aspect": 0.0,
+        }
+    if not rect.is_valid:
+        rect = rect.buffer(0)
     rect_area = rect.area if rect is not None else 0.0
-    area = union_geom.area if union_geom is not None else 0.0
+    area = geom.area if geom is not None else 0.0
     rectangularity = area / rect_area if rect_area > 0 else 0.0
-    rect_coords = list(rect.exterior.coords) if rect is not None else []
+    rect_coords = list(rect.exterior.coords) if rect is not None and rect.geom_type == "Polygon" else []
     edge_lengths = []
     for i in range(len(rect_coords) - 1):
         p0 = rect_coords[i]
         p1 = rect_coords[i + 1]
-        edge_lengths.append(float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])))
-    edge_lengths = sorted(edge_lengths, reverse=True)
-    rect_l = edge_lengths[0] if edge_lengths else 0.0
-    rect_w = edge_lengths[-1] if edge_lengths else 0.0
+        length = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
+        if length > 1e-6:
+            edge_lengths.append(length)
+    rect_l = max(edge_lengths) if edge_lengths else 0.0
+    rect_w = min(edge_lengths) if edge_lengths else 0.0
     aspect = rect_l / max(1e-6, rect_w) if rect_w > 0 else 0.0
     return {
         "area_m2": area,
@@ -1956,7 +1989,7 @@ def main() -> int:
                 rect_raw = union_geom.minimum_rotated_rectangle
                 if rect_raw is None or rect_raw.is_empty:
                     continue
-                metrics_raw = _rect_metrics(rect_raw, union_geom)
+                metrics_raw = _rect_metrics(union_geom)
                 buffer_m = float(cross_final_cfg.get("rect_buffer_m", 0.0))
                 if buffer_m > 0:
                     union_geom = union_geom.buffer(buffer_m)
@@ -1974,7 +2007,7 @@ def main() -> int:
                         rect_raw = union_geom.minimum_rotated_rectangle
                         if rect_raw is None or rect_raw.is_empty:
                             continue
-                        metrics_raw = _rect_metrics(rect_raw, union_geom)
+                        metrics_raw = _rect_metrics(union_geom)
                         rect = rect_raw
                         metrics = metrics_raw
                 if metrics["rect_area_m2"] <= 0:
@@ -2120,7 +2153,7 @@ def main() -> int:
                 rect_raw = union_geom.minimum_rotated_rectangle
                 if rect_raw is None or rect_raw.is_empty:
                     continue
-                metrics_raw = _rect_metrics(rect_raw, union_geom)
+                metrics_raw = _rect_metrics(union_geom)
                 buffer_m = float(cross_final_cfg.get("rect_buffer_m", 0.0))
                 if buffer_m > 0:
                     union_geom = union_geom.buffer(buffer_m)
@@ -2135,7 +2168,7 @@ def main() -> int:
                     rect_raw = union_geom.minimum_rotated_rectangle
                     if rect_raw is None or rect_raw.is_empty:
                         continue
-                    metrics_raw = _rect_metrics(rect_raw, union_geom)
+                    metrics_raw = _rect_metrics(union_geom)
                     rect = rect_raw
                     metrics = metrics_raw
                 if metrics["rect_l_m"] > max_rect_l or metrics["rect_w_m"] > max_rect_w:
@@ -2146,7 +2179,7 @@ def main() -> int:
                         rect_raw = union_geom.minimum_rotated_rectangle
                         if rect_raw is None or rect_raw.is_empty:
                             continue
-                        metrics_raw = _rect_metrics(rect_raw, union_geom)
+                        metrics_raw = _rect_metrics(union_geom)
                         rect = rect_raw
                         metrics = metrics_raw
                 if metrics["rect_area_m2"] <= 0:

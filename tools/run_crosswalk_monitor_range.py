@@ -583,6 +583,7 @@ def _scan_offsets_for_range(
     offsets: List[int],
     raw_frames: Dict[Tuple[str, str], dict],
     calib: Dict[str, np.ndarray] | None,
+    cam_to_pose: Optional[np.ndarray],
     lidar_cfg: dict,
     index_lookup: Dict[Tuple[str, str], str],
     lidar_world_mode: str,
@@ -622,6 +623,7 @@ def _scan_offsets_for_range(
                 raw_info,
                 pose,
                 calib,
+                cam_to_pose,
                 lidar_cfg,
                 lidar_world_mode,
                 cam_id,
@@ -899,6 +901,127 @@ def _project_world_to_image(
     return np.stack([us, vs, valid], axis=1)
 
 
+def _pose_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    c1 = float(np.cos(yaw))
+    s1 = float(np.sin(yaw))
+    c2 = float(np.cos(pitch))
+    s2 = float(np.sin(pitch))
+    c3 = float(np.cos(roll))
+    s3 = float(np.sin(roll))
+    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+    return r_z @ r_y @ r_x
+
+
+def _pixel_to_world(
+    u: float,
+    v: float,
+    calib: Dict[str, np.ndarray],
+    pose: Tuple[float, ...],
+    cam_to_pose: Optional[np.ndarray],
+) -> Optional[Tuple[float, float]]:
+    k = calib["k"]
+    r_rect = calib["r_rect"]
+    cam_to_velo = calib["t_cam_to_velo"]
+    fx, fy = k[0, 0], k[1, 1]
+    cx, cy = k[0, 2], k[1, 2]
+    if fx == 0 or fy == 0:
+        return None
+    dir_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+    r_rect_inv = np.linalg.inv(r_rect)
+    dir_cam = r_rect_inv.dot(dir_cam)
+    if len(pose) == 6 and cam_to_pose is not None:
+        x, y, z, roll, pitch, yaw = pose
+        dir_pose = cam_to_pose[:3, :3].dot(dir_cam)
+        r_world_pose = _pose_rotation_matrix(roll, pitch, yaw)
+        dir_world = r_world_pose.dot(dir_pose)
+        origin_pose = cam_to_pose[:3, 3]
+        origin_world = np.array([x, y, z], dtype=float) + r_world_pose.dot(origin_pose)
+        if dir_world[2] < -1e-6:
+            t = -origin_world[2] / dir_world[2]
+            if t > 0:
+                hit = origin_world + t * dir_world
+                return float(hit[0]), float(hit[1])
+    if len(pose) < 3:
+        return None
+    pose_xy = (pose[0], pose[1])
+    yaw = pose[5] if len(pose) >= 6 else pose[2]
+    dir_velo = cam_to_velo[:3, :3].dot(dir_cam)
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    r_yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    dir_world = r_yaw.dot(dir_velo)
+    cam_offset = cam_to_velo[:3, 3]
+    origin_z = float(abs(cam_offset[2]))
+    origin = np.array(
+        [
+            pose_xy[0] + c * cam_offset[0] - s * cam_offset[1],
+            pose_xy[1] + s * cam_offset[0] + c * cam_offset[1],
+            origin_z,
+        ],
+        dtype=float,
+    )
+    if dir_world[2] >= -1e-6:
+        return None
+    t = -origin[2] / dir_world[2]
+    if t <= 0:
+        return None
+    hit = origin + t * dir_world
+    return float(hit[0]), float(hit[1])
+
+
+def _project_geometry_ground_plane(
+    geom: Polygon | LineString,
+    calib: Dict[str, np.ndarray],
+    pose: Tuple[float, ...],
+    cam_to_pose: Optional[np.ndarray],
+) -> Optional[Polygon]:
+    if geom is None or geom.is_empty:
+        return None
+    if geom.geom_type in {"MultiPolygon", "MultiLineString", "GeometryCollection"}:
+        polys = []
+        for sub in geom.geoms:
+            poly = _project_geometry_ground_plane(sub, calib, pose, cam_to_pose)
+            if poly is not None and not poly.is_empty:
+                polys.append(poly)
+        if not polys:
+            return None
+        try:
+            merged = unary_union(polys)
+        except Exception:
+            merged = polys[0]
+        if merged is None or merged.is_empty:
+            return None
+        if merged.geom_type == "Polygon":
+            return merged
+        try:
+            merged = merged.convex_hull
+        except Exception:
+            return None
+        return merged if merged is not None and not merged.is_empty else None
+    if geom.geom_type == "Polygon":
+        coords = list(geom.exterior.coords)
+    else:
+        coords = list(geom.coords)
+    pts = []
+    for u, v in coords:
+        hit = _pixel_to_world(float(u), float(v), calib, pose, cam_to_pose)
+        if hit is not None:
+            pts.append(hit)
+    if len(pts) < 3:
+        return None
+    try:
+        poly = Polygon(pts)
+    except Exception:
+        return None
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    if poly is None or poly.is_empty:
+        return None
+    return poly
+
+
 def _dbscan_largest_cluster(points_xy: np.ndarray, eps: float, min_samples: int) -> np.ndarray:
     if points_xy.shape[0] == 0:
         return np.array([], dtype=int)
@@ -966,26 +1089,60 @@ def _align_rect_to_heading(rect: Polygon, heading_rad: float, snap_deg: float) -
     return affinity.rotate(rect, np.degrees(diff), origin=rect.centroid)
 
 
-def _rect_metrics(rect: Polygon, union_geom: Polygon) -> dict:
+def _rect_metrics(geom: Polygon) -> dict:
+    if geom is None or geom.is_empty:
+        return {
+            "rect_w_m": 0.0,
+            "rect_l_m": 0.0,
+            "aspect": 0.0,
+            "rectangularity": 0.0,
+            "geom_area_m2": 0.0,
+            "rect_area_m2": 0.0,
+        }
+    if not geom.is_valid:
+        geom = geom.buffer(0)
+    if geom is None or geom.is_empty:
+        return {
+            "rect_w_m": 0.0,
+            "rect_l_m": 0.0,
+            "aspect": 0.0,
+            "rectangularity": 0.0,
+            "geom_area_m2": 0.0,
+            "rect_area_m2": 0.0,
+        }
+    rect = geom.minimum_rotated_rectangle
+    if rect is None or rect.is_empty:
+        return {
+            "rect_w_m": 0.0,
+            "rect_l_m": 0.0,
+            "aspect": 0.0,
+            "rectangularity": 0.0,
+            "geom_area_m2": float(geom.area),
+            "rect_area_m2": 0.0,
+        }
+    if not rect.is_valid:
+        rect = rect.buffer(0)
     rect_area = rect.area if rect is not None else 0.0
-    area = union_geom.area if union_geom is not None else 0.0
+    area = geom.area if geom is not None else 0.0
     rectangularity = area / rect_area if rect_area > 0 else 0.0
-    rect_coords = list(rect.exterior.coords) if rect is not None else []
+    rect_coords = list(rect.exterior.coords) if rect is not None and rect.geom_type == "Polygon" else []
     edge_lengths = []
     for i in range(len(rect_coords) - 1):
         p0 = rect_coords[i]
         p1 = rect_coords[i + 1]
-        edge_lengths.append(float(np.hypot(p1[0] - p0[0], p1[1] - p0[1])))
-    edge_lengths = sorted(edge_lengths, reverse=True)
-    rect_l = edge_lengths[0] if edge_lengths else 0.0
-    rect_w = edge_lengths[-1] if edge_lengths else 0.0
+        length = float(np.hypot(p1[0] - p0[0], p1[1] - p0[1]))
+        if length > 1e-6:
+            edge_lengths.append(length)
+    rect_l = max(edge_lengths) if edge_lengths else 0.0
+    rect_w = min(edge_lengths) if edge_lengths else 0.0
     aspect = rect_l / max(1e-6, rect_w) if rect_w > 0 else 0.0
     return {
         "rect_w_m": rect_w,
         "rect_l_m": rect_l,
         "aspect": aspect,
         "rectangularity": rectangularity,
-        "geom_area_m2": area,
+        "geom_area_m2": float(area),
+        "rect_area_m2": float(rect_area),
     }
 
 
@@ -1137,6 +1294,7 @@ def _build_lidar_candidate_for_frame(
     raw_info: dict,
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
+    cam_to_pose: Optional[np.ndarray],
     lidar_cfg: dict,
     lidar_world_mode: str,
     cam_id: str,
@@ -1268,8 +1426,19 @@ def _build_lidar_candidate_for_frame(
     if stats["points_in_bbox"] < min_points_bbox:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
         return None, stats
+    bbox_metrics = None
+    bbox_world_pts = points_world[in_bbox][:, :2]
+    if bbox_world_pts.shape[0] >= 3:
+        bbox_hull = MultiPoint([Point(float(x), float(y)) for x, y in bbox_world_pts]).convex_hull
+        if bbox_hull is not None and not bbox_hull.is_empty:
+            bbox_metrics = _rect_metrics(bbox_hull)
 
     mask_geom = raw_gdf.geometry.union_all() if not raw_gdf.empty else None
+    mask_world_geom = None
+    if mask_geom is not None and not mask_geom.is_empty:
+        pose_for_world = pose_full if pose_full is not None else pose
+        if pose_for_world is not None and calib is not None:
+            mask_world_geom = _project_geometry_ground_plane(mask_geom, calib, pose_for_world, cam_to_pose)
     if mask_geom is None or mask_geom.is_empty:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
         return None, stats
@@ -1297,19 +1466,20 @@ def _build_lidar_candidate_for_frame(
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
         return None, stats
 
-    support_pts = points_world[support_idx][:, :2]
+    support_pts_all = points_world[support_idx][:, :2]
+    support_pts = support_pts_all
     eps = float(lidar_cfg.get("DBSCAN_EPS_M", 0.6))
     min_samples = int(lidar_cfg.get("DBSCAN_MIN_SAMPLES", 10))
-    cluster_idx = _dbscan_largest_cluster(support_pts, eps, min_samples)
+    cluster_idx = _dbscan_largest_cluster(support_pts_all, eps, min_samples)
     if cluster_idx.size > 0:
-        support_pts = support_pts[cluster_idx]
+        support_pts = support_pts_all[cluster_idx]
         stats["dbscan_points"] = int(cluster_idx.size)
     else:
-        stats["dbscan_points"] = int(support_pts.shape[0])
-    if support_pts.shape[0] < 3:
+        stats["dbscan_points"] = int(support_pts_all.shape[0])
+    if support_pts_all.shape[0] < 3:
         stats["drop_reason_code"] = "GEOM_INVALID"
         return None, stats
-    hull = MultiPoint([Point(float(x), float(y)) for x, y in support_pts]).convex_hull
+    hull = MultiPoint([Point(float(x), float(y)) for x, y in support_pts_all]).convex_hull
     rect = hull.minimum_rotated_rectangle
     if rect is None or rect.is_empty:
         stats["drop_reason_code"] = "GEOM_INVALID"
@@ -1323,7 +1493,7 @@ def _build_lidar_candidate_for_frame(
         stats["drop_reason_code"] = "GEOM_INVALID"
         return None, stats
     rect = _align_rect_to_heading(rect, pose[2], float(lidar_cfg.get("ANGLE_SNAP_DEG", 20)))
-    metrics = _rect_metrics(rect, hull)
+    metrics = _rect_metrics(rect)
 
     stats["proj_method"] = "lidar"
     stats["geom_ok"] = 1
@@ -1331,6 +1501,16 @@ def _build_lidar_candidate_for_frame(
     stats["rect_w_m"] = float(metrics["rect_w_m"])
     stats["rect_l_m"] = float(metrics["rect_l_m"])
     stats["rectangularity"] = float(metrics["rectangularity"])
+    if mask_world_geom is not None:
+        mask_metrics = _rect_metrics(mask_world_geom)
+        if mask_metrics["rect_w_m"] > 0 and mask_metrics["rect_l_m"] > 0:
+            stats["rect_w_m"] = float(mask_metrics["rect_w_m"])
+            stats["rect_l_m"] = float(mask_metrics["rect_l_m"])
+            stats["rectangularity"] = float(mask_metrics["rectangularity"])
+    if bbox_metrics is not None and (stats["rect_w_m"] < 0.5 or stats["rect_l_m"] < 1.0):
+        stats["rect_w_m"] = float(bbox_metrics["rect_w_m"])
+        stats["rect_l_m"] = float(bbox_metrics["rect_l_m"])
+        stats["rectangularity"] = float(bbox_metrics["rectangularity"])
     stats["drop_reason_code"] = "LIDAR_OK"
     stats["support_points"] = support_pts
     candidate = {
@@ -1466,6 +1646,7 @@ def _build_lidar_candidates_for_range(
     raw_frames: Dict[Tuple[str, str], dict],
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib: Dict[str, np.ndarray] | None,
+    cam_to_pose: Optional[np.ndarray],
     lidar_cfg: dict,
     lidar_world_mode: str,
     cam_id: str,
@@ -1486,6 +1667,7 @@ def _build_lidar_candidates_for_range(
             raw_info,
             pose_map.get(frame_id),
             calib,
+            cam_to_pose,
             lidar_cfg,
             lidar_world_mode,
             cam_id,
@@ -1968,11 +2150,25 @@ def _build_clusters(candidate_gdf: gpd.GeoDataFrame, cluster_eps_m: float) -> Tu
             frames.add(str(row.get("frame_id_norm") or ""))
             geom = row.geometry
             centroids.append((geom.centroid.x, geom.centroid.y))
-            rect = geom.minimum_rotated_rectangle
-            metrics = _rect_metrics(rect, geom)
-            rect_ws.append(metrics["rect_w_m"])
-            rect_ls.append(metrics["rect_l_m"])
-            rectangularities.append(metrics["rectangularity"])
+            metrics = _rect_metrics(geom)
+            rect_w_val = row.get("rect_w_m")
+            rect_l_val = row.get("rect_l_m")
+            rectr_val = row.get("rectangularity")
+            try:
+                rect_w = float(rect_w_val) if rect_w_val is not None and pd.notna(rect_w_val) else metrics["rect_w_m"]
+            except Exception:
+                rect_w = metrics["rect_w_m"]
+            try:
+                rect_l = float(rect_l_val) if rect_l_val is not None and pd.notna(rect_l_val) else metrics["rect_l_m"]
+            except Exception:
+                rect_l = metrics["rect_l_m"]
+            try:
+                rectr = float(rectr_val) if rectr_val is not None and pd.notna(rectr_val) else metrics["rectangularity"]
+            except Exception:
+                rectr = metrics["rectangularity"]
+            rect_ws.append(rect_w)
+            rect_ls.append(rect_l)
+            rectangularities.append(rectr)
             heading = row.get("heading_diff_to_perp_deg")
             if heading != "" and heading is not None and pd.notna(heading):
                 try:
@@ -2010,11 +2206,20 @@ def _build_clusters(candidate_gdf: gpd.GeoDataFrame, cluster_eps_m: float) -> Tu
         union_geom = gdf.loc[member_indices].geometry.union_all()
         rect = union_geom.minimum_rotated_rectangle if union_geom is not None else None
         if rect is not None and not rect.is_empty and rect.is_valid and rect.geom_type == "Polygon":
-            metrics = _rect_metrics(rect, union_geom)
+            metrics = _rect_metrics(union_geom)
             cluster_info[cid]["refined_geom"] = rect
-            cluster_info[cid]["rect_w_m"] = float(metrics["rect_w_m"])
-            cluster_info[cid]["rect_l_m"] = float(metrics["rect_l_m"])
-            cluster_info[cid]["rectangularity"] = float(metrics["rectangularity"])
+            rect_w = float(metrics["rect_w_m"])
+            rect_l = float(metrics["rect_l_m"])
+            rectr = float(metrics["rectangularity"])
+            if rect_ws and rect_w < 0.5:
+                rect_w = float(np.median(rect_ws))
+            if rect_ls and rect_l < 1.0:
+                rect_l = float(np.median(rect_ls))
+            if rectangularities and rectr <= 0.0:
+                rectr = float(np.median(rectangularities))
+            cluster_info[cid]["rect_w_m"] = rect_w
+            cluster_info[cid]["rect_l_m"] = rect_l
+            cluster_info[cid]["rectangularity"] = rectr
         for member in members:
             cluster_ids[member] = cid
     for idx, orig_idx in enumerate(valid_indices):
@@ -2050,6 +2255,21 @@ def _refine_clusters(
         if not members:
             continue
         full_subset = gdf.loc[members].copy()
+        rect_w_override = None
+        rect_l_override = None
+        rectr_override = None
+        if "rect_w_m" in full_subset.columns:
+            vals = [float(v) for v in full_subset["rect_w_m"].tolist() if v is not None and pd.notna(v) and float(v) > 0]
+            if vals:
+                rect_w_override = float(np.median(vals))
+        if "rect_l_m" in full_subset.columns:
+            vals = [float(v) for v in full_subset["rect_l_m"].tolist() if v is not None and pd.notna(v) and float(v) > 0]
+            if vals:
+                rect_l_override = float(np.median(vals))
+        if "rectangularity" in full_subset.columns:
+            vals = [float(v) for v in full_subset["rectangularity"].tolist() if v is not None and pd.notna(v) and float(v) > 0]
+            if vals:
+                rectr_override = float(np.median(vals))
         frames_all = set(full_subset["frame_id_norm"].tolist())
         info["frames_hit_all"] = len(frames_all)
         info["frames_hit"] = len(frames_all)
@@ -2172,11 +2392,20 @@ def _refine_clusters(
                 continue
             heading = float(np.median(headings)) if headings else 0.0
             rect = _align_rect_to_heading(rect, heading, angle_snap)
-            metrics = _rect_metrics(rect, union_geom)
+            metrics = _rect_metrics(union_geom)
             info["refined_geom"] = rect
-            info["rect_w_m"] = float(metrics["rect_w_m"])
-            info["rect_l_m"] = float(metrics["rect_l_m"])
-            info["rectangularity"] = float(metrics["rectangularity"])
+            rect_w = float(metrics["rect_w_m"])
+            rect_l = float(metrics["rect_l_m"])
+            rectr = float(metrics["rectangularity"])
+            if rect_w_override is not None and rect_w < 0.5:
+                rect_w = rect_w_override
+            if rect_l_override is not None and rect_l < 1.0:
+                rect_l = rect_l_override
+            if rectr_override is not None and rectr <= 0.0:
+                rectr = rectr_override
+            info["rect_w_m"] = rect_w
+            info["rect_l_m"] = rect_l
+            info["rectangularity"] = rectr
             refined_heading = float(np.degrees(abs(((_rect_angle_rad(rect) - (heading + np.pi / 2)) + np.pi) % (2 * np.pi) - np.pi)))
             if base_heading is not None:
                 refined_heading = float(min(base_heading, refined_heading))
@@ -2193,11 +2422,20 @@ def _refine_clusters(
             continue
         heading = float(np.median(headings)) if headings else 0.0
         rect = _align_rect_to_heading(rect, heading, angle_snap)
-        metrics = _rect_metrics(rect, hull)
+        metrics = _rect_metrics(rect)
         info["refined_geom"] = rect
-        info["rect_w_m"] = float(metrics["rect_w_m"])
-        info["rect_l_m"] = float(metrics["rect_l_m"])
-        info["rectangularity"] = float(metrics["rectangularity"])
+        rect_w = float(metrics["rect_w_m"])
+        rect_l = float(metrics["rect_l_m"])
+        rectr = float(metrics["rectangularity"])
+        if rect_w_override is not None and rect_w < 0.5:
+            rect_w = rect_w_override
+        if rect_l_override is not None and rect_l < 1.0:
+            rect_l = rect_l_override
+        if rectr_override is not None and rectr <= 0.0:
+            rectr = rectr_override
+        info["rect_w_m"] = rect_w
+        info["rect_l_m"] = rect_l
+        info["rectangularity"] = rectr
         refined_heading = float(np.degrees(abs(((_rect_angle_rad(rect) - (heading + np.pi / 2)) + np.pi) % (2 * np.pi) - np.pi)))
         if base_heading is not None:
             refined_heading = float(min(base_heading, refined_heading))
@@ -2228,6 +2466,7 @@ def _stage2_roi_refine(
     index_lookup: Dict[Tuple[str, str], str],
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib: Dict[str, np.ndarray] | None,
+    cam_to_pose: Optional[np.ndarray],
     lidar_cfg: dict,
     image_provider: str,
     kitti_root: Path,
@@ -2286,6 +2525,7 @@ def _stage2_roi_refine(
                 raw_info,
                 pose,
                 calib,
+                cam_to_pose,
                 lidar_cfg,
                 lidar_world_mode,
                 camera,
@@ -2792,6 +3032,14 @@ def _build_report(
         lines.append(f"- p90: {np.percentile(jitters, 90):.1f}")
         lines.append("")
         lines.append("## Top5 Near-Final Clusters")
+        min_frames_final = int(final_cfg.get("min_frames_hit_final", 3))
+        rect_min_w = float(final_cfg.get("rect_min_w", 1.5))
+        rect_max_w = float(final_cfg.get("rect_max_w", 30.0))
+        rect_min_l = float(final_cfg.get("rect_min_l", 3.0))
+        rect_max_l = float(final_cfg.get("rect_max_l", 40.0))
+        rect_min = float(final_cfg.get("rectangularity_min", 0.45))
+        heading_max = float(final_cfg.get("heading_diff_to_perp_max_deg", 25.0))
+        jitter_max = float(final_cfg.get("jitter_p90_max", 8.0))
         candidates = []
         for cid, info in cluster_info.items():
             if info.get("frames_hit_support", info.get("frames_hit", 0)) < 2:
@@ -2801,20 +3049,46 @@ def _build_report(
         candidates.sort(reverse=True)
         for frames_hit, cid, info in candidates[:5]:
             reasons = []
-            if info.get("frames_hit_support", info.get("frames_hit", 0)) < 3:
+            if info.get("frames_hit_support", info.get("frames_hit", 0)) < min_frames_final:
                 reasons.append("frames_hit_support<3")
-            if info.get("rectangularity", 0.0) < 0.45:
+            if info.get("rectangularity", 0.0) < rect_min:
                 reasons.append("rectangularity")
-            if info.get("rect_w_m", 0.0) < 1.5 or info.get("rect_w_m", 0.0) > 30.0:
+            if info.get("rect_w_m", 0.0) < rect_min_w or info.get("rect_w_m", 0.0) > rect_max_w:
                 reasons.append("rect_w")
-            if info.get("rect_l_m", 0.0) < 3.0 or info.get("rect_l_m", 0.0) > 40.0:
+            if info.get("rect_l_m", 0.0) < rect_min_l or info.get("rect_l_m", 0.0) > rect_max_l:
                 reasons.append("rect_l")
-            if info.get("heading_diff") is not None and info.get("heading_diff", 0.0) > 25.0:
+            if info.get("heading_diff") is not None and info.get("heading_diff", 0.0) > heading_max:
                 reasons.append("heading_diff")
-            if info.get("jitter_p90", 0.0) > 8.0:
+            if info.get("jitter_p90", 0.0) > jitter_max:
                 reasons.append("jitter")
             lines.append(f"- {cid} frames_hit={frames_hit} reasons={','.join(reasons) or 'n/a'}")
         lines.append("")
+        metric_bug_clusters = []
+        for cid, info in cluster_info.items():
+            rect_w = float(info.get("rect_w_m", 0.0))
+            rect_l = float(info.get("rect_l_m", 0.0))
+            if rect_w < 0.5 or rect_l < 1.0:
+                metric_bug_clusters.append(cid)
+        if metric_bug_clusters:
+            lines.append("## Metric Bug Suspected")
+            for cid in metric_bug_clusters:
+                frames = [
+                    r.get("frame_id")
+                    for r in trace_records
+                    if str(r.get("cluster_id") or "") == cid
+                ][:3]
+                if not frames:
+                    lines.append(f"- {cid}: no_frames_found")
+                    continue
+                lines.append(f"- {cid}: frames={','.join(frames)}")
+                for frame_id in frames:
+                    gated_path = outputs_dir / "qa_images" / drive_id / f"{frame_id}_overlay_gated.png"
+                    raw_path = outputs_dir / "qa_images" / drive_id / f"{frame_id}_overlay_raw.png"
+                    ent_path = outputs_dir / "qa_images" / drive_id / f"{frame_id}_overlay_entities.png"
+                    lines.append(f"  - raw: {raw_path}")
+                    lines.append(f"  - gated: {gated_path}")
+                    lines.append(f"  - entities: {ent_path}")
+            lines.append("")
         lines.append("## Top3 Cluster Before/After")
         rows = []
         for cid, info in cluster_info.items():
@@ -2976,6 +3250,7 @@ def _write_cluster_summary(
         support_frames = info.get("support_frames", [])
         refined_rect_w = float(info.get("rect_w_m", 0.0))
         refined_rect_l = float(info.get("rect_l_m", 0.0))
+        metric_bug_suspected = 1 if refined_rect_w < 0.5 or refined_rect_l < 1.0 else 0
         refined_geom = info.get("refined_geom")
         refined_rect_area = float(refined_geom.area) if refined_geom is not None and not refined_geom.is_empty else 0.0
         rectangularity = float(info.get("rectangularity", 0.0))
@@ -3002,6 +3277,7 @@ def _write_cluster_summary(
                 "refined_rect_l_m": refined_rect_l,
                 "refined_rect_area_m2": refined_rect_area,
                 "rectangularity": rectangularity,
+                "metric_bug_suspected": metric_bug_suspected,
                 "final_pass": final_pass,
                 "final_fail_reason": fail_reason,
             }
@@ -3012,7 +3288,7 @@ def _write_cluster_summary(
     lines = ["# Cluster Summary", f"- drive_id: {drive_id}", f"- clusters: {len(rows)}", ""]
     for row in rows:
         lines.append(
-            f"- {row['cluster_id']}: stage1={row['frames_hit_stage1']} stage2_added={row['frames_hit_stage2_added']} support={row['frames_hit_support']} gore_like_ratio={row['gore_like_ratio']:.2f} final_pass={row['final_pass']} reason={row['final_fail_reason']}"
+            f"- {row['cluster_id']}: stage1={row['frames_hit_stage1']} stage2_added={row['frames_hit_stage2_added']} support={row['frames_hit_support']} gore_like_ratio={row['gore_like_ratio']:.2f} metric_bug={row['metric_bug_suspected']} final_pass={row['final_pass']} reason={row['final_fail_reason']}"
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path, md_path
@@ -3120,8 +3396,9 @@ def main() -> int:
     except Exception:
         calib = None
     cam_to_pose_key = ""
+    cam_to_pose = None
     try:
-        _cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(kitti_root, camera)
+        cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(kitti_root, camera)
     except Exception:
         cam_to_pose_key = ""
     _assert_camera_consistency(
@@ -3276,6 +3553,7 @@ def main() -> int:
         raw_frames,
         pose_map,
         calib,
+        cam_to_pose,
         lidar_cfg_norm,
         lidar_world_mode,
         camera,
@@ -3392,7 +3670,7 @@ def main() -> int:
                     aspect = 0.0
                     if poly is not None:
                         rect = poly.minimum_rotated_rectangle
-                        metrics = _rect_metrics(rect, poly)
+                        metrics = _rect_metrics(poly)
                         rect_val = float(metrics.get("rectangularity", 0.0))
                         aspect = float(metrics.get("aspect", 0.0))
                     is_gore = False
@@ -3481,6 +3759,7 @@ def main() -> int:
         offsets,
         raw_frames,
         calib,
+        cam_to_pose,
         lidar_cfg_norm,
         index_lookup,
         lidar_world_mode,
