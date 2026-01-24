@@ -20,9 +20,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_pose
+from pipeline.datasets.kitti360_io import (
+    load_kitti360_calib,
+    load_kitti360_cam_to_pose_key,
+    load_kitti360_pose,
+    load_kitti360_pose_full,
+)
 from tools.build_image_sample_index import _extract_frame_id, _find_image_dir, _list_images
-from tools.build_road_entities import _geom_to_image_points
 
 
 LOG = logging.getLogger("run_crosswalk_monitor_drive")
@@ -37,6 +41,50 @@ def _load_yaml(path: Path) -> dict:
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _load_camera_defaults(path: Path) -> dict:
+    data = _load_yaml(path)
+    defaults = {
+        "default_camera": "image_00",
+        "enforce_camera": True,
+        "allow_override": False,
+    }
+    if not isinstance(data, dict):
+        return defaults
+    defaults.update({k: v for k, v in data.items() if v is not None})
+    return defaults
+
+
+def _assert_camera_consistency(
+    camera: str,
+    image_dir: Path | None,
+    calib: Dict[str, np.ndarray] | None,
+    cam_to_pose_key: str,
+    lidar_world_mode: str,
+    default_camera: str,
+    enforce_camera: bool,
+    allow_override: bool,
+) -> None:
+    if enforce_camera and not allow_override and camera != default_camera:
+        raise SystemExit(f"ERROR: camera={camera} expected={default_camera}")
+    if image_dir is None or not image_dir.exists():
+        raise SystemExit("ERROR: image_dir_missing")
+    image_dir_text = str(image_dir).replace("\\", "/").lower()
+    if enforce_camera and "image_00" not in image_dir_text:
+        raise SystemExit(f"ERROR: image_dir_not_image_00:{image_dir}")
+    if enforce_camera and "data_rect" not in image_dir_text:
+        raise SystemExit(f"ERROR: image_dir_not_data_rect:{image_dir}")
+    if calib is None:
+        raise SystemExit("ERROR: calib_missing")
+    p_key = str(calib.get("p_rect_key", ""))
+    r_key = str(calib.get("r_rect_key", ""))
+    if enforce_camera and (p_key != "P_rect_00" or r_key != "R_rect_00"):
+        raise SystemExit(f"ERROR: calib_rect_key_mismatch:p={p_key} r={r_key}")
+    if enforce_camera and cam_to_pose_key != "image_00":
+        raise SystemExit(f"ERROR: cam_to_pose_key_mismatch:{cam_to_pose_key}")
+    if enforce_camera and lidar_world_mode != "fullpose":
+        raise SystemExit(f"ERROR: lidar_world_mode={lidar_world_mode} expected=fullpose")
 
 
 def _merge_config(base: dict, overrides: dict) -> dict:
@@ -274,8 +322,8 @@ def _ensure_raw_overlays(
         raw_status = "unknown"
         if raw_mode != "text_only":
             raw_gdf, raw_score, raw_status = _load_crosswalk_raw(feature_store_root, drive_id, frame_id, raw_cache)
-        if raw_status in {"missing_feature_store", "read_error"} and infer_enabled and raw_mode == "auto":
-            if infer_attempts >= max_attempts:
+        if raw_status in {"missing_feature_store", "read_error"} and raw_mode == "auto":
+            if not infer_enabled or infer_attempts >= max_attempts:
                 raw_status = "on_demand_infer_fail"
                 infer_enabled = False
             else:
@@ -462,29 +510,89 @@ def _is_gore_like(row: gpd.GeoSeries) -> bool:
     return False
 
 
+def _project_world_to_image(
+    points: np.ndarray,
+    pose: Tuple[float, ...],
+    calib: Dict[str, np.ndarray],
+) -> np.ndarray:
+    if len(pose) == 6:
+        x0, y0, z0, roll, pitch, yaw = pose
+        c1 = float(np.cos(yaw))
+        s1 = float(np.sin(yaw))
+        c2 = float(np.cos(pitch))
+        s2 = float(np.sin(pitch))
+        c3 = float(np.cos(roll))
+        s3 = float(np.sin(roll))
+        r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+        r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+        r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+        r_world_pose = r_z @ r_y @ r_x
+        delta = points - np.array([x0, y0, z0], dtype=float)
+        pose_xyz = (r_world_pose.T @ delta.T).T
+        x_ego = pose_xyz[:, 0]
+        y_ego = pose_xyz[:, 1]
+        z_ego = pose_xyz[:, 2]
+    else:
+        x0, y0, yaw = pose
+        c = float(np.cos(yaw))
+        s = float(np.sin(yaw))
+        dx = points[:, 0] - x0
+        dy = points[:, 1] - y0
+        x_ego = c * dx + s * dy
+        y_ego = -s * dx + c * dy
+        z_ego = points[:, 2]
+    ones = np.ones_like(x_ego)
+    pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
+    cam = calib["t_velo_to_cam"] @ pts_h
+    xyz = cam[:3, :].T
+    xyz = (calib["r_rect"] @ xyz.T).T
+    zs = xyz[:, 2]
+    valid = zs > 1e-3
+    us = np.zeros_like(zs)
+    vs = np.zeros_like(zs)
+    k = calib["k"]
+    us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
+    vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
+    return np.stack([us, vs, valid], axis=1)
+
+
+def _geom_to_image_points(
+    geom: object,
+    pose: Tuple[float, ...],
+    calib: Dict[str, np.ndarray],
+) -> List[Tuple[float, float]]:
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        coords = np.array(list(geom.exterior.coords), dtype=float)
+    elif geom.geom_type == "LineString":
+        coords = np.array(list(geom.coords), dtype=float)
+    else:
+        return []
+    if coords.shape[0] == 0:
+        return []
+    points = np.column_stack([coords[:, 0], coords[:, 1], np.zeros(coords.shape[0], dtype=float)])
+    proj = _project_world_to_image(points, pose, calib)
+    out: List[Tuple[float, float]] = []
+    for u, v, valid in proj:
+        if not valid:
+            continue
+        out.append((float(u), float(v)))
+    return out
+
+
 def _project_point_to_image(
     x: float,
     y: float,
-    pose_xy_yaw: Tuple[float, float, float],
+    pose_xy_yaw: Tuple[float, ...],
     calib: Dict[str, np.ndarray],
 ) -> Tuple[float, float, bool]:
-    x0, y0, yaw = pose_xy_yaw
-    c = float(np.cos(-yaw))
-    s = float(np.sin(-yaw))
-    dx = x - x0
-    dy = y - y0
-    x_ego = c * dx - s * dy
-    y_ego = s * dx + c * dy
-    z_ego = 0.0
-    pts_h = np.array([[x_ego], [y_ego], [z_ego], [1.0]])
-    cam = calib["t_velo_to_cam"] @ pts_h
-    proj = calib["p_rect"] @ np.vstack([cam[:3, :], np.ones((1, cam.shape[1]))])
-    z = float(proj[2, 0])
-    if z <= 1e-3:
+    pts = np.array([[x, y, 0.0]], dtype=float)
+    proj = _project_world_to_image(pts, pose_xy_yaw, calib)
+    if proj.size == 0:
         return 0.0, 0.0, False
-    u = float(proj[0, 0] / z)
-    v = float(proj[1, 0] / z)
-    return u, v, True
+    u, v, valid = proj[0]
+    return float(u), float(v), bool(valid)
 
 
 def _render_gated_overlay(
@@ -672,10 +780,18 @@ def _build_report(
     final_gdf: gpd.GeoDataFrame,
     final_support: Dict[Tuple[str, str], List[str]],
     outputs_dir: Path,
+    runtime_snapshot: Dict[str, str],
 ) -> None:
     lines = []
     lines.append("# Crosswalk Monitor Report\n")
     lines.append(f"- report_time: {dt.datetime.now():%Y-%m-%d %H:%M:%S}")
+    lines.append("")
+    lines.append("## Runtime Config Snapshot")
+    if runtime_snapshot:
+        for key in sorted(runtime_snapshot.keys()):
+            lines.append(f"- {key}: {runtime_snapshot[key]}")
+    else:
+        lines.append("- none")
     lines.append(f"- drive_id: {drive_id}")
     lines.append(f"- total_frames: {total_frames}")
     lines.append("")
@@ -746,7 +862,13 @@ def main() -> int:
 
     drive_id = str(merged.get("drive_id") or "")
     kitti_root = Path(str(merged.get("kitti_root") or ""))
-    camera = str(merged.get("camera") or "image_00")
+    defaults = _load_camera_defaults(Path("configs/camera_defaults.yaml"))
+    default_camera = str(defaults.get("default_camera") or "image_00")
+    enforce_camera = bool(defaults.get("enforce_camera", True))
+    allow_override = bool(defaults.get("allow_override", False))
+    if str(os.environ.get("ALLOW_CAMERA_OVERRIDE", "0")).strip() == "1":
+        allow_override = True
+    camera = str(merged.get("camera") or default_camera)
     stage1_stride = int(merged.get("stride", 1))
     export_all_frames = bool(merged.get("export_all_frames", True))
     min_frames_hit_final = int(merged.get("min_frames_hit_final", 3))
@@ -787,6 +909,32 @@ def main() -> int:
     debug_dir = run_dir / "debug"
     outputs_dir.mkdir(parents=True, exist_ok=True)
     debug_dir.mkdir(parents=True, exist_ok=True)
+
+    lidar_world_mode = str(merged.get("lidar_world_mode") or os.environ.get("LIDAR_WORLD_MODE") or "").strip().lower()
+    if str(os.environ.get("USE_FULLPOSE_LIDAR", "0")).strip() == "1":
+        lidar_world_mode = "fullpose"
+    if not lidar_world_mode:
+        lidar_world_mode = "fullpose"
+    image_dir = _find_image_dir(kitti_root, drive_id, camera)
+    try:
+        calib = load_kitti360_calib(kitti_root, camera)
+    except Exception:
+        calib = None
+    cam_to_pose_key = ""
+    try:
+        _cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(kitti_root, camera)
+    except Exception:
+        cam_to_pose_key = ""
+    _assert_camera_consistency(
+        camera,
+        image_dir,
+        calib,
+        cam_to_pose_key,
+        lidar_world_mode,
+        default_camera,
+        enforce_camera,
+        allow_override,
+    )
 
     records = _build_index_records(kitti_root, drive_id, camera, stage1_stride)
     if not records:
@@ -935,16 +1083,16 @@ def main() -> int:
 
     final_support = _build_final_support(final_gdf)
 
-    try:
-        calib = load_kitti360_calib(kitti_root, camera)
-    except Exception:
-        calib = None
-    pose_map: Dict[str, Tuple[float, float, float]] = {}
+    pose_map: Dict[str, Tuple[float, float, float] | Tuple[float, float, float, float, float, float]] = {}
     for record in records:
         frame_id = _normalize_frame_id(record["frame_id"])
         try:
-            x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
-            pose_map[frame_id] = (x, y, yaw)
+            if lidar_world_mode == "fullpose":
+                x, y, z, roll, pitch, yaw = load_kitti360_pose_full(kitti_root, drive_id, frame_id)
+                pose_map[frame_id] = (x, y, z, roll, pitch, yaw)
+            else:
+                x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
+                pose_map[frame_id] = (x, y, yaw)
         except Exception:
             continue
 
@@ -991,6 +1139,7 @@ def main() -> int:
     reject_counts: Dict[str, int] = {}
     raw_frames = []
     candidate_zero = 0
+    pose_source_label = "oxts_full" if lidar_world_mode == "fullpose" else "oxts"
     for record in records:
         frame_id = _normalize_frame_id(record["frame_id"])
         key = (drive_id, frame_id)
@@ -1040,6 +1189,8 @@ def main() -> int:
                 "raw_status": raw_info.get("raw_status", "unknown"),
                 "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
+                "pose_source": pose_source_label,
+                "lidar_world_mode": lidar_world_mode,
                 "project_ok": project_ok,
                 "candidate_written": 1 if cand_ids else 0,
                 "candidate_count": candidate_count,
@@ -1056,6 +1207,18 @@ def main() -> int:
     _build_trace(trace_records, trace_path)
 
     report_path = outputs_dir / "crosswalk_monitor_report.md"
+    runtime_snapshot = {
+        "camera": camera,
+        "image_dir": str(image_dir or ""),
+        "pose_source": pose_source_label,
+        "lidar_world_mode": lidar_world_mode,
+        "p_rect_key": str(calib.get("p_rect_key", "") if calib else ""),
+        "r_rect_key": str(calib.get("r_rect_key", "") if calib else ""),
+        "cam_to_pose_key": cam_to_pose_key,
+        "cam_to_velo_path": str(kitti_root / "calibration" / "calib_cam_to_velo.txt"),
+        "roi_used": "false",
+        "roi_strategy": "full_frame",
+    }
     _build_report(
         report_path,
         drive_id,
@@ -1066,6 +1229,7 @@ def main() -> int:
         final_gdf,
         final_support,
         outputs_dir,
+        runtime_snapshot,
     )
 
     log.info("done: %s", outputs_dir)

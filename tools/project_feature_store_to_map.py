@@ -11,6 +11,7 @@ from typing import Dict, Iterable, Optional, Tuple
 import numpy as np
 import geopandas as gpd
 import pandas as pd
+import yaml
 from shapely.geometry import LineString, MultiPoint, Point, Polygon
 from shapely.ops import unary_union
 
@@ -23,12 +24,64 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_pose
+from pipeline.datasets.kitti360_io import (
+    load_kitti360_calib,
+    load_kitti360_cam_to_pose_key,
+    load_kitti360_lidar_points_world,
+    load_kitti360_pose,
+    load_kitti360_pose_full,
+)
+from tools.build_image_sample_index import _find_image_dir
 
 
 def _setup_logger() -> logging.Logger:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     return logging.getLogger("project_feature_store_to_map")
+
+
+def _load_camera_defaults(path: Path) -> dict:
+    if not path.exists():
+        return {"default_camera": "image_00", "enforce_camera": True, "allow_override": False}
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    defaults = {
+        "default_camera": "image_00",
+        "enforce_camera": True,
+        "allow_override": False,
+    }
+    if isinstance(data, dict):
+        defaults.update({k: v for k, v in data.items() if v is not None})
+    return defaults
+
+
+def _assert_camera_consistency(
+    camera: str,
+    image_dir: Path | None,
+    calib: dict | None,
+    cam_to_pose_key: str,
+    lidar_world_mode: str,
+    default_camera: str,
+    enforce_camera: bool,
+    allow_override: bool,
+) -> None:
+    if enforce_camera and not allow_override and camera != default_camera:
+        raise SystemExit(f"ERROR: camera={camera} expected={default_camera}")
+    if image_dir is None or not image_dir.exists():
+        raise SystemExit("ERROR: image_dir_missing")
+    image_dir_text = str(image_dir).replace("\\", "/").lower()
+    if enforce_camera and "image_00" not in image_dir_text:
+        raise SystemExit(f"ERROR: image_dir_not_image_00:{image_dir}")
+    if enforce_camera and "data_rect" not in image_dir_text:
+        raise SystemExit(f"ERROR: image_dir_not_data_rect:{image_dir}")
+    if calib is None:
+        raise SystemExit("ERROR: calib_missing")
+    p_key = str(calib.get("p_rect_key", ""))
+    r_key = str(calib.get("r_rect_key", ""))
+    if enforce_camera and (p_key != "P_rect_00" or r_key != "R_rect_00"):
+        raise SystemExit(f"ERROR: calib_rect_key_mismatch:p={p_key} r={r_key}")
+    if enforce_camera and cam_to_pose_key != "image_00":
+        raise SystemExit(f"ERROR: cam_to_pose_key_mismatch:{cam_to_pose_key}")
+    if enforce_camera and lidar_world_mode != "fullpose":
+        raise SystemExit(f"ERROR: lidar_world_mode={lidar_world_mode} expected=fullpose")
 
 
 def _read_all_layers(path: Path) -> gpd.GeoDataFrame:
@@ -117,7 +170,26 @@ def _project_velodyne_to_image(points: np.ndarray, calib: dict) -> Tuple[np.ndar
     return np.stack([u, v], axis=1), valid
 
 
-def _pixel_to_world(u: float, v: float, calib: dict, pose_xy: Tuple[float, float], yaw: float) -> Optional[Tuple[float, float]]:
+def _pose_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+    c1 = float(np.cos(yaw))
+    s1 = float(np.sin(yaw))
+    c2 = float(np.cos(pitch))
+    s2 = float(np.sin(pitch))
+    c3 = float(np.cos(roll))
+    s3 = float(np.sin(roll))
+    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+    return r_z @ r_y @ r_x
+
+
+def _pixel_to_world(
+    u: float,
+    v: float,
+    calib: dict,
+    pose: Tuple[float, ...],
+    cam_to_pose: Optional[np.ndarray],
+) -> Optional[Tuple[float, float]]:
     k = calib["k"]
     r_rect = calib["r_rect"]
     cam_to_velo = calib["t_cam_to_velo"]
@@ -128,13 +200,31 @@ def _pixel_to_world(u: float, v: float, calib: dict, pose_xy: Tuple[float, float
     dir_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
     r_rect_inv = np.linalg.inv(r_rect)
     dir_cam = r_rect_inv.dot(dir_cam)
+    if len(pose) == 6 and cam_to_pose is not None:
+        x, y, z, roll, pitch, yaw = pose
+        dir_pose = cam_to_pose[:3, :3].dot(dir_cam)
+        r_world_pose = _pose_rotation_matrix(roll, pitch, yaw)
+        dir_world = r_world_pose.dot(dir_pose)
+        origin_pose = cam_to_pose[:3, 3]
+        origin_world = np.array([x, y, z], dtype=float) + r_world_pose.dot(origin_pose)
+        if dir_world[2] >= -1e-6:
+            return None
+        t = -origin_world[2] / dir_world[2]
+        if t <= 0:
+            return None
+        hit = origin_world + t * dir_world
+        return float(hit[0]), float(hit[1])
+    if len(pose) != 3:
+        return None
+    pose_xy = (pose[0], pose[1])
+    yaw = pose[2]
     dir_velo = cam_to_velo[:3, :3].dot(dir_cam)
     c = float(np.cos(yaw))
     s = float(np.sin(yaw))
     r_yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
     dir_world = r_yaw.dot(dir_velo)
     cam_offset = cam_to_velo[:3, 3]
-    origin_z = float(abs(cam_offset[2]))  # approximate camera height above ground
+    origin_z = float(abs(cam_offset[2]))
     origin = np.array(
         [
             pose_xy[0] + c * cam_offset[0] - s * cam_offset[1],
@@ -152,13 +242,18 @@ def _pixel_to_world(u: float, v: float, calib: dict, pose_xy: Tuple[float, float
     return float(hit[0]), float(hit[1])
 
 
-def _project_geometry_ground_plane(geom, calib: dict, pose_xy: Tuple[float, float], yaw: float):
+def _project_geometry_ground_plane(
+    geom,
+    calib: dict,
+    pose: Tuple[float, ...],
+    cam_to_pose: Optional[np.ndarray],
+):
     if geom is None or geom.is_empty:
         return None
     if geom.geom_type == "LineString":
         coords = []
         for u, v in geom.coords:
-            pt = _pixel_to_world(u, v, calib, pose_xy, yaw)
+            pt = _pixel_to_world(u, v, calib, pose, cam_to_pose)
             if pt is not None:
                 coords.append(pt)
         if len(coords) < 2:
@@ -167,7 +262,7 @@ def _project_geometry_ground_plane(geom, calib: dict, pose_xy: Tuple[float, floa
     if geom.geom_type == "Polygon":
         coords = []
         for u, v in geom.exterior.coords:
-            pt = _pixel_to_world(u, v, calib, pose_xy, yaw)
+            pt = _pixel_to_world(u, v, calib, pose, cam_to_pose)
             if pt is not None:
                 coords.append(pt)
         if len(coords) < 3:
@@ -176,7 +271,7 @@ def _project_geometry_ground_plane(geom, calib: dict, pose_xy: Tuple[float, floa
     if geom.geom_type == "MultiLineString":
         parts = []
         for part in geom.geoms:
-            proj = _project_geometry_ground_plane(part, calib, pose_xy, yaw)
+            proj = _project_geometry_ground_plane(part, calib, pose, cam_to_pose)
             if proj is not None:
                 parts.append(proj)
         if not parts:
@@ -187,7 +282,7 @@ def _project_geometry_ground_plane(geom, calib: dict, pose_xy: Tuple[float, floa
     if geom.geom_type == "MultiPolygon":
         parts = []
         for part in geom.geoms:
-            proj = _project_geometry_ground_plane(part, calib, pose_xy, yaw)
+            proj = _project_geometry_ground_plane(part, calib, pose, cam_to_pose)
             if proj is not None:
                 parts.append(proj)
         if not parts:
@@ -321,6 +416,7 @@ def main() -> int:
     ap.add_argument("--out-store", required=True, help="output feature_store_map dir")
     ap.add_argument("--data-root", default="", help="KITTI-360 root (default=POC_DATA_ROOT)")
     ap.add_argument("--camera", default="image_00")
+    ap.add_argument("--pose-mode", default="", choices=["", "legacy", "fullpose"])
     ap.add_argument("--max-frames", type=int, default=0)
     ap.add_argument("--map-mode", default="auto", choices=["lidar_project", "ground_plane", "auto"])
     ap.add_argument("--min-points", type=int, default=30)
@@ -339,6 +435,43 @@ def main() -> int:
         log.error("POC_DATA_ROOT not set or invalid.")
         return 2
 
+    defaults = _load_camera_defaults(Path("configs/camera_defaults.yaml"))
+    default_camera = str(defaults.get("default_camera") or "image_00")
+    enforce_camera = bool(defaults.get("enforce_camera", True))
+    allow_override = bool(defaults.get("allow_override", False))
+    if str(os.environ.get("ALLOW_CAMERA_OVERRIDE", "0")).strip() == "1":
+        allow_override = True
+    camera = str(args.camera or default_camera)
+    pose_mode = str(args.pose_mode or os.environ.get("LIDAR_WORLD_MODE") or "").strip().lower()
+    if str(os.environ.get("USE_FULLPOSE_LIDAR", "0")).strip() == "1":
+        pose_mode = "fullpose"
+    if not pose_mode:
+        pose_mode = "fullpose"
+
+    image_dir = _find_image_dir(data_root, args.drive, camera)
+    try:
+        calib = load_kitti360_calib(data_root, camera)
+    except Exception as exc:
+        log.error("calib load failed: %s", exc)
+        return 4
+    cam_to_pose_key = ""
+    cam_to_pose = None
+    try:
+        cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(data_root, camera)
+    except Exception:
+        cam_to_pose_key = ""
+        cam_to_pose = None
+    _assert_camera_consistency(
+        camera,
+        image_dir,
+        calib,
+        cam_to_pose_key,
+        pose_mode,
+        default_camera,
+        enforce_camera,
+        allow_override,
+    )
+
     feature_store = Path(args.feature_store)
     out_store = Path(args.out_store)
     out_store.mkdir(parents=True, exist_ok=True)
@@ -347,12 +480,6 @@ def main() -> int:
     if not drive_dir.exists():
         log.error("feature_store missing drive: %s", drive_dir)
         return 3
-
-    try:
-        calib = load_kitti360_calib(data_root, args.camera)
-    except Exception as exc:
-        log.error("calib load failed: %s", exc)
-        return 4
 
     try:
         velodyne_dir = _find_velodyne_dir(data_root, args.drive)
@@ -385,7 +512,10 @@ def main() -> int:
             continue
 
         try:
-            pose_xy = load_kitti360_pose(data_root, args.drive, frame_id)
+            if pose_mode == "fullpose":
+                pose = load_kitti360_pose_full(data_root, args.drive, frame_id)
+            else:
+                pose = load_kitti360_pose(data_root, args.drive, frame_id)
         except Exception as exc:
             errors.append(f"{args.drive}:{frame_id}:pose:{exc}")
             continue
@@ -413,7 +543,16 @@ def main() -> int:
             bin_path = _resolve_velodyne_path(velodyne_dir, frame_id)
             if bin_path and bin_path.exists():
                 pts = _read_velodyne_points(bin_path)
-                world_pts = _velo_to_world(pts[:, :3], (pose_xy[0], pose_xy[1]), pose_xy[2])
+                if pose_mode == "fullpose":
+                    world_pts = load_kitti360_lidar_points_world(
+                        data_root,
+                        args.drive,
+                        frame_id,
+                        mode="fullpose",
+                        cam_id=camera,
+                    )
+                else:
+                    world_pts = _velo_to_world(pts[:, :3], (pose[0], pose[1]), pose[2])
                 uv, valid = _project_velodyne_to_image(pts[:, :3], calib)
                 world_pts = world_pts[valid]
                 lidar_ok = True
@@ -446,7 +585,7 @@ def main() -> int:
                     if map_mode == "lidar_project":
                         mapped = None
             if mapped is None and map_mode in {"ground_plane", "auto"} and is_ground_class:
-                mapped = _project_geometry_ground_plane(geom, calib, (pose_xy[0], pose_xy[1]), pose_xy[2])
+                mapped = _project_geometry_ground_plane(geom, calib, pose, cam_to_pose)
                 if mapped is not None:
                     map_mode_used = "ground_plane"
                     evidence_strength = "weak"

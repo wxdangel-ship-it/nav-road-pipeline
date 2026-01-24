@@ -202,6 +202,15 @@ def load_kitti360_cam_to_pose(data_root: Path, cam_id: str) -> np.ndarray:
     raise FileNotFoundError("missing_file:calib_cam_to_pose:cam_id")
 
 
+def load_kitti360_cam_to_pose_key(data_root: Path, cam_id: str) -> Tuple[np.ndarray, str]:
+    calib_dir = data_root / "calibration"
+    cam_to_pose = _parse_cam_to_pose(calib_dir / "calib_cam_to_pose.txt")
+    key = cam_id if cam_id.startswith("image_") else f"image_{cam_id}"
+    if key in cam_to_pose:
+        return cam_to_pose[key], key
+    raise FileNotFoundError(f"missing_file:calib_cam_to_pose:{key}")
+
+
 def _parse_image_yaml(path: Path) -> Dict[str, float]:
     if not path.exists():
         raise FileNotFoundError(f"missing_file:camera_yaml:{path}")
@@ -254,6 +263,8 @@ def load_kitti360_calib(data_root: Path, cam_id: str) -> Dict[str, np.ndarray]:
         "k": k,
         "p_rect": p_rect,
         "r_rect": r_rect,
+        "p_rect_key": f"P_rect_{cam_key}",
+        "r_rect_key": f"R_rect_{cam_key}",
         "t_cam_to_velo": cam_to_velo,
         "t_velo_to_cam": np.linalg.inv(cam_to_velo),
     }

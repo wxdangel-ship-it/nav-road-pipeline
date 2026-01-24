@@ -1,0 +1,3 @@
+default_camera: image_00
+enforce_camera: true
+allow_override: false
