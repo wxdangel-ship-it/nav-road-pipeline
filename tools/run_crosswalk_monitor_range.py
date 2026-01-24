@@ -2637,6 +2637,7 @@ def _write_projection_alignment_report(
     center_p90 = _percentile(center_err, 90)
     points_p50 = _percentile(points_bbox, 50)
     proj_ratio_p50 = _percentile(proj_ratio, 50)
+    proj_ratio_p90 = _percentile(proj_ratio, 90)
 
     offset_mode = None
     offset_total = sum(offset_hist.values())
@@ -2673,6 +2674,8 @@ def _write_projection_alignment_report(
         f"- plane_iou_p90: {iou_plane_p90}",
         f"- center_err_px_p50: {center_p50}",
         f"- center_err_px_p90: {center_p90}",
+        f"- proj_in_image_ratio_p50: {proj_ratio_p50}",
+        f"- proj_in_image_ratio_p90: {proj_ratio_p90}",
         "",
         "## Offset Scan",
         f"- best_offset_mode: {offset_mode}",
