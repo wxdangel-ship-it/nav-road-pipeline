@@ -25,7 +25,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pipeline.datasets.kitti360_io import load_kitti360_calib, load_kitti360_lidar_points_world, load_kitti360_pose
+from pipeline.datasets.kitti360_io import (
+    load_kitti360_cam_to_pose,
+    load_kitti360_calib,
+    load_kitti360_lidar_points,
+    load_kitti360_lidar_points_world,
+    load_kitti360_pose,
+    load_kitti360_pose_full,
+)
 
 
 LOG = logging.getLogger("build_road_entities")
@@ -365,6 +372,19 @@ def _load_yaml(path: Path) -> dict:
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 
 
+def _load_velo_to_pose(data_root: Path, cam_id: str) -> np.ndarray:
+    cam_to_pose = load_kitti360_cam_to_pose(data_root, cam_id)
+    calib_path = data_root / "calibration" / "calib_cam_to_velo.txt"
+    nums = [float(v) for v in calib_path.read_text(encoding="utf-8").split()]
+    if len(nums) != 12:
+        raise ValueError("parse_error:calib_cam_to_velo")
+    mat = np.array(nums, dtype=float).reshape(3, 4)
+    bottom = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=float)
+    cam_to_velo = np.vstack([mat, bottom])
+    velo_to_cam = np.linalg.inv(cam_to_velo)
+    return cam_to_pose @ velo_to_cam
+
+
 def _write_gpkg_layers(path: Path, layers: Dict[str, gpd.GeoDataFrame], crs: str) -> None:
     if path.exists():
         try:
@@ -405,6 +425,52 @@ def _rasterize_points(
         if 0 <= x < width and 0 <= y < height:
             raster[y, x] = max(raster[y, x], float(values[i]))
             counts[y, x] += 1
+    raster[counts < min_points] = 0.0
+    return raster, (minx, miny, maxx, maxy), grid_m
+
+
+def _rasterize_height(
+    points_xyz: np.ndarray,
+    grid_m: float,
+    min_points: int,
+    stat: str,
+) -> Tuple[np.ndarray, Tuple[float, float, float, float], float]:
+    if points_xyz.shape[0] == 0:
+        return np.zeros((1, 1), dtype=float), (0.0, 0.0, 0.0, 0.0), grid_m
+    minx = float(points_xyz[:, 0].min())
+    miny = float(points_xyz[:, 1].min())
+    maxx = float(points_xyz[:, 0].max())
+    maxy = float(points_xyz[:, 1].max())
+    width = int(np.ceil((maxx - minx) / grid_m)) + 1
+    height = int(np.ceil((maxy - miny) / grid_m)) + 1
+    xs = ((points_xyz[:, 0] - minx) / grid_m).astype(int)
+    ys = ((maxy - points_xyz[:, 1]) / grid_m).astype(int)
+    xs = np.clip(xs, 0, width - 1)
+    ys = np.clip(ys, 0, height - 1)
+    cell_ids = ys * width + xs
+    stat = str(stat or "p10").lower()
+    raster = np.zeros((height, width), dtype=float)
+    counts = np.zeros((height, width), dtype=int)
+    if stat == "mean":
+        sums = np.zeros((height, width), dtype=float)
+        for cid, z in zip(cell_ids, points_xyz[:, 2]):
+            y = int(cid // width)
+            x = int(cid % width)
+            sums[y, x] += float(z)
+            counts[y, x] += 1
+        mask = counts >= min_points
+        raster[mask] = sums[mask] / counts[mask]
+    else:
+        buckets: Dict[int, List[float]] = {}
+        for cid, z in zip(cell_ids, points_xyz[:, 2]):
+            buckets.setdefault(int(cid), []).append(float(z))
+        pct = 10.0 if stat in {"p10", "ground_p10"} else 95.0
+        for cid, zs in buckets.items():
+            y = int(cid // width)
+            x = int(cid % width)
+            counts[y, x] = len(zs)
+            if len(zs) >= min_points:
+                raster[y, x] = float(np.percentile(np.array(zs, dtype=float), pct))
     raster[counts < min_points] = 0.0
     return raster, (minx, miny, maxx, maxy), grid_m
 
@@ -1283,6 +1349,8 @@ def main() -> int:
     ap.add_argument("--lidar-max-points-per-frame", type=int, default=20000)
     ap.add_argument("--lidar-z-min", type=float, default=-2.0)
     ap.add_argument("--lidar-z-max", type=float, default=0.5)
+    ap.add_argument("--lidar-world-mode", default="legacy")
+    ap.add_argument("--lidar-height-stat", default="p10")
     ap.add_argument("--qa-radius-m", type=float, default=20.0)
     ap.add_argument("--line-min-length-m", type=float, default=2.0)
     ap.add_argument("--cluster-buffer-m", type=float, default=2.0)
@@ -1291,6 +1359,9 @@ def main() -> int:
     args = ap.parse_args()
 
     log = _setup_logger()
+    if str(os.environ.get("USE_FULLPOSE_LIDAR", "0")).strip() == "1":
+        if args.lidar_world_mode == "legacy":
+            args.lidar_world_mode = "fullpose"
     data_root = Path(os.environ.get("POC_DATA_ROOT", ""))
     if not data_root.exists():
         log.error("POC_DATA_ROOT not set or invalid.")
@@ -1519,24 +1590,99 @@ def main() -> int:
 
         lidar_points = []
         lidar_intensity = []
+        lidar_cam_id = "image_00"
+        use_fullpose_lidar = str(args.lidar_world_mode).lower() == "fullpose"
+        lidar_centers = []
+        traj_points = []
+        t_pose_velo = None
+        if use_fullpose_lidar:
+            try:
+                t_pose_velo = _load_velo_to_pose(data_root, lidar_cam_id)
+            except Exception as exc:
+                log.warning("fullpose lidar disabled: %s", exc)
+                use_fullpose_lidar = False
         for row in frames:
             frame_id = str(row.get("frame_id"))
             try:
-                pts = load_kitti360_lidar_points_world(data_root, drive_id, frame_id)
+                if use_fullpose_lidar and t_pose_velo is not None:
+                    raw_pts = load_kitti360_lidar_points(data_root, drive_id, frame_id)
+                    if raw_pts.size == 0:
+                        continue
+                    mask = (raw_pts[:, 2] >= args.lidar_z_min) & (raw_pts[:, 2] <= args.lidar_z_max)
+                    raw_pts = raw_pts[mask]
+                    if raw_pts.shape[0] == 0:
+                        continue
+                    x, y, z, roll, pitch, yaw = load_kitti360_pose_full(data_root, drive_id, frame_id)
+                    c1 = float(np.cos(yaw))
+                    s1 = float(np.sin(yaw))
+                    c2 = float(np.cos(pitch))
+                    s2 = float(np.sin(pitch))
+                    c3 = float(np.cos(roll))
+                    s3 = float(np.sin(roll))
+                    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+                    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+                    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+                    r_world_pose = r_z @ r_y @ r_x
+                    pts = raw_pts[:, :3]
+                    ones = np.ones((pts.shape[0], 1), dtype=pts.dtype)
+                    pts_h = np.hstack([pts, ones])
+                    pts_pose = (t_pose_velo @ pts_h.T)[:3].T
+                    pts = (r_world_pose @ pts_pose.T).T + np.array([x, y, z], dtype=float)
+                else:
+                    pts = load_kitti360_lidar_points_world(
+                        data_root,
+                        drive_id,
+                        frame_id,
+                        mode="legacy",
+                        cam_id=lidar_cam_id,
+                    )
+                    if pts.size == 0:
+                        continue
+                    mask = (pts[:, 2] >= args.lidar_z_min) & (pts[:, 2] <= args.lidar_z_max)
+                    pts = pts[mask]
+                    if pts.shape[0] == 0:
+                        continue
             except Exception as exc:
                 log.warning("lidar missing: %s %s (%s)", drive_id, frame_id, exc)
-                continue
-            if pts.size == 0:
-                continue
-            mask = (pts[:, 2] >= args.lidar_z_min) & (pts[:, 2] <= args.lidar_z_max)
-            pts = pts[mask]
-            if pts.shape[0] == 0:
                 continue
             if pts.shape[0] > args.lidar_max_points_per_frame:
                 idx = np.random.choice(pts.shape[0], size=args.lidar_max_points_per_frame, replace=False)
                 pts = pts[idx]
             lidar_points.append(pts[:, :3])
             lidar_intensity.append(np.ones(pts.shape[0], dtype=float))
+            if use_fullpose_lidar and t_pose_velo is not None:
+                try:
+                    x, y, z, roll, pitch, yaw = load_kitti360_pose_full(data_root, drive_id, frame_id)
+                    c1 = float(np.cos(yaw))
+                    s1 = float(np.sin(yaw))
+                    c2 = float(np.cos(pitch))
+                    s2 = float(np.sin(pitch))
+                    c3 = float(np.cos(roll))
+                    s3 = float(np.sin(roll))
+                    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+                    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+                    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+                    r_world_pose = r_z @ r_y @ r_x
+                    velo_center_pose = t_pose_velo[:3, 3]
+                    velo_center_world = r_world_pose @ velo_center_pose + np.array([x, y, z], dtype=float)
+                    lidar_centers.append(
+                        {
+                            "drive_id": drive_id,
+                            "frame_id": frame_id,
+                            "geometry": Point(float(velo_center_world[0]), float(velo_center_world[1])),
+                        }
+                    )
+                    traj_points.append(
+                        {
+                            "drive_id": drive_id,
+                            "frame_id": frame_id,
+                            "x": float(x),
+                            "y": float(y),
+                            "geometry": Point(float(x), float(y)),
+                        }
+                    )
+                except Exception:
+                    pass
 
         if lidar_points:
             pts = np.vstack(lidar_points)
@@ -1563,8 +1709,9 @@ def main() -> int:
 
                 minx, miny, maxx, maxy = bounds
                 transform = from_origin(minx, maxy + res, res, res)
-                tif_intensity = outputs_dir / f"lidar_intensity_utm32_{drive_id}.tif"
-                tif_height = outputs_dir / f"lidar_height_utm32_{drive_id}.tif"
+                suffix = "_fullpose" if use_fullpose_lidar else ""
+                tif_intensity = outputs_dir / f"lidar_intensity_utm32{suffix}_{drive_id}.tif"
+                tif_height = outputs_dir / f"lidar_height_utm32{suffix}_{drive_id}.tif"
                 with rasterio.open(
                     tif_intensity,
                     "w",
@@ -1578,7 +1725,15 @@ def main() -> int:
                     nodata=0.0,
                 ) as dst:
                     dst.write(raster, 1)
-                height_vals = raster.copy()
+                if use_fullpose_lidar:
+                    height_vals, _, _ = _rasterize_height(
+                        pts,
+                        args.lidar_grid_m,
+                        args.lidar_min_points,
+                        args.lidar_height_stat,
+                    )
+                else:
+                    height_vals = raster.copy()
                 with rasterio.open(
                     tif_height,
                     "w",
@@ -1617,10 +1772,9 @@ def main() -> int:
                 gdf["drive_id"] = drive_id
             if "frame_id" not in gdf.columns:
                 gdf["frame_id"] = ""
-            missing_frame = gdf["frame_id"].isna() | (gdf["frame_id"] == "") | (gdf["frame_id"] == "unknown")
-            if len(gdf) >= 5 and gdf["frame_id"].nunique() <= 3:
-                gdf["frame_id"] = ""
-                missing_frame = gdf["frame_id"].isna() | (gdf["frame_id"] == "")
+            else:
+                gdf["frame_id"] = gdf["frame_id"].apply(lambda v: "" if pd.isna(v) else str(v))
+            missing_frame = gdf["frame_id"].isin(["", "unknown"])
             if missing_frame.any():
                 gdf = _assign_frame_by_nearest_pose(gdf, data_root, by_drive)
             if line_merge:
@@ -2178,7 +2332,10 @@ def main() -> int:
                 if matches:
                     overlay_path = str(matches[0])
 
-            lidar_raster = outputs_dir / f"lidar_intensity_utm32_{drive_id}.tif"
+            suffix = "_fullpose" if use_fullpose_lidar else ""
+            lidar_intensity_path = outputs_dir / f"lidar_intensity_utm32{suffix}_{drive_id}.tif"
+            lidar_height_path = outputs_dir / f"lidar_height_utm32{suffix}_{drive_id}.tif"
+            lidar_raster = lidar_intensity_path
             entity_ids = []
             sanity_notes = []
             point = Point(x, y)
@@ -2334,6 +2491,10 @@ def main() -> int:
                     "overlay_gated_path": overlay_gated_path,
                     "overlay_entities_path": overlay_entities_path,
                     "lidar_raster_path": str(lidar_raster) if lidar_raster.exists() else "",
+                    "lidar_height_raster_path": str(lidar_height_path) if lidar_height_path.exists() else "",
+                    "lidar_intensity_raster_path": str(lidar_intensity_path) if lidar_intensity_path.exists() else "",
+                    "lidar_height_fullpose_path": str(lidar_height_path) if use_fullpose_lidar and lidar_height_path.exists() else "",
+                    "lidar_intensity_fullpose_path": str(lidar_intensity_path) if use_fullpose_lidar and lidar_intensity_path.exists() else "",
                     "entity_ids": json.dumps(sorted(set(entity_ids)), ensure_ascii=True),
                     "crosswalk_candidate_ids_nearby": json.dumps(sorted(set(crosswalk_candidate_ids)), ensure_ascii=True),
                     "crosswalk_final_ids_nearby": json.dumps(sorted(set(crosswalk_final_ids)), ensure_ascii=True),
@@ -2409,6 +2570,33 @@ def main() -> int:
     qa_path = outputs_dir / "qa_index_wgs84.geojson"
     qa_path.write_text(qa_gdf.to_json(), encoding="utf-8")
 
+    if use_fullpose_lidar and traj_points:
+        traj_gdf = gpd.GeoDataFrame(traj_points, geometry="geometry", crs="EPSG:32632")
+        traj_out = outputs_dir / "traj_points_utm32.gpkg"
+        if traj_out.exists():
+            traj_out.unlink()
+        traj_gdf.to_file(traj_out, layer="traj_points", driver="GPKG")
+    if use_fullpose_lidar and lidar_centers:
+        lidar_center_gdf = gpd.GeoDataFrame(lidar_centers, geometry="geometry", crs="EPSG:32632")
+        lidar_center_out = outputs_dir / "lidar_center_utm32.gpkg"
+        if lidar_center_out.exists():
+            lidar_center_out.unlink()
+        lidar_center_gdf.to_file(lidar_center_out, layer="lidar_center", driver="GPKG")
+        traj_lookup = {str(row["frame_id"]): row["geometry"] for row in traj_points}
+        delta_rows = []
+        for row in lidar_centers:
+            frame_id = str(row.get("frame_id"))
+            traj_pt = traj_lookup.get(frame_id)
+            if traj_pt is None:
+                continue
+            dx = float(row["geometry"].x - traj_pt.x)
+            dy = float(row["geometry"].y - traj_pt.y)
+            dist = float(np.hypot(dx, dy))
+            delta_rows.append([frame_id, dx, dy, dist])
+        delta_path = outputs_dir / "lidar_center_delta.csv"
+        lines = ["frame_id,dx,dy,dist"] + [",".join(map(str, r)) for r in delta_rows]
+        delta_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
     report_lines = [
         "# Road Entities Report",
         "",
@@ -2431,8 +2619,15 @@ def main() -> int:
     report_lines.append(f"- frame_evidence: {outputs_dir / 'frame_evidence_utm32.gpkg'}")
     report_lines.append(f"- lidar_evidence: {outputs_dir / 'lidar_evidence_utm32.gpkg'}")
     report_lines.append(f"- road_entities: {outputs_dir / 'road_entities_utm32.gpkg'}")
+    report_lines.append(f"- lidar_world_mode: {args.lidar_world_mode}")
+    report_lines.append(f"- lidar_height_stat: {args.lidar_height_stat}")
     if lidar_rasters:
         report_lines.append(f"- lidar_rasters: {', '.join(sorted(set(lidar_rasters)))}")
+    if use_fullpose_lidar and traj_points:
+        report_lines.append(f"- traj_points_utm32: {outputs_dir / 'traj_points_utm32.gpkg'}")
+    if use_fullpose_lidar and lidar_centers:
+        report_lines.append(f"- lidar_center_utm32: {outputs_dir / 'lidar_center_utm32.gpkg'}")
+        report_lines.append(f"- lidar_center_delta: {outputs_dir / 'lidar_center_delta.csv'}")
     report_lines.append("")
     report_lines.append("## Fragmentation Stats (After)")
     lane_stats = _line_stats_by_drive(entity_layers_gdf["lane_marking_line"])

@@ -40,12 +40,40 @@ def _read_oxts_frame(oxts_dir: Path, frame_id: str) -> Tuple[float, float, float
     return lat, lon, yaw
 
 
+def _read_oxts_frame_full(
+    oxts_dir: Path, frame_id: str
+) -> Tuple[float, float, float, float, float, float]:
+    path = oxts_dir / f"{frame_id}.txt"
+    if not path.exists():
+        raise FileNotFoundError(f"missing_file:oxts:{path}")
+    parts = path.read_text(encoding="utf-8").strip().split()
+    if len(parts) < 6:
+        raise ValueError("parse_error:oxts")
+    lat = float(parts[0])
+    lon = float(parts[1])
+    alt = float(parts[2])
+    roll = float(parts[3])
+    pitch = float(parts[4])
+    yaw = float(parts[5])
+    return lat, lon, alt, roll, pitch, yaw
+
+
 def load_kitti360_pose(data_root: Path, drive_id: str, frame_id: str) -> Tuple[float, float, float]:
     oxts_dir = _find_oxts_dir(data_root, drive_id)
     lat, lon, yaw = _read_oxts_frame(oxts_dir, frame_id)
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
     x, y = transformer.transform(lon, lat)
     return float(x), float(y), float(yaw)
+
+
+def load_kitti360_pose_full(
+    data_root: Path, drive_id: str, frame_id: str
+) -> Tuple[float, float, float, float, float, float]:
+    oxts_dir = _find_oxts_dir(data_root, drive_id)
+    lat, lon, alt, roll, pitch, yaw = _read_oxts_frame_full(oxts_dir, frame_id)
+    transformer = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
+    x, y = transformer.transform(lon, lat)
+    return float(x), float(y), float(alt), float(roll), float(pitch), float(yaw)
 
 
 def _find_velodyne_dir(data_root: Path, drive: str) -> Path:
@@ -86,7 +114,16 @@ def load_kitti360_lidar_points(data_root: Path, drive_id: str, frame_id: str) ->
     return _read_velodyne_points(bin_path)
 
 
-def load_kitti360_lidar_points_world(data_root: Path, drive_id: str, frame_id: str) -> np.ndarray:
+def load_kitti360_lidar_points_world(
+    data_root: Path,
+    drive_id: str,
+    frame_id: str,
+    mode: str = "legacy",
+    cam_id: str = "image_00",
+) -> np.ndarray:
+    mode = str(mode or "legacy").lower()
+    if mode == "fullpose":
+        return load_kitti360_lidar_points_world_full(data_root, drive_id, frame_id, cam_id=cam_id)
     points = load_kitti360_lidar_points(data_root, drive_id, frame_id)
     if points.size == 0:
         return np.empty((0, 3), dtype=float)
@@ -132,6 +169,37 @@ def _parse_cam_to_velo(path: Path) -> np.ndarray:
     mat = np.array(nums, dtype=float).reshape(3, 4)
     bottom = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=float)
     return np.vstack([mat, bottom])
+
+
+def _parse_cam_to_pose(path: Path) -> Dict[str, np.ndarray]:
+    if not path.exists():
+        raise FileNotFoundError(f"missing_file:calib_cam_to_pose:{path}")
+    out: Dict[str, np.ndarray] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        key = key.strip()
+        parts = [p for p in val.strip().split() if p]
+        if len(parts) != 12:
+            continue
+        mat = np.array([float(v) for v in parts], dtype=float).reshape(3, 4)
+        bottom = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=float)
+        out[key] = np.vstack([mat, bottom])
+    if not out:
+        raise ValueError("parse_error:calib_cam_to_pose")
+    return out
+
+
+def load_kitti360_cam_to_pose(data_root: Path, cam_id: str) -> np.ndarray:
+    calib_dir = data_root / "calibration"
+    cam_to_pose = _parse_cam_to_pose(calib_dir / "calib_cam_to_pose.txt")
+    key = cam_id if cam_id.startswith("image_") else f"image_{cam_id}"
+    if key in cam_to_pose:
+        return cam_to_pose[key]
+    if "image_00" in cam_to_pose:
+        return cam_to_pose["image_00"]
+    raise FileNotFoundError("missing_file:calib_cam_to_pose:cam_id")
 
 
 def _parse_image_yaml(path: Path) -> Dict[str, float]:
@@ -189,3 +257,34 @@ def load_kitti360_calib(data_root: Path, cam_id: str) -> Dict[str, np.ndarray]:
         "t_cam_to_velo": cam_to_velo,
         "t_velo_to_cam": np.linalg.inv(cam_to_velo),
     }
+
+
+def load_kitti360_lidar_points_world_full(
+    data_root: Path, drive_id: str, frame_id: str, cam_id: str = "image_00"
+) -> np.ndarray:
+    points = load_kitti360_lidar_points(data_root, drive_id, frame_id)
+    if points.size == 0:
+        return np.empty((0, 3), dtype=float)
+    x, y, z, roll, pitch, yaw = load_kitti360_pose_full(data_root, drive_id, frame_id)
+    c1 = float(np.cos(yaw))
+    s1 = float(np.sin(yaw))
+    c2 = float(np.cos(pitch))
+    s2 = float(np.sin(pitch))
+    c3 = float(np.cos(roll))
+    s3 = float(np.sin(roll))
+    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+    r_world_pose = r_z @ r_y @ r_x
+
+    t_cam_to_pose = load_kitti360_cam_to_pose(data_root, cam_id)
+    t_cam_to_velo = _parse_cam_to_velo((data_root / "calibration") / "calib_cam_to_velo.txt")
+    t_velo_to_cam = np.linalg.inv(t_cam_to_velo)
+    t_pose_velo = t_cam_to_pose @ t_velo_to_cam
+
+    pts = points[:, :3]
+    ones = np.ones((pts.shape[0], 1), dtype=pts.dtype)
+    pts_h = np.hstack([pts, ones])
+    pts_pose = (t_pose_velo @ pts_h.T)[:3].T
+    pts_world = (r_world_pose @ pts_pose.T).T + np.array([x, y, z], dtype=float)
+    return pts_world
