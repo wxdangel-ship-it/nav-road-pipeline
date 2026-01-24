@@ -1,0 +1,43 @@
+drive_id: "2013_05_28_drive_0010_sync"
+kitti_root: "E:\\KITTI360\\KITTI-360"
+camera: "image_00"
+stage1_stride: 1
+export_all_frames: false
+write_wgs84: true
+raw_fallback_text: true
+topn_review: 50
+
+image_run: "runs\\image_evidence_20260122_114726"
+image_provider: "grounded_sam2_v1"
+image_evidence_gpkg: "runs\\full_stack_20260121_000548\\evidence_clean\\evidence_clean_golden8.gpkg"
+road_root: "runs\\full_stack_20260121_000548"
+config: "configs\\road_entities.yaml"
+
+lidar_proj:
+  mask_dilate_px: 5
+  min_points_bbox: 20
+  min_points_mask: 5
+  intensity_top_pct: 20
+  accum_frames: 3
+  min_in_image_ratio: 0.1
+  angle_snap_deg: 20
+
+cluster:
+  cluster_eps_m: 6.0
+  jitter_p90_max: 8.0
+  angle_jitter_p90_max: 25.0
+
+final_gate:
+  min_frames_hit_final: 3
+  min_inside_ratio_final: 0.5
+  rect_min_w: 1.5
+  rect_max_w: 8.0
+  rect_min_l: 3.0
+  rect_max_l: 25.0
+  rectangularity_min: 0.45
+  heading_diff_to_perp_max_deg: 25
+
+review_gate:
+  min_frames_hit_review: 2
+  rectangularity_min_review: 0.35
+  heading_diff_to_perp_max_deg_review: 35
