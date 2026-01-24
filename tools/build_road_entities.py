@@ -78,6 +78,17 @@ def _percentile(values: List[float], p: float) -> float:
     return float(np.percentile(np.asarray(values, dtype=float), p))
 
 
+def _score_from_gdf(gdf: gpd.GeoDataFrame) -> float:
+    if gdf is None or gdf.empty:
+        return 0.0
+    for col in ("conf", "score", "confidence"):
+        if col in gdf.columns:
+            vals = [float(v) for v in gdf[col].tolist() if pd.notna(v)]
+            if vals:
+                return float(np.mean(vals))
+    return 0.5
+
+
 def _extract_drive_frame(text: str) -> Tuple[str, str]:
     if not text:
         return "", ""
@@ -1321,6 +1332,7 @@ def main() -> int:
         "lane_marking_img": [],
         "stop_line_img": [],
         "crosswalk_img": [],
+        "gore_marking_img": [],
         "road_surface_img": [],
     }
     frame_layers_all: Dict[str, List[gpd.GeoDataFrame]] = {
@@ -1332,6 +1344,7 @@ def main() -> int:
         "lane_marking": "lane_marking_img",
         "stop_line": "stop_line_img",
         "crosswalk": "crosswalk_img",
+        "gore_marking": "gore_marking_img",
     }
     road_candidates = [
         "road_polygon_utm32.gpkg",
@@ -1411,6 +1424,7 @@ def main() -> int:
                 if not owner:
                     sig_owner[sig] = drive_id
 
+        qa_rows = []
     qa_rows = []
     lidar_rasters = []
     heading_segments_by_drive: Dict[str, List[Tuple[LineString, float]]] = {}
@@ -1423,6 +1437,7 @@ def main() -> int:
             "lane_marking_img": [],
             "stop_line_img": [],
             "crosswalk_img": [],
+            "gore_marking_img": [],
             "road_surface_img": [],
         }
         frame_layers_drive: Dict[str, List[gpd.GeoDataFrame]] = {
@@ -1481,6 +1496,7 @@ def main() -> int:
                     continue
                 image_layers = _read_map_evidence(map_path)
                 _push_layer("crosswalk", "crosswalk_img", frame_id)
+                _push_layer("gore_marking", "gore_marking_img", frame_id)
         else:
             for row in frames:
                 frame_id = str(row.get("frame_id"))
@@ -1493,6 +1509,7 @@ def main() -> int:
                 _push_layer("lane_marking", "lane_marking_img", frame_id)
                 _push_layer("stop_line", "stop_line_img", frame_id)
                 _push_layer("crosswalk", "crosswalk_img", frame_id)
+                _push_layer("gore_marking", "gore_marking_img", frame_id)
 
         road_poly = drive_polys.get(drive_id)
         heading_segments = _build_drive_heading_segments(data_root, drive_id, frames)
@@ -1593,6 +1610,16 @@ def main() -> int:
                 gdf = gdf[gdf["drive_id"] == drive_id]
             if gdf.empty:
                 return gdf
+            if "drive_id" not in gdf.columns:
+                gdf["drive_id"] = drive_id
+            if "frame_id" not in gdf.columns:
+                gdf["frame_id"] = ""
+            missing_frame = gdf["frame_id"].isna() | (gdf["frame_id"] == "") | (gdf["frame_id"] == "unknown")
+            if len(gdf) >= 5 and gdf["frame_id"].nunique() <= 3:
+                gdf["frame_id"] = ""
+                missing_frame = gdf["frame_id"].isna() | (gdf["frame_id"] == "")
+            if missing_frame.any():
+                gdf = _assign_frame_by_nearest_pose(gdf, data_root, by_drive)
             if line_merge:
                 gdf = _to_lines(gdf, args.line_min_length_m)
                 heading_max = float(agg_cfg.get("heading_max_diff_deg", agg_cfg.get("max_angle_diff_deg", 15.0)))
@@ -1600,6 +1627,11 @@ def main() -> int:
                 if entity_type == "stop_line":
                     mode = "perpendicular"
                 gdf = _filter_lines_by_heading(gdf, heading_segments, heading_max, mode)
+            if entity_type == "gore_marking":
+                gdf = gdf.copy()
+                gdf["entity_type"] = entity_type
+                gdf["qa_flag"] = "gated"
+                return gdf
             gdf = _gate_against_road(
                 gdf,
                 road_poly,
@@ -1624,6 +1656,14 @@ def main() -> int:
                 gdf["qa_flag"] = gdf["heading_ok"].apply(lambda v: "gated" if v else "angle_mismatch")
             else:
                 gdf["qa_flag"] = "gated"
+            if not line_merge and "frame_id" in gdf.columns:
+                grouped = []
+                for frame_id, hits in gdf.groupby("frame_id"):
+                    row = hits.iloc[0].copy()
+                    row.geometry = unary_union(hits.geometry.values)
+                    row["frame_id"] = frame_id
+                    grouped.append(row)
+                gdf = gpd.GeoDataFrame(grouped, geometry="geometry", crs=gdf.crs)
             return gdf
 
         lane_min_ratio = float(gate_cfg.get("lane_marking_min_inside_ratio", 0.6))
@@ -1633,6 +1673,7 @@ def main() -> int:
         lane_frame = _build_frame_layer("lane_marking_img", "lane_marking", True, lane_cfg, lane_min_ratio)
         stop_frame = _build_frame_layer("stop_line_img", "stop_line", True, stop_cfg, stop_min_ratio)
         cross_frame = _build_frame_layer("crosswalk_img", "crosswalk", False, cross_cfg, cross_min_ratio)
+        gore_frame = _build_frame_layer("gore_marking_img", "gore_marking", False, cross_cfg, 0.0)
 
         if not lane_frame.empty:
             frame_layers_all["lane_marking_frame"].append(lane_frame)
@@ -1643,6 +1684,32 @@ def main() -> int:
         if not cross_frame.empty:
             frame_layers_all["crosswalk_frame"].append(cross_frame)
             frame_layers_drive["crosswalk_frame"].append(cross_frame)
+
+        gore_by_frame: Dict[str, Polygon] = {}
+        gore_score_by_frame: Dict[str, float] = {}
+        if not gore_frame.empty:
+            for frame_id, hits in gore_frame.groupby("frame_id"):
+                if hits.empty:
+                    continue
+                geoms = []
+                for geom in hits.geometry.values:
+                    if geom is None or geom.is_empty:
+                        continue
+                    if not geom.is_valid:
+                        geom = geom.buffer(0)
+                    if geom is None or geom.is_empty:
+                        continue
+                    geoms.append(geom)
+                if not geoms:
+                    continue
+                try:
+                    gore_union = unary_union(geoms)
+                except Exception:
+                    continue
+                if gore_union is None or gore_union.is_empty:
+                    continue
+                gore_by_frame[frame_id] = gore_union
+                gore_score_by_frame[frame_id] = _score_from_gdf(hits)
 
         def _aggregate_from_frame(
             gdf: gpd.GeoDataFrame,
@@ -1701,6 +1768,15 @@ def main() -> int:
                 union_geom = unary_union(hits.geometry.values)
                 if union_geom is None or union_geom.is_empty:
                     continue
+                gore_overlap_ratio = 0.0
+                gore_overlap = 0
+                gore_geom = gore_by_frame.get(frame_id)
+                if gore_geom is not None and not gore_geom.is_empty:
+                    gore_overlap_ratio = union_geom.intersection(gore_geom).area / max(1e-6, union_geom.area)
+                    cross_score = _score_from_gdf(hits)
+                    gore_score = gore_score_by_frame.get(frame_id, 0.0)
+                    if gore_overlap_ratio >= 0.30 and gore_score >= cross_score:
+                        gore_overlap = 1
                 if road_poly is not None and not road_poly.is_empty:
                     shrink_m = float(cross_final_cfg.get("road_shrink_m", 0.0))
                     road_ref = road_poly.buffer(-shrink_m) if shrink_m > 0 else road_poly
@@ -1721,7 +1797,7 @@ def main() -> int:
                     rect = rect_raw
                 metrics = metrics_raw
                 max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 25.0))
-                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 8.0))
+                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 30.0))
                 if metrics["rect_l_m"] > max_rect_l or metrics["rect_w_m"] > max_rect_w:
                     clip_r = max_rect_l / 2.0
                     clipped = union_geom.intersection(rect.centroid.buffer(clip_r))
@@ -1755,16 +1831,18 @@ def main() -> int:
                 reject = []
                 if inside_ratio < float(cross_final_cfg.get("min_inside_ratio", 0.5)):
                     reject.append("off_road")
+                if gore_overlap:
+                    reject.append("gore_overlap")
                 if heading_diff != "" and heading_diff > float(cross_final_cfg.get("max_heading_diff_deg", 25.0)):
                     reject.append("angle")
                 if metrics["rectangularity"] < float(cross_final_cfg.get("min_rectangularity", 0.45)):
                     reject.append("rect")
                 if metrics["rect_w_m"] < float(cross_final_cfg.get("min_rect_w_m", 1.5)) or metrics["rect_w_m"] > float(
-                    cross_final_cfg.get("max_rect_w_m", 8.0)
+                    cross_final_cfg.get("max_rect_w_m", 30.0)
                 ):
                     reject.append("size")
                 if metrics["rect_l_m"] < float(cross_final_cfg.get("min_rect_l_m", 3.0)) or metrics["rect_l_m"] > float(
-                    cross_final_cfg.get("max_rect_l_m", 25.0)
+                    cross_final_cfg.get("max_rect_l_m", 40.0)
                 ):
                     reject.append("size")
                 if metrics["aspect"] < float(cross_final_cfg.get("min_aspect", 1.3)) or metrics["aspect"] > float(
@@ -1786,6 +1864,8 @@ def main() -> int:
                             "rectangularity": metrics["rectangularity"],
                             "heading_diff_to_perp_deg": heading_diff,
                             "inside_road_ratio": inside_ratio,
+                            "gore_overlap": gore_overlap,
+                            "gore_overlap_ratio": gore_overlap_ratio,
                             "reject_reasons": ",".join(reject),
                             "qa_flag": "ok" if not reject else reject[0],
                         },
@@ -1816,9 +1896,9 @@ def main() -> int:
                 hits = candidate_gdf.iloc[indices]
                 max_heading = float(cross_final_cfg.get("max_heading_diff_deg", 25.0))
                 min_rect_w = float(cross_final_cfg.get("min_rect_w_m", 1.5))
-                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 8.0))
+                max_rect_w = float(cross_final_cfg.get("max_rect_w_m", 30.0))
                 min_rect_l = float(cross_final_cfg.get("min_rect_l_m", 3.0))
-                max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 25.0))
+                max_rect_l = float(cross_final_cfg.get("max_rect_l_m", 40.0))
                 min_aspect = float(cross_final_cfg.get("min_aspect", 1.3))
                 max_aspect = float(cross_final_cfg.get("max_aspect", 15.0))
                 min_rectangularity = float(cross_final_cfg.get("min_rectangularity", 0.45))
@@ -1840,6 +1920,8 @@ def main() -> int:
                     hits_geom = hits_geom[hits_geom["rectangularity"] >= min_rectangularity]
                 if "inside_road_ratio" in hits_geom.columns:
                     hits_geom = hits_geom[hits_geom["inside_road_ratio"] >= min_inside]
+                if "gore_overlap" in hits_geom.columns:
+                    hits_geom = hits_geom[hits_geom["gore_overlap"] != 1]
 
                 strict_idx = candidate_gdf_strict.index.intersection(hits.index)
                 hits_strict = candidate_gdf_strict.loc[strict_idx]
@@ -1918,7 +2000,10 @@ def main() -> int:
                 inside_ratio = 0.0
                 if road_poly is not None and not road_poly.is_empty:
                     inside_ratio = rect.intersection(road_poly).area / max(1e-6, rect.area)
-                frames = set(hits["frame_id"].tolist())
+                hits_support = hits.copy()
+                if "gore_overlap" in hits_support.columns:
+                    hits_support = hits_support[hits_support["gore_overlap"] != 1]
+                frames = set(hits_support["frame_id"].tolist()) if not hits_support.empty else set(hits["frame_id"].tolist())
                 frames_hit = len(frames)
                 reject = []
                 min_frames_hit = int(cross_final_cfg.get("min_frames_hit", frames_cfg.get("crosswalk", 2)))
@@ -1942,6 +2027,11 @@ def main() -> int:
                     cross_final_cfg.get("max_aspect", 15.0)
                 ):
                     reject.append("aspect")
+                thin_long_l = float(cross_final_cfg.get("thin_long_rect_l_min", 0.0))
+                thin_long_w = float(cross_final_cfg.get("thin_long_rect_w_max", 0.0))
+                if thin_long_l > 0 and thin_long_w > 0:
+                    if metrics["rect_l_m"] >= thin_long_l and metrics["rect_w_m"] <= thin_long_w:
+                        reject.append("thin_long")
                 if metrics["rectangularity"] < float(cross_final_cfg.get("min_rectangularity", 0.45)):
                     reject.append("rect")
                 if frames_hit < min_frames_hit:
@@ -1956,6 +2046,46 @@ def main() -> int:
                         current = feat["properties"].get("reject_reasons", "")
                         feat["properties"]["reject_reasons"] = _append_reject_reason("low_hit", current)
                         feat["properties"]["qa_flag"] = "low_hit"
+
+                support_geoms = hits_support if not hits_support.empty else hits
+                jitter_p90 = 0.0
+                angle_jitter_p90 = 0.0
+                if not support_geoms.empty:
+                    centroids = [geom.centroid for geom in support_geoms.geometry]
+                    xs = [pt.x for pt in centroids]
+                    ys = [pt.y for pt in centroids]
+                    med_x = float(np.median(xs))
+                    med_y = float(np.median(ys))
+                    dists = [Point(med_x, med_y).distance(pt) for pt in centroids]
+                    jitter_p90 = float(np.percentile(dists, 90)) if dists else 0.0
+                    if "heading_diff_to_perp_deg" in support_geoms.columns:
+                        diffs = [float(v) for v in support_geoms["heading_diff_to_perp_deg"].tolist() if v != ""]
+                        angle_jitter_p90 = float(np.percentile(diffs, 90)) if diffs else 0.0
+                    else:
+                        headings = []
+                        for geom in support_geoms.geometry:
+                            heading = _rect_heading_deg(geom)
+                            if heading is not None:
+                                headings.append(heading)
+                        if headings:
+                            med_heading = float(np.median(headings))
+                            diffs = [_angle_diff_deg(h, med_heading) for h in headings]
+                            angle_jitter_p90 = float(np.percentile(diffs, 90)) if diffs else 0.0
+                jitter_max = float(cross_final_cfg.get("jitter_p90_max", 8.0))
+                angle_jitter_max = float(cross_final_cfg.get("angle_jitter_p90_max", 45.0))
+                frame_span_max = int(cross_final_cfg.get("frame_span_max", 0))
+                frame_span = 0
+                if frames:
+                    try:
+                        frame_ids_num = [int(str(f)) for f in frames if str(f).isdigit()]
+                        if frame_ids_num:
+                            frame_span = max(frame_ids_num) - min(frame_ids_num)
+                    except Exception:
+                        frame_span = 0
+                if jitter_p90 > jitter_max or angle_jitter_p90 > angle_jitter_max:
+                    reject.append("unstable")
+                if frame_span_max > 0 and frame_span > frame_span_max:
+                    reject.append("span")
 
                 score_total = min(1.0, frames_hit / max(1.0, float(min_frames_hit) * 2.0))
                 if reject:
@@ -1981,6 +2111,10 @@ def main() -> int:
                                 "rectangularity": metrics["rectangularity"],
                                 "heading_diff_to_perp_deg": heading_diff,
                                 "inside_road_ratio": inside_ratio,
+                                "jitter_p90": jitter_p90,
+                                "angle_jitter_p90": angle_jitter_p90,
+                                "frame_span": frame_span,
+                                "support_frames": json.dumps(sorted(frames), ensure_ascii=True),
                                 "score_total": score_total,
                                 "reject_reasons": ",".join(reject),
                                 "qa_flag": qa_flag,
@@ -2055,6 +2189,34 @@ def main() -> int:
                         if hd != "" and hd is not None:
                             sanity_notes.append(f"{ent_id}:hd={hd}")
 
+            support_frames = set()
+            reject_summary_by_frame: Dict[str, set] = {}
+            for feat in entity_layers.get("crosswalk_poly", []):
+                props = feat.get("properties", {})
+                if props.get("drive_id") != drive_id:
+                    continue
+                frames_raw = props.get("support_frames", "")
+                frames_list = []
+                if isinstance(frames_raw, str) and frames_raw:
+                    try:
+                        frames_list = json.loads(frames_raw)
+                    except Exception:
+                        frames_list = []
+                for frame in frames_list:
+                    support_frames.add(str(frame))
+            for feat in entity_layers.get("crosswalk_candidate_poly", []):
+                props = feat.get("properties", {})
+                if props.get("drive_id") != drive_id:
+                    continue
+                cand_frame_id = str(props.get("frame_id", ""))
+                if not cand_frame_id:
+                    continue
+                reasons = str(props.get("reject_reasons", "")).split(",")
+                reasons = [r for r in reasons if r]
+                if not reasons:
+                    continue
+                reject_summary_by_frame.setdefault(cand_frame_id, set()).update(reasons)
+
             qa_images_dir = outputs_dir / "qa_images" / drive_id
             overlay_raw_path = ""
             overlay_gated_path = ""
@@ -2110,6 +2272,11 @@ def main() -> int:
                                 pt = _geom_to_image_points(c, pose, calib)
                                 if pt:
                                     gated_draw.text(pt[0], "low_hit", fill=(255, 64, 64, 220))
+                            if "gore_overlap" in reject:
+                                c = geom.centroid
+                                pt = _geom_to_image_points(c, pose, calib)
+                                if pt:
+                                    gated_draw.text(pt[0], "gore", fill=(255, 140, 0, 220))
                         gated_out = Image.alpha_composite(base_img, gated_overlay)
                         overlay_gated_path = str(qa_images_dir / f"{frame_id}_overlay_gated.png")
                         gated_out.save(overlay_gated_path)
@@ -2156,6 +2323,8 @@ def main() -> int:
                     "entity_ids": json.dumps(sorted(set(entity_ids)), ensure_ascii=True),
                     "crosswalk_candidate_ids_nearby": json.dumps(sorted(set(crosswalk_candidate_ids)), ensure_ascii=True),
                     "crosswalk_final_ids_nearby": json.dumps(sorted(set(crosswalk_final_ids)), ensure_ascii=True),
+                    "entity_support_frames": "yes" if frame_id in support_frames else "no",
+                    "reject_reason_summary": ",".join(sorted(reject_summary_by_frame.get(frame_id, []))),
                     "sanity_note": ";".join(sanity_notes),
                 }
             )
@@ -2304,7 +2473,7 @@ def main() -> int:
         top_final = entity_layers_gdf["crosswalk_poly"].head(5)
         for _, row in top_final.iterrows():
             report_lines.append(
-                f"- {row.get('entity_id')}: frames_hit={row.get('frames_hit')} area_m2={row.get('area_m2')} rect={row.get('rect_w_m')}x{row.get('rect_l_m')} heading_diff={row.get('heading_diff_to_perp_deg')}"
+                f"- {row.get('entity_id')}: frames_hit={row.get('frames_hit')} area_m2={row.get('area_m2')} rect={row.get('rect_w_m')}x{row.get('rect_l_m')} heading_diff={row.get('heading_diff_to_perp_deg')} jitter_p90={row.get('jitter_p90')} angle_jitter_p90={row.get('angle_jitter_p90')}"
             )
         report_lines.append("")
 

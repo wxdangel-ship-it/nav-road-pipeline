@@ -285,6 +285,18 @@ def _normalize_frame_id(frame_id: str) -> str:
     return digits.zfill(10)
 
 
+def _parse_frame_id(frame_id: str) -> Optional[int]:
+    text = str(frame_id).strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
 def _merge_config(base: dict, overrides: dict) -> dict:
     out = dict(base)
     for key, val in overrides.items():
@@ -342,6 +354,46 @@ def _list_layers(path: Path) -> List[str]:
         return list(gpd.io.file.fiona.listlayers(str(path)))
     except Exception:
         return []
+
+
+def _assert_frame_evidence_frame_id(
+    frame_evidence_path: Path,
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+    out_path: Path,
+    min_ratio: float = 0.7,
+    min_records: int = 5,
+) -> None:
+    layers = _list_layers(frame_evidence_path) or [None]
+    lines = []
+    failed = False
+    for layer in layers:
+        gdf = gpd.read_file(frame_evidence_path, layer=layer) if layer else gpd.read_file(frame_evidence_path)
+        layer_name = layer or "default"
+        if gdf.empty:
+            lines.append(f"{layer_name},records=0,distinct=0,ratio=1.0")
+            continue
+        if "drive_id" in gdf.columns:
+            gdf = gdf[gdf["drive_id"].astype(str) == drive_id]
+        if "frame_id" not in gdf.columns:
+            lines.append(f"{layer_name},records={len(gdf)},distinct=0,ratio=0.0,missing_frame_id=1")
+            failed = True
+            continue
+        parsed = gdf["frame_id"].apply(_parse_frame_id)
+        mask = parsed.notna()
+        mask &= parsed >= frame_start
+        mask &= parsed <= frame_end
+        gdf = gdf.loc[mask]
+        total = len(gdf)
+        distinct = gdf["frame_id"].nunique() if total else 0
+        ratio = (distinct / total) if total else 1.0
+        lines.append(f"{layer_name},records={total},distinct={distinct},ratio={ratio:.3f}")
+        if total >= min_records and ratio < min_ratio:
+            failed = True
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if failed:
+        raise RuntimeError(f"frame_id_distinct_ratio_low: {out_path}")
 
 
 def _find_crosswalk_layer(path: Path) -> str:
@@ -2430,6 +2482,18 @@ def main() -> int:
         return 3
 
     stage_outputs = stage_dir / "outputs"
+    frame_evidence_path = stage_outputs / "frame_evidence_utm32.gpkg"
+    try:
+        _assert_frame_evidence_frame_id(
+            frame_evidence_path,
+            drive_id,
+            frame_start,
+            frame_end,
+            stage_outputs / "frame_id_assert.txt",
+        )
+    except Exception as exc:
+        log.error("frame_id assert failed: %s", exc)
+        return 4
     qa_images_src = stage_outputs / "qa_images"
     qa_images_dst = outputs_dir / "qa_images"
     if qa_images_dst.exists():
