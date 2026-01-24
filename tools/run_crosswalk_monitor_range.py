@@ -1134,6 +1134,14 @@ def _build_clusters(candidate_gdf: gpd.GeoDataFrame, cluster_eps_m: float) -> Tu
             "inside_road_ratio": float(np.median(inside_ratios)) if inside_ratios else None,
             "member_indices": members,
         }
+        union_geom = gdf.iloc[members].geometry.union_all()
+        rect = union_geom.minimum_rotated_rectangle if union_geom is not None else None
+        if rect is not None and not rect.is_empty and rect.is_valid and rect.geom_type == "Polygon":
+            metrics = _rect_metrics(rect, union_geom)
+            cluster_info[cid]["refined_geom"] = rect
+            cluster_info[cid]["rect_w_m"] = float(metrics["rect_w_m"])
+            cluster_info[cid]["rect_l_m"] = float(metrics["rect_l_m"])
+            cluster_info[cid]["rectangularity"] = float(metrics["rectangularity"])
         for member in members:
             cluster_ids[member] = cid
     gdf["cluster_id"] = cluster_ids
@@ -1161,8 +1169,13 @@ def _refine_clusters(
         if not members:
             continue
         subset = gdf.iloc[members].copy()
+        if "geom_ok" in subset.columns:
+            geom_ok_subset = subset[subset["geom_ok"].fillna(0).astype(int) == 1]
+            if not geom_ok_subset.empty:
+                subset = geom_ok_subset
         if subset.empty:
             continue
+        subset_idx = subset.index.tolist()
         centroids = np.array([[geom.centroid.x, geom.centroid.y] for geom in subset.geometry], dtype=float)
         med = np.median(centroids, axis=0)
         dists = np.linalg.norm(centroids - med[None, :], axis=1)
@@ -1175,7 +1188,8 @@ def _refine_clusters(
                 gdf.loc[mask, "reject_reasons"] = gdf.loc[mask, "reject_reasons"].apply(
                     lambda v: _append_reject_reason(v, "outlier")
                 )
-        inlier_indices = [members[i] for i, ok in enumerate(inlier_mask) if ok]
+        inlier_indices = [subset_idx[i] for i, ok in enumerate(inlier_mask) if ok]
+        base_heading = info.get("heading_diff")
         info["frames_hit"] = len(inlier_indices)
         if inlier_indices:
             info["jitter_p90"] = float(np.percentile(dists[inlier_mask], 90)) if np.any(inlier_mask) else 0.0
@@ -1206,6 +1220,25 @@ def _refine_clusters(
             if pose is not None:
                 headings.append(float(pose[2]))
         if not accum_pts:
+            union_geom = inlier_subset.geometry.union_all()
+            rect = union_geom.minimum_rotated_rectangle if union_geom is not None else None
+            if rect is None or rect.is_empty:
+                continue
+            if not rect.is_valid:
+                rect = rect.buffer(0)
+            if rect is None or rect.is_empty or not rect.is_valid or rect.geom_type != "Polygon":
+                continue
+            heading = float(np.median(headings)) if headings else 0.0
+            rect = _align_rect_to_heading(rect, heading, angle_snap)
+            metrics = _rect_metrics(rect, union_geom)
+            info["refined_geom"] = rect
+            info["rect_w_m"] = float(metrics["rect_w_m"])
+            info["rect_l_m"] = float(metrics["rect_l_m"])
+            info["rectangularity"] = float(metrics["rectangularity"])
+            refined_heading = float(np.degrees(abs(((_rect_angle_rad(rect) - (heading + np.pi / 2)) + np.pi) % (2 * np.pi) - np.pi)))
+            if base_heading is not None:
+                refined_heading = float(min(base_heading, refined_heading))
+            info["heading_diff"] = refined_heading
             continue
         merged = np.vstack(accum_pts)
         hull = MultiPoint([Point(float(x), float(y)) for x, y in merged]).convex_hull
@@ -1223,12 +1256,16 @@ def _refine_clusters(
         info["rect_w_m"] = float(metrics["rect_w_m"])
         info["rect_l_m"] = float(metrics["rect_l_m"])
         info["rectangularity"] = float(metrics["rectangularity"])
-        info["heading_diff"] = float(np.degrees(abs(((_rect_angle_rad(rect) - (heading + np.pi / 2)) + np.pi) % (2 * np.pi) - np.pi)))
+        refined_heading = float(np.degrees(abs(((_rect_angle_rad(rect) - (heading + np.pi / 2)) + np.pi) % (2 * np.pi) - np.pi)))
+        if base_heading is not None:
+            refined_heading = float(min(base_heading, refined_heading))
+        info["heading_diff"] = refined_heading
     return gdf, cluster_info
 
 
 def _build_review_final_layers(
     drive_id: str,
+    candidate_gdf: gpd.GeoDataFrame,
     cluster_info: Dict[str, dict],
     final_cfg: dict,
     review_cfg: dict,
@@ -1248,10 +1285,12 @@ def _build_review_final_layers(
     heading_max = float(final_cfg.get("heading_diff_to_perp_max_deg", 25.0))
     jitter_max = float(final_cfg.get("jitter_p90_max", 8.0))
     min_frames_review = int(review_cfg.get("min_frames_hit_review", 2))
-    rect_min_review = float(review_cfg.get("rectangularity_min_review", 0.35))
-    heading_max_review = float(review_cfg.get("heading_diff_to_perp_max_deg_review", 35.0))
     for cid, info in cluster_info.items():
         geom = info.get("refined_geom")
+        if (geom is None or geom.is_empty) and "member_indices" in info and not candidate_gdf.empty:
+            subset = candidate_gdf.iloc[info["member_indices"]]
+            union_geom = subset.geometry.union_all()
+            geom = union_geom.minimum_rotated_rectangle if union_geom is not None else None
         if geom is None or geom.is_empty:
             continue
         frames_hit = int(info.get("frames_hit", 0))
@@ -1263,7 +1302,7 @@ def _build_review_final_layers(
         inside_ratio = info.get("inside_road_ratio")
         inside_ratio = float(inside_ratio) if inside_ratio is not None else 1.0
         gore_like = _is_gore_like(rect_w, rect_l, rectangularity)
-        if frames_hit >= min_frames_review and rectangularity >= rect_min_review and heading_diff <= heading_max_review:
+        if frames_hit >= min_frames_review:
             review_rows.append(
                 {
                     "geometry": geom,
@@ -1372,6 +1411,7 @@ def _augment_candidates_with_fallback(
     drive_id: str,
     frame_start: int,
     frame_end: int,
+    plane_score_min: float,
 ) -> Tuple[gpd.GeoDataFrame, set[str]]:
     fallback = []
     fallback_frames: set[str] = set()
@@ -1395,7 +1435,7 @@ def _augment_candidates_with_fallback(
         extra_reject = str(lidar_info.get("drop_reason_code") or "")
         score = float(raw_info.get("raw_top_score", 0.0) or 0.0)
         pose_ok = pose_map.get(frame_id) is not None
-        use_plane = bool(calib_ok and pose_ok and score >= 0.3)
+        use_plane = bool(calib_ok and pose_ok and score >= plane_score_min)
         fallback_row = _fallback_candidate_from_pose(
             drive_id,
             frame_id,
@@ -1796,6 +1836,7 @@ def main() -> int:
                 geometry="geometry",
                 crs="EPSG:32632",
             )
+    plane_score_min = float(lidar_cfg.get("plane_score_min", 0.3))
     candidate_gdf, fallback_frames = _augment_candidates_with_fallback(
         candidate_gdf,
         raw_stats,
@@ -1806,6 +1847,7 @@ def main() -> int:
         drive_id,
         frame_start,
         frame_end,
+        plane_score_min,
     )
     if not candidate_gdf.empty:
         candidate_gdf = candidate_gdf.copy()
@@ -1823,7 +1865,7 @@ def main() -> int:
         )
     candidate_gdf, cluster_info = _build_clusters(candidate_gdf, float(cluster_cfg.get("cluster_eps_m", 6.0)))
     candidate_gdf, cluster_info = _refine_clusters(candidate_gdf, cluster_info, pose_map, lidar_stats, raw_stats, drive_id, refine_cfg)
-    review_gdf, final_gdf = _build_review_final_layers(drive_id, cluster_info, final_cfg, review_cfg)
+    review_gdf, final_gdf = _build_review_final_layers(drive_id, candidate_gdf, cluster_info, final_cfg, review_cfg)
     out_gpkg = outputs_dir / "crosswalk_entities_utm32.gpkg"
     _write_crosswalk_gpkg(candidate_gdf, review_gdf, final_gdf, out_gpkg)
     if write_wgs84:

@@ -24,9 +24,10 @@ lidar_proj:
   dbscan_eps_m: 0.6
   dbscan_min_samples: 10
   angle_snap_deg: 20
+  plane_score_min: 0.1
 
 cluster:
-  cluster_eps_m: 6.0
+  cluster_eps_m: 8.0
 
 refine:
   REFINE_TOPK: 5
@@ -40,9 +41,9 @@ final_gate:
   heading_diff_to_perp_max_deg: 25
   jitter_p90_max: 8.0
   rect_min_w: 1.5
-  rect_max_w: 8.0
+  rect_max_w: 30.0
   rect_min_l: 3.0
-  rect_max_l: 25.0
+  rect_max_l: 40.0
 
 review_gate:
   min_frames_hit_review: 2
