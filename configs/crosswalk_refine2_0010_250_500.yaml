@@ -1,0 +1,63 @@
+drive_id: "2013_05_28_drive_0010_sync"
+frame_start: 250
+frame_end: 500
+kitti_root: "E:\\KITTI360\\KITTI-360"
+camera: "image_00"
+stage1_stride: 1
+export_all_frames: true
+write_wgs84: true
+raw_fallback_text: true
+on_demand_infer: true
+
+image_run: "runs\\image_evidence_20260122_114726"
+image_provider: "grounded_sam2_v1"
+image_evidence_gpkg: "runs\\full_stack_20260121_000548\\evidence_clean\\evidence_clean_golden8.gpkg"
+road_root: "runs\\full_stack_20260121_000548"
+config: "configs\\road_entities.yaml"
+
+lidar_proj:
+  mask_dilate_px: 5
+  min_points_bbox: 5
+  min_points_mask: 3
+  intensity_top_pct: 10
+  min_in_image_ratio: 0.02
+  ground_z_tol: 0.2
+  dbscan_eps_m: 0.6
+  dbscan_min_samples: 10
+  angle_snap_deg: 20
+  plane_score_min: 0.1
+
+cluster:
+  cluster_eps_m: 10.0
+
+refine:
+  REFINE_TOPK: 5
+  OUTLIER_DIST_M: 6.0
+  ANGLE_SNAP_DEG: 20
+  GORE_LIKE_MODE: "soft"
+  SUPPORT_W_PTS: 1.0
+  SUPPORT_W_SCORE: 100.0
+  PENALTY_GORE: 0.2
+  PENALTY_PLANE: 0.4
+  PENALTY_OUTLIER: 0.3
+  MAX_GORE_SUPPORT: 1
+
+stage2:
+  ROI_MIN_AREA_PX: 400.0
+  ROI_MAX_AREA_RATIO: 0.6
+
+final_gate:
+  min_frames_hit_final: 3
+  min_inside_ratio_final: 0.5
+  rectangularity_min: 0.45
+  heading_diff_to_perp_max_deg: 120
+  jitter_p90_max: 8.0
+  rect_min_w: 1.5
+  rect_max_w: 30.0
+  rect_min_l: 3.0
+  rect_max_l: 40.0
+
+review_gate:
+  min_frames_hit_review: 2
+  rectangularity_min_review: 0.35
+  heading_diff_to_perp_max_deg_review: 35
