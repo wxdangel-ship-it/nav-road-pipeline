@@ -28,6 +28,13 @@ from tools.build_image_sample_index import _extract_frame_id, _find_image_dir, _
 from tools.build_road_entities import _geom_to_image_points
 from tools.run_crosswalk_monitor_drive import _run_on_demand_infer
 from tools.run_image_basemodel import _ensure_cache_env, _resolve_sam2_checkpoint
+from tools.sam2_video_propagate import (
+    build_video_predictor,
+    mask_area_px,
+    prepare_video_frames,
+    propagate_seed,
+    save_masks,
+)
 
 
 LOG = logging.getLogger("run_crosswalk_monitor_range")
@@ -138,6 +145,101 @@ def _mask_to_polygon(mask: np.ndarray, max_points: int = 4000) -> Polygon | None
         return None
     return hull
 
+
+def _raw_gdf_to_mask(
+    raw_gdf: gpd.GeoDataFrame,
+    image_path: str,
+    out_path: Path,
+) -> Path | None:
+    if raw_gdf is None or raw_gdf.empty:
+        return None
+    width, height = _load_image_size(image_path)
+    if width <= 0 or height <= 0:
+        return None
+    base = Image.new("L", (width, height), 0)
+    draw = ImageDraw.Draw(base)
+    for _, row in raw_gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type == "Polygon":
+            pts = [(float(x), float(y)) for x, y in geom.exterior.coords]
+            if len(pts) >= 3:
+                draw.polygon(pts, fill=255)
+        elif geom.geom_type == "MultiPolygon":
+            for poly in geom.geoms:
+                pts = [(float(x), float(y)) for x, y in poly.exterior.coords]
+                if len(pts) >= 3:
+                    draw.polygon(pts, fill=255)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    base.save(out_path)
+    return out_path if out_path.exists() else None
+
+
+def _choose_stage2_seed(
+    drive_id: str,
+    cluster_id: str,
+    candidate_gdf: gpd.GeoDataFrame,
+    raw_stats: Dict[Tuple[str, str], Dict[str, float]],
+    raw_frames: Dict[Tuple[str, str], dict],
+    index_lookup: Dict[Tuple[str, str], str],
+    seed_dir: Path,
+) -> dict | None:
+    if candidate_gdf.empty:
+        return None
+    subset = candidate_gdf[candidate_gdf.get("cluster_id", "") == cluster_id]
+    if subset.empty:
+        return None
+    best_row = None
+    best_score = -1.0
+    for _, row in subset.iterrows():
+        frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
+        if not frame_id:
+            continue
+        raw_info = raw_stats.get((drive_id, frame_id), {})
+        score = float(raw_info.get("raw_top_score", 0.0))
+        rectangularity = float(row.get("rectangularity") or 0.0)
+        gore_like = bool(row.get("gore_like", False))
+        base = score + rectangularity
+        if gore_like:
+            base *= 0.2
+        if base > best_score:
+            best_score = base
+            best_row = row
+    if best_row is None:
+        return None
+    frame_id = _normalize_frame_id(str(best_row.get("frame_id") or ""))
+    image_path = index_lookup.get((drive_id, frame_id), "")
+    bbox_px = best_row.get("bbox_px")
+    if isinstance(bbox_px, str) and bbox_px.startswith("["):
+        try:
+            bbox_px = json.loads(bbox_px)
+        except Exception:
+            bbox_px = None
+    raw_info = raw_frames.get((drive_id, frame_id), {})
+    seed_mask_path = None
+    raw_gdf = raw_info.get("gdf")
+    if raw_gdf is not None and not raw_gdf.empty and image_path:
+        seed_mask_path = _raw_gdf_to_mask(
+            raw_gdf,
+            image_path,
+            seed_dir / f"{cluster_id}_seed_{frame_id}.png",
+        )
+    return {
+        "cluster_id": cluster_id,
+        "seed_frame_id": frame_id,
+        "seed_bbox_px": bbox_px,
+        "seed_mask_path": str(seed_mask_path) if seed_mask_path else "",
+        "seed_score": float(raw_stats.get((drive_id, frame_id), {}).get("raw_top_score", 0.0)),
+        "seed_is_gore_like": int(bool(best_row.get("gore_like", False))),
+    }
+
+
+def _write_seeds_jsonl(seeds: List[dict], out_path: Path) -> None:
+    out_path.write_text(
+        "\n".join([json.dumps(s, ensure_ascii=True) for s in seeds if s]) + "\n",
+        encoding="utf-8",
+    )
 
 def _roi_bbox_from_geom(
     geom: Polygon,
@@ -936,6 +1038,7 @@ def _ensure_gated_entities_images(
     final_gdf: gpd.GeoDataFrame,
     kitti_root: Path,
     camera: str,
+    stage2_overlay: Dict[str, List[dict]] | None = None,
 ) -> None:
     if not qa_index_path.exists():
         return
@@ -981,6 +1084,7 @@ def _ensure_gated_entities_images(
             except Exception:
                 pose_map[frame_id] = None
         candidates = candidate_by_frame.get(frame_id, gpd.GeoDataFrame())
+        stage2_items = stage2_overlay.get(frame_id, []) if stage2_overlay else []
         kept, _ = _render_gated_overlay(
             gated_path,
             image_path,
@@ -990,6 +1094,7 @@ def _ensure_gated_entities_images(
             lidar_stats.get(frame_id, {}),
             pose_map.get(frame_id),
             calib,
+            stage2_items,
         )
         qa.at[idx, "overlay_gated_path"] = str(gated_path)
         support_ids = final_support.get((drive_id, frame_id), [])
@@ -1083,6 +1188,7 @@ def _render_gated_overlay(
     lidar_info: dict | None,
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
+    stage2_items: List[dict] | None = None,
 ) -> Tuple[int, List[str]]:
     if out_path.exists():
         out_path.unlink()
@@ -1151,6 +1257,20 @@ def _render_gated_overlay(
             draw.text((10, 112), "WEAK_PROJ", fill=(255, 128, 0, 220))
     if stage2_added:
         draw.text((10, 138), "STAGE2_ADDED", fill=(0, 200, 255, 220))
+
+    if stage2_items:
+        for item in stage2_items:
+            mask_path = item.get("mask_path")
+            bbox_px = item.get("bbox_px")
+            if isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4:
+                draw.rectangle(bbox_px, outline=(0, 200, 255, 200), width=2)
+            if mask_path and Path(mask_path).exists():
+                mask = np.array(Image.open(mask_path).convert("L")) > 0
+                poly = _mask_to_polygon(mask)
+                if poly is not None:
+                    pts = [(float(x), float(y)) for x, y in poly.exterior.coords]
+                    if len(pts) >= 2:
+                        draw.line(pts, fill=(0, 200, 255, 200), width=2)
 
     if len(candidates) == 0 and not drawn:
         draw.text((10, 10), "NO_GATED_CANDIDATE", fill=(255, 128, 0, 220))
@@ -1885,7 +2005,10 @@ def _build_trace_records(
         cand_ids = sorted(set(candidate_ids.get(key, [])))
         rejects = sorted(set(candidate_rejects.get(key, [])))
         final_ids = sorted(set(final_support.get(key, [])))
-        stage2 = stage2_stats.get(key, {"attempted": 0, "added": 0, "reasons": []})
+        stage2 = stage2_stats.get(
+            key,
+            {"cluster_id": "", "stage2_added": 0, "prop_ok": 0, "prop_area_px": 0.0, "prop_drift_flag": 0},
+        )
         candidates = candidate_by_frame.get(frame_id, gpd.GeoDataFrame())
         candidate_count = int(len(candidates)) if not candidates.empty else 0
         kept = 0
@@ -1976,9 +2099,11 @@ def _build_trace_records(
                 "jitter_p90": jitter_p90,
                 "angle_jitter_p90": angle_jitter_p90,
                 "support_flag": support_flag,
-                "stage2_roi_attempted": int(stage2.get("attempted", 0)),
-                "stage2_roi_added": int(stage2.get("added", 0)),
-                "stage2_roi_reason": "|".join(sorted(set(stage2.get("reasons", [])))),
+                "stage2_cluster_id": str(stage2.get("cluster_id") or ""),
+                "stage2_added": int(stage2.get("stage2_added", 0)),
+                "prop_ok": int(stage2.get("prop_ok", 0)),
+                "prop_area_px": float(stage2.get("prop_area_px", 0.0)),
+                "prop_drift_flag": int(stage2.get("prop_drift_flag", 0)),
                 "frames_hit_support_after": cluster_frames_hit,
                 "candidate_written": 1 if cand_ids else 0,
                 "candidate_count": candidate_count,
@@ -2005,7 +2130,7 @@ def _build_report(
     final_cfg: dict,
 ) -> None:
     lines = []
-    lines.append("# Crosswalk Refine Report\n")
+    lines.append("# Crosswalk Stage2 Report\n")
     lines.append(f"- report_time: {dt.datetime.now():%Y-%m-%d %H:%M:%S}")
     lines.append(f"- drive_id: {drive_id}")
     lines.append(f"- frame_range: {frame_start}-{frame_end}")
@@ -2146,6 +2271,7 @@ def _write_cluster_summary(
         frames_hit_all_before = int(info.get("frames_hit_all_before", 0))
         frames_hit_support_before = int(info.get("frames_hit_support_before", 0))
         stage2_added_count = int(info.get("stage2_added_frames_count", 0))
+        frames_hit_stage1 = frames_hit_all_before
         gore_like_ratio = float(info.get("gore_like_ratio", 0.0))
         support_frames = info.get("support_frames", [])
         refined_rect_w = float(info.get("rect_w_m", 0.0))
@@ -2164,6 +2290,8 @@ def _write_cluster_summary(
                 "frames_hit_all": frames_hit_all,
                 "frames_hit_all_before": frames_hit_all_before,
                 "frames_hit_support_before": frames_hit_support_before,
+                "frames_hit_stage1": frames_hit_stage1,
+                "frames_hit_stage2_added": stage2_added_count,
                 "frames_hit_support": frames_hit_support,
                 "support_frames": "|".join(support_frames[:10]),
                 "stage2_added_frames_count": stage2_added_count,
@@ -2184,7 +2312,7 @@ def _write_cluster_summary(
     lines = ["# Cluster Summary", f"- drive_id: {drive_id}", f"- clusters: {len(rows)}", ""]
     for row in rows:
         lines.append(
-            f"- {row['cluster_id']}: frames_hit_all={row['frames_hit_all']} frames_hit_support={row['frames_hit_support']} stage2_added={row['stage2_added_frames_count']} gore_like_ratio={row['gore_like_ratio']:.2f} final_pass={row['final_pass']} reason={row['final_fail_reason']}"
+            f"- {row['cluster_id']}: stage1={row['frames_hit_stage1']} stage2_added={row['frames_hit_stage2_added']} support={row['frames_hit_support']} gore_like_ratio={row['gore_like_ratio']:.2f} final_pass={row['final_pass']} reason={row['final_fail_reason']}"
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path, md_path
@@ -2411,37 +2539,128 @@ def main() -> int:
         info["frames_hit_all_before"] = int(info.get("frames_hit_all", info.get("frames_hit", 0)))
         info["frames_hit_support_before"] = int(info.get("frames_hit_support", 0))
         info.setdefault("stage2_added_frames_count", 0)
+        info.setdefault("stage2_support_frames", [])
     stage2_cfg = merged.get("stage2", {}) if isinstance(merged.get("stage2"), dict) else {}
-    candidate_gdf, stage2_stats = _stage2_roi_refine(
-        candidate_gdf,
-        cluster_info,
-        drive_id,
-        frame_start,
-        frame_end,
-        index_lookup,
-        pose_map,
-        calib,
-        lidar_cfg_norm,
-        image_provider,
-        kitti_root,
-        stage2_cfg,
-    )
-    if not candidate_gdf.empty:
-        candidate_gdf = candidate_gdf.copy()
-        candidate_gdf["rect_w_m"] = candidate_gdf.get("rect_w_m", 0.0)
-        candidate_gdf["rect_l_m"] = candidate_gdf.get("rect_l_m", 0.0)
-        candidate_gdf["rectangularity"] = candidate_gdf.get("rectangularity", 0.0)
-        candidate_gdf["reject_reasons"] = candidate_gdf.get("reject_reasons", "").fillna("").astype(str)
-        gore_flags = []
-        for _, row in candidate_gdf.iterrows():
-            gore_like = _is_gore_like(float(row.get("rect_w_m") or 0.0), float(row.get("rect_l_m") or 0.0), float(row.get("rectangularity") or 0.0))
-            gore_flags.append(gore_like)
-        candidate_gdf["gore_like"] = gore_flags
-        candidate_gdf.loc[candidate_gdf["gore_like"], "reject_reasons"] = candidate_gdf.loc[candidate_gdf["gore_like"], "reject_reasons"].apply(
-            lambda v: _append_reject_reason(v, "gore_like")
+    stage2_window = int(stage2_cfg.get("stage2_window", 50))
+    prop_min_area = float(stage2_cfg.get("prop_min_area_px", 400.0))
+    prop_max_ratio = float(stage2_cfg.get("prop_max_area_ratio", 0.6))
+    rect_min_support = float(stage2_cfg.get("rectangularity_min_support", 0.35))
+    allow_gore_support = bool(stage2_cfg.get("allow_gore_like_support", False))
+    stage2_stats: Dict[Tuple[str, str], dict] = {}
+    stage2_overlay: Dict[str, List[dict]] = {}
+
+    image_dir = _find_image_dir(kitti_root, drive_id, camera)
+    frame_ids = [_normalize_frame_id(str(frame)) for frame in range(frame_start, frame_end + 1)]
+    stage2_video_dir = debug_dir / "stage2_video_frames"
+    prepare_video_frames(image_dir, frame_ids, stage2_video_dir)
+    predictor = build_video_predictor(image_provider)
+
+    seeds = []
+    seed_dir = outputs_dir / "stage2_seeds"
+    for cid in cluster_info.keys():
+        seed = _choose_stage2_seed(drive_id, cid, candidate_gdf, raw_stats, raw_frames, index_lookup, seed_dir)
+        if seed:
+            seeds.append(seed)
+    _write_seeds_jsonl(seeds, outputs_dir / "seeds.jsonl")
+
+    stage2_candidate_rows: List[dict] = []
+    if predictor is not None:
+        for seed in seeds:
+            cid = seed["cluster_id"]
+            seed_frame = seed["seed_frame_id"]
+            seed_idx = frame_ids.index(seed_frame) if seed_frame in frame_ids else None
+            if seed_idx is None:
+                continue
+            seed_mask_path = Path(seed["seed_mask_path"]) if seed.get("seed_mask_path") else None
+            seed_bbox = seed.get("seed_bbox_px")
+            masks = propagate_seed(
+                predictor,
+                stage2_video_dir,
+                seed_idx,
+                seed_mask_path,
+                seed_bbox,
+                stage2_window,
+            )
+            out_mask_dir = outputs_dir / "stage2_masks" / cid
+            saved = save_masks(masks, frame_ids, out_mask_dir)
+            for frame_id, mask_path in saved.items():
+                mask = np.array(Image.open(mask_path).convert("L")) > 0
+                area = mask_area_px(mask)
+                width, height = _load_image_size(index_lookup.get((drive_id, frame_id), ""))
+                area_max = float(width * height) * prop_max_ratio if width > 0 and height > 0 else 0.0
+                prop_ok = int(area >= prop_min_area and (area_max == 0.0 or area <= area_max))
+                prop_drift = int(area_max > 0.0 and area > area_max)
+                key = (drive_id, frame_id)
+                stat = stage2_stats.setdefault(
+                    key,
+                    {"cluster_id": cid, "stage2_added": 0, "prop_ok": 0, "prop_area_px": 0.0, "prop_drift_flag": 0},
+                )
+                stat["cluster_id"] = cid
+                stat["prop_area_px"] = area
+                stat["prop_drift_flag"] = prop_drift
+                stat["prop_ok"] = prop_ok
+                if prop_ok:
+                    stat["stage2_added"] = 1
+                    info = cluster_info.get(cid, {})
+                    info["stage2_added_frames_count"] = int(info.get("stage2_added_frames_count", 0)) + 1
+                    poly = _mask_to_polygon(mask)
+                    rect_val = 0.0
+                    aspect = 0.0
+                    if poly is not None:
+                        rect = poly.minimum_rotated_rectangle
+                        metrics = _rect_metrics(rect, poly)
+                        rect_val = float(metrics.get("rectangularity", 0.0))
+                        aspect = float(metrics.get("aspect", 0.0))
+                    is_gore = False
+                    if not allow_gore_support:
+                        existing = candidate_gdf[candidate_gdf.get("frame_id", "") == frame_id]
+                        if not existing.empty:
+                            is_gore = bool(existing.get("gore_like", False).fillna(False).any())
+                    if rect_val >= rect_min_support and not is_gore:
+                        info.setdefault("stage2_support_frames", []).append(frame_id)
+                    bbox = None
+                    if poly is not None:
+                        minx, miny, maxx, maxy = poly.bounds
+                        bbox = [float(minx), float(miny), float(maxx), float(maxy)]
+                    stage2_overlay.setdefault(frame_id, []).append(
+                        {"mask_path": str(mask_path), "bbox_px": bbox, "cluster_id": cid}
+                    )
+                    info["stage2_support_frames"] = list(dict.fromkeys(info.get("stage2_support_frames", [])))
+                    support_frames = info.get("support_frames", [])
+                    merged_support = list(dict.fromkeys(support_frames + info.get("stage2_support_frames", [])))
+                    info["support_frames"] = merged_support
+                    info["frames_hit_support"] = len(merged_support)
+                    info["frames_hit_all"] = int(info.get("frames_hit_all_before", 0)) + int(
+                        info.get("stage2_added_frames_count", 0)
+                    )
+                    if bbox is None and seed_bbox:
+                        bbox = seed_bbox
+                    if bbox:
+                        stage2_candidate_rows.append(
+                            {
+                                "geometry": info.get("refined_geom"),
+                                "properties": {
+                                    "candidate_id": f"{drive_id}_crosswalk_stage2_{cid}_{frame_id}",
+                                    "drive_id": drive_id,
+                                    "frame_id": frame_id,
+                                    "entity_type": "crosswalk",
+                                    "reject_reasons": "stage2_video",
+                                    "proj_method": "stage2_video",
+                                    "geom_ok": 0,
+                                    "stage2_added": 1,
+                                    "bbox_px": bbox,
+                                    "cluster_id": cid,
+                                    "qa_flag": "stage2_added",
+                                },
+                            }
+                        )
+    if stage2_candidate_rows:
+        stage2_gdf = gpd.GeoDataFrame.from_features(stage2_candidate_rows, crs="EPSG:32632")
+        candidate_gdf = gpd.GeoDataFrame(
+            pd.concat([candidate_gdf, stage2_gdf], ignore_index=True),
+            geometry="geometry",
+            crs="EPSG:32632",
         )
-    cluster_info = _refresh_cluster_members(candidate_gdf, cluster_info)
-    candidate_gdf, cluster_info = _refine_clusters(candidate_gdf, cluster_info, pose_map, lidar_stats, raw_stats, drive_id, refine_cfg)
     review_gdf, final_gdf = _build_review_final_layers(drive_id, candidate_gdf, cluster_info, final_cfg, review_cfg)
     out_gpkg = outputs_dir / "crosswalk_entities_utm32.gpkg"
     _write_crosswalk_gpkg(candidate_gdf, review_gdf, final_gdf, out_gpkg)
@@ -2471,6 +2690,7 @@ def main() -> int:
         final_gdf,
         kitti_root,
         camera,
+        stage2_overlay,
     )
 
     trace_records = _build_trace_records(
@@ -2490,7 +2710,7 @@ def main() -> int:
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)
 
-    report_path = outputs_dir / "crosswalk_refine_report.md"
+    report_path = outputs_dir / "crosswalk_stage2_report.md"
     _build_report(
         report_path,
         drive_id,
@@ -2504,7 +2724,7 @@ def main() -> int:
         outputs_dir,
         final_cfg,
     )
-    legacy_report = outputs_dir / "crosswalk_fix_report.md"
+    legacy_report = outputs_dir / "crosswalk_refine_report.md"
     if legacy_report != report_path:
         shutil.copy2(report_path, legacy_report)
     _write_cluster_summary(outputs_dir, drive_id, cluster_info, final_gdf, final_cfg)
