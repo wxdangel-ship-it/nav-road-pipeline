@@ -1477,6 +1477,9 @@ def _build_lidar_candidate_for_frame(
         "ground_z_local": 0.0,
         "ground_filter_mode": "",
         "support_source": "",
+        "lidar_fit_attempted": 0,
+        "lidar_fit_ok": 0,
+        "lidar_fit_fail_reason": "",
         "plane_ok": 0,
         "plane_dist_p10": None,
         "plane_dist_p50": None,
@@ -1707,14 +1710,26 @@ def _build_lidar_candidate_for_frame(
             stats["support_source"] = "ground_plane"
         else:
             support_idx = []
+    min_support_points = int(lidar_cfg.get("MIN_SUPPORT_POINTS", 3))
+    if len(support_idx) < min_support_points:
+        if len(intensity_idx) >= min_support_points:
+            support_idx = intensity_idx
+            stats["support_source"] = "bbox_intensity_fallback"
+            stats["ground_filter_mode"] = "fallback"
+        elif bbox_indices.size >= min_support_points:
+            support_idx = bbox_indices.tolist()
+            stats["support_source"] = "bbox_all_fallback"
+            stats["ground_filter_mode"] = "fallback"
     min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
-    if len(support_idx) < min_points_mask:
+    if len(support_idx) < min_support_points:
         if stats.get("points_ground_local", 0) > 0:
             stats["support_source"] = "ground_local_fallback"
+            stats["drop_reason_code"] = "LIDAR_SUPPORT_TOO_FEW"
+            return None, stats
         elif stats.get("points_in_bbox", 0) > 0:
             stats["support_source"] = "bbox_intensity_fallback"
             stats["points_support"] = int(stats["points_intensity_top"])
-            stats["drop_reason_code"] = "LIDAR_NO_POINTS_GROUND"
+            stats["drop_reason_code"] = "LIDAR_SUPPORT_TOO_FEW"
             return None, stats
         else:
             stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
@@ -1735,7 +1750,22 @@ def _build_lidar_candidate_for_frame(
         }:
             stats["support_source"] = "dbscan_cluster"
     else:
-        stats["dbscan_points"] = int(support_pts_all.shape[0])
+        if support_pts_all.shape[0] >= min_support_points:
+            retry_eps = eps * 1.5
+            retry_idx = _dbscan_largest_cluster(support_pts_all, retry_eps, min_samples)
+            if retry_idx.size > 0:
+                support_pts = support_pts_all[retry_idx]
+                stats["dbscan_points"] = int(retry_idx.size)
+                if stats["support_source"] not in {
+                    "ground_local_fallback",
+                    "ground_plane_fallback",
+                    "bbox_intensity_fallback",
+                }:
+                    stats["support_source"] = "dbscan_cluster"
+            else:
+                stats["dbscan_points"] = int(support_pts_all.shape[0])
+        else:
+            stats["dbscan_points"] = int(support_pts_all.shape[0])
         if stats.get("points_ground_local", 0) > 0:
             stats["support_source"] = "ground_local_fallback"
         elif stats.get("points_ground_plane", 0) > 0:
@@ -1743,24 +1773,30 @@ def _build_lidar_candidate_for_frame(
         elif not stats["support_source"]:
             stats["support_source"] = "dbscan_empty"
     stats["points_support"] = int(support_pts.shape[0])
-    if support_pts_all.shape[0] < 3:
-        stats["drop_reason_code"] = "GEOM_INVALID"
+    if stats["points_support"] >= min_support_points:
+        stats["lidar_fit_attempted"] = 1
+    else:
+        stats["drop_reason_code"] = "LIDAR_SUPPORT_TOO_FEW"
         return None, stats
-    hull = MultiPoint([Point(float(x), float(y)) for x, y in support_pts_all]).convex_hull
+    hull = MultiPoint([Point(float(x), float(y)) for x, y in support_pts]).convex_hull
     rect = hull.minimum_rotated_rectangle
     if rect is None or rect.is_empty:
-        stats["drop_reason_code"] = "GEOM_INVALID"
+        stats["drop_reason_code"] = "LIDAR_FIT_FAILED"
+        stats["lidar_fit_fail_reason"] = "degenerate"
         return None, stats
     if not rect.is_valid:
         rect = rect.buffer(0)
     if rect is None or rect.is_empty or not rect.is_valid:
-        stats["drop_reason_code"] = "GEOM_INVALID"
+        stats["drop_reason_code"] = "LIDAR_FIT_FAILED"
+        stats["lidar_fit_fail_reason"] = "invalid"
         return None, stats
     if rect.geom_type != "Polygon":
-        stats["drop_reason_code"] = "GEOM_INVALID"
+        stats["drop_reason_code"] = "LIDAR_FIT_FAILED"
+        stats["lidar_fit_fail_reason"] = "invalid"
         return None, stats
     rect = _align_rect_to_heading(rect, pose[2], float(lidar_cfg.get("ANGLE_SNAP_DEG", 20)))
     metrics = _rect_metrics(rect)
+    stats["lidar_fit_ok"] = 1
 
     stats["proj_method"] = "lidar" if allow_candidate else stats["proj_method"]
     stats["geom_ok"] = 1 if allow_candidate else 0
@@ -1808,6 +1844,9 @@ def _build_lidar_candidate_for_frame(
             "ground_filter_used": stats["ground_filter_used"],
             "dbscan_points": stats["dbscan_points"],
             "support_source": stats["support_source"],
+            "lidar_fit_attempted": stats["lidar_fit_attempted"],
+            "lidar_fit_ok": stats["lidar_fit_ok"],
+            "lidar_fit_fail_reason": stats["lidar_fit_fail_reason"],
             "drop_reason_code": stats["drop_reason_code"],
             "geom_ok": stats["geom_ok"],
             "geom_area_m2": stats["geom_area_m2"],
@@ -3240,6 +3279,7 @@ def _build_trace_records(
         geom_ok = 0
         geom_area = 0.0
         proj_method = str(lidar_info.get("proj_method") or "none")
+        lidar_seen = False
         source_frame_id = ""
         x_ego = None
         if not candidates.empty:
@@ -3269,7 +3309,14 @@ def _build_trace_records(
                 if "proj_method" in row and pd.notna(row.get("proj_method")):
                     val = str(row.get("proj_method"))
                     if val:
+                        if val == "lidar":
+                            try:
+                                lidar_seen = lidar_seen or int(row.get("lidar_fit_ok", 0)) == 1
+                            except Exception:
+                                lidar_seen = lidar_seen or False
                         proj_method = val
+        if lidar_seen:
+            proj_method = "lidar"
         proj_points = int(lidar_info.get("points_in_mask", -1))
         drop_reason = ""
         if int(raw_info.get("raw_has_crosswalk", 0)) == 0:
@@ -3353,6 +3400,9 @@ def _build_trace_records(
                 "ground_filter_used": int(lidar_info.get("ground_filter_used", 0)),
                 "dbscan_points": int(lidar_info.get("dbscan_points", 0)),
                 "support_source": str(lidar_info.get("support_source", "")),
+                "lidar_fit_attempted": int(lidar_info.get("lidar_fit_attempted", 0)),
+                "lidar_fit_ok": int(lidar_info.get("lidar_fit_ok", 0)),
+                "lidar_fit_fail_reason": str(lidar_info.get("lidar_fit_fail_reason", "")),
                 "geom_ok": geom_ok if geom_ok else int(lidar_info.get("geom_ok", 0)),
                 "geom_area_m2": geom_area if geom_area else float(lidar_info.get("geom_area_m2", 0.0)),
                 "rect_w_m": rect_w_m,
@@ -3439,6 +3489,44 @@ def _build_report(
     lines.append(f"- candidate_count_total: {len(candidate_gdf)}")
     lines.append(f"- review_count: {len(review_gdf)}")
     lines.append(f"- final_count: {len(final_gdf)}")
+    lines.append("")
+    raw_records = [r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
+    proj_methods = [str(r.get("proj_method") or "") for r in raw_records]
+    proj_counts: Dict[str, int] = {}
+    for val in proj_methods:
+        proj_counts[val] = proj_counts.get(val, 0) + 1
+    lines.append("## proj_method Summary")
+    if proj_counts:
+        for key in sorted(proj_counts.keys()):
+            lines.append(f"- {key or 'none'}: {proj_counts[key]}")
+    else:
+        lines.append("- none")
+    lidar_fit_ok = len([r for r in raw_records if int(r.get("lidar_fit_ok", 0)) == 1])
+    lidar_fit_attempted = len([r for r in raw_records if int(r.get("lidar_fit_attempted", 0)) == 1])
+    lidar_fit_fail = max(0, lidar_fit_attempted - lidar_fit_ok)
+    lines.append("")
+    lines.append("## lidar_fit Summary")
+    lines.append(f"- lidar_fit_ok_count: {lidar_fit_ok}")
+    lines.append(f"- lidar_fit_fail_count: {lidar_fit_fail}")
+    reproj_vals = [
+        float(r.get("reproj_iou"))
+        for r in raw_records
+        if r.get("reproj_iou") not in (None, "", "nan")
+        and isinstance(r.get("reproj_iou"), (int, float))
+    ]
+    if reproj_vals:
+        lines.append("")
+        lines.append("## reproj_iou Summary")
+        lines.append(f"- p50: {float(np.percentile(reproj_vals, 50)):.6f}")
+        lines.append(f"- p90: {float(np.percentile(reproj_vals, 90)):.6f}")
+    lines.append("")
+    lines.append("## raw_has_crosswalk Samples")
+    lines.append("| frame_id | points_support | proj_method | lidar_fit_ok | rect_w | rect_l | reproj_iou |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for row in raw_records[:5]:
+        lines.append(
+            f"| {row.get('frame_id','')} | {row.get('points_support',0)} | {row.get('proj_method','')} | {row.get('lidar_fit_ok',0)} | {row.get('rect_w_m',0)} | {row.get('rect_l_m',0)} | {row.get('reproj_iou','')} |"
+        )
     lines.append("")
     lines.append("## Calibration Thresholds")
     lines.append(f"- min_in_image_ratio: {min_in_image_ratio:.3f}")
@@ -4060,6 +4148,7 @@ def main() -> int:
         "INTENSITY_TOP_PCT": int(lidar_cfg.get("intensity_top_pct", 10)),
         "MIN_IN_IMAGE_RATIO": float(lidar_cfg.get("min_in_image_ratio", 0.1)),
         "GROUND_Z_TOL": float(lidar_cfg.get("ground_z_tol", 0.2)),
+        "MIN_SUPPORT_POINTS": int(lidar_cfg.get("min_support_points", 3)),
         "DBSCAN_EPS_M": float(lidar_cfg.get("dbscan_eps_m", 0.6)),
         "DBSCAN_MIN_SAMPLES": int(lidar_cfg.get("dbscan_min_samples", 10)),
         "ANGLE_SNAP_DEG": float(lidar_cfg.get("angle_snap_deg", 20)),
@@ -4131,6 +4220,9 @@ def main() -> int:
             "support_source": str(stats.get("support_source", "")),
             "mask_dilate_px_used": int(stats.get("mask_dilate_px_used", 0)),
             "intensity_top_pct_used": int(stats.get("intensity_top_pct_used", 0)),
+            "lidar_fit_attempted": int(stats.get("lidar_fit_attempted", 0)),
+            "lidar_fit_ok": int(stats.get("lidar_fit_ok", 0)),
+            "lidar_fit_fail_reason": str(stats.get("lidar_fit_fail_reason", "")),
             "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
             "geom_area_m2_accum": float(stats.get("geom_area_m2_accum", 0.0)),
             "rect_w_m_accum": float(stats.get("rect_w_m_accum", 0.0)),

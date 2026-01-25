@@ -21,6 +21,7 @@ lidar_proj:
   min_points_bbox: 5
   min_points_mask: 5
   intensity_top_pct: 20
+  min_support_points: 3
   min_in_image_ratio: 0.02
   ground_z_tol: 0.25
   dbscan_eps_m: 0.8
