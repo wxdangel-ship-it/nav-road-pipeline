@@ -495,6 +495,46 @@ def _safe_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _select_primary_candidate(candidates: gpd.GeoDataFrame) -> Optional[pd.Series]:
+    if candidates.empty:
+        return None
+    for _, row in candidates.iterrows():
+        if _safe_int(row.get("geom_ok")) == 1 and str(row.get("proj_method") or "") == "lidar":
+            return row
+    for _, row in candidates.iterrows():
+        if _safe_int(row.get("geom_ok")) == 1:
+            return row
+    return candidates.iloc[0]
+
+
+def _clean_source_frame_id(value: object, fallback: str) -> str:
+    if value is None:
+        return fallback
+    if isinstance(value, float) and math.isnan(value):
+        return fallback
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return fallback
+    return text
+
+
+def _x_ego_from_geom(pose: Tuple[float, ...] | None, geom: object) -> Optional[float]:
+    if pose is None or geom is None or geom.is_empty:
+        return None
+    try:
+        centroid = geom.centroid
+    except Exception:
+        return None
+    if centroid is None:
+        return None
+    yaw = pose[5] if len(pose) >= 6 else pose[2]
+    dx = float(centroid.x) - float(pose[0])
+    dy = float(centroid.y) - float(pose[1])
+    c = float(np.cos(yaw))
+    s = float(np.sin(yaw))
+    return float(c * dx + s * dy)
+
+
 def _bbox_iou(b1: List[float], b2: List[float]) -> float:
     if not b1 or not b2 or len(b1) != 4 or len(b2) != 4:
         return 0.0
@@ -1657,6 +1697,7 @@ def _build_lidar_candidate_for_frame(
             "candidate_id": f"{drive_id}_crosswalk_lidar_{frame_id}",
             "drive_id": drive_id,
             "frame_id": frame_id,
+            "source_frame_id": frame_id,
             "entity_type": "crosswalk",
             "reject_reasons": "",
             "proj_method": "lidar",
@@ -2808,6 +2849,7 @@ def _stage2_roi_refine(
             cand["properties"]["candidate_id"] = f"{drive_id}_crosswalk_stage2_{cid}_{frame_id}"
             cand["properties"]["cluster_id"] = cid
             cand["properties"]["stage2_added"] = 1
+            cand["properties"]["source_frame_id"] = frame_id
             cand["properties"]["source"] = "stage2_roi_refine"
             cand["properties"]["roi_bbox_px"] = roi_bbox
             cand["properties"]["weak_support"] = 1 if str(stats.get("proj_method")) == "plane" else 0
@@ -2962,6 +3004,7 @@ def _fallback_candidate_from_pose(
             "candidate_id": f"{drive_id}_crosswalk_fallback_{frame_id}",
             "drive_id": drive_id,
             "frame_id": frame_id,
+            "source_frame_id": frame_id,
             "entity_type": "crosswalk",
             "reject_reasons": f"{reject_extra}proj_fail,geom_fallback"
             + (",proj_fallback_plane" if proj_method == "plane" else ",proj_fail_bbox_only")
@@ -3096,7 +3139,14 @@ def _build_trace_records(
         geom_ok = 0
         geom_area = 0.0
         proj_method = str(lidar_info.get("proj_method") or "none")
+        source_frame_id = ""
+        x_ego = None
         if not candidates.empty:
+            primary = _select_primary_candidate(candidates)
+            if primary is not None:
+                source_frame_id = _clean_source_frame_id(primary.get("source_frame_id"), frame_id)
+                source_frame_id = _clean_source_frame_id(primary.get("frame_id"), source_frame_id)
+                x_ego = _x_ego_from_geom(pose_map.get(frame_id), primary.geometry)
             for _, row in candidates.iterrows():
                 reasons = str(row.get("reject_reasons") or "")
                 if not reasons:
@@ -3161,6 +3211,8 @@ def _build_trace_records(
                 "raw_status": raw_info.get("raw_status", "unknown"),
                 "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
+                "source_frame_id": source_frame_id,
+                "x_ego": x_ego,
                 "pose_ok": pose_ok,
                 "pose_source": pose_source,
                 "calib_ok": 1 if calib_ok else 0,
@@ -3850,6 +3902,9 @@ def main() -> int:
 
     stage_gpkg = stage_outputs / "road_entities_utm32.gpkg"
     candidate_gdf = _read_candidates(stage_gpkg)
+    if not candidate_gdf.empty and "source_frame_id" not in candidate_gdf.columns:
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["source_frame_id"] = candidate_gdf["frame_id"]
     pose_map: Dict[str, Tuple[float, float, float] | Tuple[float, float, float, float, float, float] | None] = {}
     for frame in range(frame_start, frame_end + 1):
         frame_id = _normalize_frame_id(str(frame))
@@ -4156,10 +4211,11 @@ def main() -> int:
                             {
                                 "geometry": info.get("refined_geom"),
                                 "properties": {
-                                    "candidate_id": f"{drive_id}_crosswalk_stage2_{cid}_{frame_id}",
-                                    "drive_id": drive_id,
-                                    "frame_id": frame_id,
-                                    "entity_type": "crosswalk",
+                                "candidate_id": f"{drive_id}_crosswalk_stage2_{cid}_{frame_id}",
+                                "drive_id": drive_id,
+                                "frame_id": frame_id,
+                                "source_frame_id": seed_frame,
+                                "entity_type": "crosswalk",
                                     "reject_reasons": "stage2_video",
                                     "proj_method": "stage2_video",
                                     "geom_ok": 0,
