@@ -708,9 +708,11 @@ def _compute_roundtrip_metrics_for_range(
     frame_end: int,
     candidate_gdf: gpd.GeoDataFrame,
     raw_frames: Dict[Tuple[str, str], dict],
+    raw_stats: Dict[Tuple[str, str], Dict[str, float]],
     pose_map: Dict[str, Tuple[float, float, float] | None],
     calib: Dict[str, np.ndarray] | None,
     lidar_stats: Dict[str, dict],
+    only_raw_has: bool = False,
 ) -> Tuple[List[dict], Dict[str, dict]]:
     rows = []
     by_frame: Dict[str, dict] = {}
@@ -722,6 +724,9 @@ def _compute_roundtrip_metrics_for_range(
         frame_id = _normalize_frame_id(str(frame))
         candidates = candidate_gdf[candidate_gdf["frame_id_norm"] == frame_id]
         raw_info = raw_frames.get((drive_id, frame_id), {})
+        raw_stat = raw_stats.get((drive_id, frame_id), {})
+        if only_raw_has and int(raw_stat.get("raw_has_crosswalk", 0)) == 0:
+            continue
         lidar_info = lidar_stats.get(frame_id, {})
         proj_method = ""
         geom_ok = 0
@@ -4415,9 +4420,17 @@ def main() -> int:
     prepare_video_frames(image_dir, frame_ids, stage2_video_dir)
     predictor = build_video_predictor(image_provider)
 
+    topk_clusters = int(stage2_cfg.get("topk_clusters", stage2_cfg.get("TOPK_CLUSTERS", 0)))
+    cluster_ids = list(cluster_info.keys())
+    if topk_clusters > 0 and cluster_ids:
+        cluster_ids = sorted(
+            cluster_ids,
+            key=lambda cid: float(cluster_info.get(cid, {}).get("frames_hit_support", 0)),
+            reverse=True,
+        )[:topk_clusters]
     seeds = []
     seed_dir = outputs_dir / "stage2_seeds"
-    for cid in cluster_info.keys():
+    for cid in cluster_ids:
         seeds.extend(
             _choose_stage2_seeds(
                 drive_id,
@@ -4612,9 +4625,11 @@ def main() -> int:
         frame_end,
         candidate_gdf,
         raw_frames,
+        raw_stats,
         pose_map,
         calib,
         lidar_stats,
+        bool(merged.get("roundtrip_only_raw_has", False)),
     )
     roundtrip_path = outputs_dir / "roundtrip_metrics.csv"
     pd.DataFrame(roundtrip_rows).to_csv(roundtrip_path, index=False)
