@@ -557,6 +557,12 @@ def _bbox_center(bbox: List[float]) -> Tuple[float, float]:
     return ((bbox[0] + bbox[2]) * 0.5, (bbox[1] + bbox[3]) * 0.5)
 
 
+def _expand_bbox_pad(bbox: List[float], pad: float) -> List[float]:
+    if not bbox or len(bbox) != 4:
+        return []
+    return [bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad]
+
+
 def _polygon_from_points(points: List[Tuple[float, float]]) -> Polygon | None:
     if points is None or len(points) < 3:
         return None
@@ -582,9 +588,10 @@ def _roundtrip_metrics(
     pose: Tuple[float, float, float] | None,
     calib: Dict[str, np.ndarray] | None,
     z_override: Optional[float] = None,
-) -> Tuple[float | None, float | None, float | None]:
+    mask_dilate_px: int = 0,
+) -> Tuple[float | None, float | None, float | None, float | None, float | None]:
     if geom is None or geom.is_empty or pose is None or calib is None:
-        return None, None, None
+        return None, None, None, None, None
     raw_gdf = raw_info.get("gdf")
     if raw_gdf is None or raw_gdf.empty:
         raw_poly = None
@@ -602,17 +609,31 @@ def _roundtrip_metrics(
         proj = _project_world_to_image(points, pose, calib)
         pts = [(float(u), float(v)) for u, v, valid in proj if valid]
     reproj_poly = _polygon_from_points(pts)
+    iou_mask = None
+    iou_dilated = None
+    iou_bbox = None
     if raw_poly is not None and not raw_poly.is_empty and reproj_poly is not None:
         inter = raw_poly.intersection(reproj_poly).area
         union = raw_poly.union(reproj_poly).area
-        iou = float(inter / union) if union > 0 else 0.0
+        iou_mask = float(inter / union) if union > 0 else 0.0
+        if mask_dilate_px > 0:
+            raw_dilated = raw_poly.buffer(float(mask_dilate_px))
+        else:
+            raw_dilated = raw_poly
+        if raw_dilated is not None and not raw_dilated.is_empty:
+            inter_d = raw_dilated.intersection(reproj_poly).area
+            union_d = raw_dilated.union(reproj_poly).area
+            iou_dilated = float(inter_d / union_d) if union_d > 0 else 0.0
         area_ratio = float(reproj_poly.area / raw_poly.area) if raw_poly.area > 0 else None
     else:
         bbox_raw = raw_info.get("bbox_px")
         if not (isinstance(bbox_raw, (list, tuple)) and len(bbox_raw) == 4):
             bbox_raw = None
         bbox_reproj = _polygon_bbox(reproj_poly)
-        iou = _bbox_iou(list(bbox_raw) if bbox_raw else [], bbox_reproj or [])
+        pad = float(mask_dilate_px) if mask_dilate_px > 0 else 0.0
+        bbox_raw_use = _expand_bbox_pad(list(bbox_raw), pad) if bbox_raw else []
+        bbox_reproj_use = _expand_bbox_pad(bbox_reproj, pad) if bbox_reproj else []
+        iou_bbox = _bbox_iou(bbox_raw_use, bbox_reproj_use)
         if bbox_raw and bbox_reproj:
             area_raw = (bbox_raw[2] - bbox_raw[0]) * (bbox_raw[3] - bbox_raw[1])
             area_ratio = (
@@ -624,13 +645,18 @@ def _roundtrip_metrics(
             area_ratio = None
     bbox_raw = raw_info.get("bbox_px")
     bbox_reproj = _polygon_bbox(reproj_poly)
+    if iou_bbox is None:
+        pad = float(mask_dilate_px) if mask_dilate_px > 0 else 0.0
+        bbox_raw_use = _expand_bbox_pad(list(bbox_raw), pad) if bbox_raw else []
+        bbox_reproj_use = _expand_bbox_pad(bbox_reproj, pad) if bbox_reproj else []
+        iou_bbox = _bbox_iou(bbox_raw_use, bbox_reproj_use)
     if bbox_raw and bbox_reproj and len(bbox_raw) == 4:
         cx1, cy1 = _bbox_center(list(bbox_raw))
         cx2, cy2 = _bbox_center(bbox_reproj)
         center_err = float(np.hypot(cx1 - cx2, cy1 - cy2))
     else:
         center_err = None
-    return iou, center_err, area_ratio
+    return iou_mask, iou_dilated, iou_bbox, center_err, area_ratio
 
 
 def _render_lidar_proj_debug(
@@ -708,13 +734,23 @@ def _compute_roundtrip_metrics_for_range(
         geom_ok = _safe_int(row.get("geom_ok", geom_ok)) if row is not None else geom_ok
         pose = pose_map.get(frame_id)
         z_override = lidar_info.get("ground_z")
-        iou, center_err, area_ratio = _roundtrip_metrics(raw_info, geom, pose, calib, z_override)
+        mask_dilate_px = int(lidar_info.get("mask_dilate_px_used", lidar_info.get("mask_dilate_px", 0)))
+        iou_mask, iou_dilated, iou_bbox, center_err, area_ratio = _roundtrip_metrics(
+            raw_info,
+            geom,
+            pose,
+            calib,
+            z_override,
+            mask_dilate_px,
+        )
         record = {
             "frame_id": frame_id,
             "raw_status": raw_info.get("raw_status", ""),
             "proj_method": proj_method,
             "geom_ok": geom_ok,
-            "reproj_iou": iou,
+            "reproj_iou": iou_mask,
+            "reproj_iou_dilated": iou_dilated,
+            "reproj_iou_bbox": iou_bbox,
             "reproj_center_err_px": center_err,
             "reproj_area_ratio": area_ratio,
             "points_in_bbox": int(lidar_info.get("points_in_bbox", 0) or 0),
@@ -780,7 +816,15 @@ def _scan_offsets_for_range(
                 cam_id,
             )
             geom = cand.get("geometry") if cand else None
-            iou, _center, _ratio = _roundtrip_metrics(raw_info, geom, pose, calib, None)
+            mask_dilate_px = int(lidar_cfg.get("MASK_DILATE_PX", 0))
+            iou, _iou_dilated, _iou_bbox, _center, _ratio = _roundtrip_metrics(
+                raw_info,
+                geom,
+                pose,
+                calib,
+                None,
+                mask_dilate_px,
+            )
             iou_val = float(iou) if iou is not None else 0.0
             points = int(stats.get("points_in_mask", 0) or 0)
             score = iou_val * 10000 + points
@@ -1480,6 +1524,8 @@ def _build_lidar_candidate_for_frame(
         "lidar_fit_attempted": 0,
         "lidar_fit_ok": 0,
         "lidar_fit_fail_reason": "",
+        "lidar_fit_source": "",
+        "lidar_fit_points_used": 0,
         "plane_ok": 0,
         "plane_dist_p10": None,
         "plane_dist_p50": None,
@@ -1721,6 +1767,8 @@ def _build_lidar_candidate_for_frame(
             stats["support_source"] = "bbox_all_fallback"
             stats["ground_filter_mode"] = "fallback"
     min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
+    support_pts_all = points_world[support_idx][:, :2] if support_idx else np.empty((0, 2), dtype=float)
+    stats["support_points"] = support_pts_all
     if len(support_idx) < min_support_points:
         if stats.get("points_ground_local", 0) > 0:
             stats["support_source"] = "ground_local_fallback"
@@ -1735,7 +1783,6 @@ def _build_lidar_candidate_for_frame(
             stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
             return None, stats
 
-    support_pts_all = points_world[support_idx][:, :2]
     support_pts = support_pts_all
     eps = float(lidar_cfg.get("DBSCAN_EPS_M", 0.6))
     min_samples = int(lidar_cfg.get("DBSCAN_MIN_SAMPLES", 10))
@@ -1775,6 +1822,8 @@ def _build_lidar_candidate_for_frame(
     stats["points_support"] = int(support_pts.shape[0])
     if stats["points_support"] >= min_support_points:
         stats["lidar_fit_attempted"] = 1
+        stats["lidar_fit_source"] = "single"
+        stats["lidar_fit_points_used"] = stats["points_support"]
     else:
         stats["drop_reason_code"] = "LIDAR_SUPPORT_TOO_FEW"
         return None, stats
@@ -2001,6 +2050,8 @@ def _build_lidar_candidates_for_range(
     accum_post = int(lidar_cfg.get("ACCUM_POST", 5))
     angle_snap = float(lidar_cfg.get("ANGLE_SNAP_DEG", 20))
     min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
+    min_support_points = int(lidar_cfg.get("MIN_SUPPORT_POINTS", 3))
+    min_support_points_accum = int(lidar_cfg.get("MIN_SUPPORT_POINTS_ACCUM", min_support_points))
     for frame in range(frame_start, frame_end + 1):
         frame_id = _normalize_frame_id(str(frame))
         stats = stats_by_frame.get(frame_id)
@@ -2027,7 +2078,7 @@ def _build_lidar_candidates_for_range(
         if not accum_pts:
             continue
         merged = np.vstack(accum_pts)
-        if merged.shape[0] < 3:
+        if merged.shape[0] < min_support_points_accum:
             continue
         pose = pose_map.get(frame_id)
         if pose is None:
@@ -2047,7 +2098,16 @@ def _build_lidar_candidates_for_range(
         stats["rect_w_m_accum"] = float(metrics["rect_w_m"])
         stats["rect_l_m_accum"] = float(metrics["rect_l_m"])
         stats["rectangularity_accum"] = float(metrics["rectangularity"])
-        if merged.shape[0] >= min_points_mask:
+        use_accum_fit = stats.get("points_support", 0) < min_support_points or (
+            stats.get("points_support_accum", 0) >= max(min_support_points_accum, int(stats.get("points_support", 0) * 2))
+        )
+        if use_accum_fit:
+            stats["lidar_fit_attempted"] = 1
+            stats["lidar_fit_ok"] = 1
+            stats["lidar_fit_source"] = "accum"
+            stats["lidar_fit_points_used"] = int(merged.shape[0])
+            stats["proj_method"] = "lidar"
+        if merged.shape[0] >= min_support_points_accum:
             cand = candidate_by_frame.get(frame_id)
             if cand is None:
                 cand = {
@@ -2104,6 +2164,8 @@ def _build_lidar_candidates_for_range(
                 "points_ground": int(stats.get("points_ground", 0)),
                 "points_support": int(stats.get("points_support", 0)),
                 "points_support_accum": int(stats.get("points_support_accum", 0)),
+                "lidar_fit_source": str(stats.get("lidar_fit_source", "")),
+                "lidar_fit_points_used": int(stats.get("lidar_fit_points_used", 0)),
                 "proj_method": str(stats.get("proj_method", "")),
                 "drop_reason_code": str(stats.get("drop_reason_code", "")),
                 "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
@@ -3403,6 +3465,8 @@ def _build_trace_records(
                 "lidar_fit_attempted": int(lidar_info.get("lidar_fit_attempted", 0)),
                 "lidar_fit_ok": int(lidar_info.get("lidar_fit_ok", 0)),
                 "lidar_fit_fail_reason": str(lidar_info.get("lidar_fit_fail_reason", "")),
+                "lidar_fit_source": str(lidar_info.get("lidar_fit_source", "")),
+                "lidar_fit_points_used": int(lidar_info.get("lidar_fit_points_used", 0)),
                 "geom_ok": geom_ok if geom_ok else int(lidar_info.get("geom_ok", 0)),
                 "geom_area_m2": geom_area if geom_area else float(lidar_info.get("geom_area_m2", 0.0)),
                 "rect_w_m": rect_w_m,
@@ -3436,6 +3500,8 @@ def _build_trace_records(
                 "final_entity_id": "|".join(final_ids),
                 "drop_reason_code": drop_reason,
                 "reproj_iou": roundtrip_by_frame.get(frame_id, {}).get("reproj_iou"),
+                "reproj_iou_dilated": roundtrip_by_frame.get(frame_id, {}).get("reproj_iou_dilated"),
+                "reproj_iou_bbox": roundtrip_by_frame.get(frame_id, {}).get("reproj_iou_bbox"),
                 "reproj_center_err_px": roundtrip_by_frame.get(frame_id, {}).get("reproj_center_err_px"),
                 "reproj_area_ratio": roundtrip_by_frame.get(frame_id, {}).get("reproj_area_ratio"),
             }
@@ -3508,24 +3574,53 @@ def _build_report(
     lines.append("## lidar_fit Summary")
     lines.append(f"- lidar_fit_ok_count: {lidar_fit_ok}")
     lines.append(f"- lidar_fit_fail_count: {lidar_fit_fail}")
+    fit_sources = [str(r.get("lidar_fit_source") or "") for r in raw_records]
+    fit_source_counts: Dict[str, int] = {}
+    for val in fit_sources:
+        fit_source_counts[val] = fit_source_counts.get(val, 0) + 1
+    lines.append("")
+    lines.append("## lidar_fit_source Summary")
+    if fit_source_counts:
+        for key in sorted(fit_source_counts.keys()):
+            lines.append(f"- {key or 'none'}: {fit_source_counts[key]}")
+    else:
+        lines.append("- none")
     reproj_vals = [
         float(r.get("reproj_iou"))
         for r in raw_records
         if r.get("reproj_iou") not in (None, "", "nan")
         and isinstance(r.get("reproj_iou"), (int, float))
     ]
+    reproj_dilated_vals = [
+        float(r.get("reproj_iou_dilated"))
+        for r in raw_records
+        if r.get("reproj_iou_dilated") not in (None, "", "nan")
+        and isinstance(r.get("reproj_iou_dilated"), (int, float))
+    ]
+    reproj_bbox_vals = [
+        float(r.get("reproj_iou_bbox"))
+        for r in raw_records
+        if r.get("reproj_iou_bbox") not in (None, "", "nan")
+        and isinstance(r.get("reproj_iou_bbox"), (int, float))
+    ]
+    lines.append("")
+    lines.append("## reproj_iou Summary")
     if reproj_vals:
-        lines.append("")
-        lines.append("## reproj_iou Summary")
-        lines.append(f"- p50: {float(np.percentile(reproj_vals, 50)):.6f}")
-        lines.append(f"- p90: {float(np.percentile(reproj_vals, 90)):.6f}")
+        lines.append(f"- mask_p50: {float(np.percentile(reproj_vals, 50)):.6f}")
+        lines.append(f"- mask_p90: {float(np.percentile(reproj_vals, 90)):.6f}")
+    if reproj_dilated_vals:
+        lines.append(f"- dilated_p50: {float(np.percentile(reproj_dilated_vals, 50)):.6f}")
+        lines.append(f"- dilated_p90: {float(np.percentile(reproj_dilated_vals, 90)):.6f}")
+    if reproj_bbox_vals:
+        lines.append(f"- bbox_p50: {float(np.percentile(reproj_bbox_vals, 50)):.6f}")
+        lines.append(f"- bbox_p90: {float(np.percentile(reproj_bbox_vals, 90)):.6f}")
     lines.append("")
     lines.append("## raw_has_crosswalk Samples")
-    lines.append("| frame_id | points_support | proj_method | lidar_fit_ok | rect_w | rect_l | reproj_iou |")
-    lines.append("| --- | --- | --- | --- | --- | --- | --- |")
+    lines.append("| frame_id | points_support | points_support_accum | proj_method | lidar_fit_source | reproj_iou_mask | reproj_iou_dilated | reproj_iou_bbox |")
+    lines.append("| --- | --- | --- | --- | --- | --- | --- | --- |")
     for row in raw_records[:5]:
         lines.append(
-            f"| {row.get('frame_id','')} | {row.get('points_support',0)} | {row.get('proj_method','')} | {row.get('lidar_fit_ok',0)} | {row.get('rect_w_m',0)} | {row.get('rect_l_m',0)} | {row.get('reproj_iou','')} |"
+            f"| {row.get('frame_id','')} | {row.get('points_support',0)} | {row.get('points_support_accum',0)} | {row.get('proj_method','')} | {row.get('lidar_fit_source','')} | {row.get('reproj_iou','')} | {row.get('reproj_iou_dilated','')} | {row.get('reproj_iou_bbox','')} |"
         )
     lines.append("")
     lines.append("## Calibration Thresholds")
@@ -3565,10 +3660,27 @@ def _build_report(
             lines.append(f"- {key}: {count}")
         lines.append("")
     iou_vals = [float(r.get("reproj_iou") or 0.0) for r in trace_records if r.get("reproj_iou") is not None]
-    if iou_vals:
+    iou_dilated_vals = [
+        float(r.get("reproj_iou_dilated") or 0.0)
+        for r in trace_records
+        if r.get("reproj_iou_dilated") is not None
+    ]
+    iou_bbox_vals = [
+        float(r.get("reproj_iou_bbox") or 0.0)
+        for r in trace_records
+        if r.get("reproj_iou_bbox") is not None
+    ]
+    if iou_vals or iou_dilated_vals or iou_bbox_vals:
         lines.append("## reproj_iou Summary")
-        lines.append(f"- p50: {np.percentile(iou_vals, 50):.3f}")
-        lines.append(f"- p90: {np.percentile(iou_vals, 90):.3f}")
+        if iou_vals:
+            lines.append(f"- mask_p50: {np.percentile(iou_vals, 50):.3f}")
+            lines.append(f"- mask_p90: {np.percentile(iou_vals, 90):.3f}")
+        if iou_dilated_vals:
+            lines.append(f"- dilated_p50: {np.percentile(iou_dilated_vals, 50):.3f}")
+            lines.append(f"- dilated_p90: {np.percentile(iou_dilated_vals, 90):.3f}")
+        if iou_bbox_vals:
+            lines.append(f"- bbox_p50: {np.percentile(iou_bbox_vals, 50):.3f}")
+            lines.append(f"- bbox_p90: {np.percentile(iou_bbox_vals, 90):.3f}")
         lines.append("")
     subset = [
         r
@@ -4149,6 +4261,7 @@ def main() -> int:
         "MIN_IN_IMAGE_RATIO": float(lidar_cfg.get("min_in_image_ratio", 0.1)),
         "GROUND_Z_TOL": float(lidar_cfg.get("ground_z_tol", 0.2)),
         "MIN_SUPPORT_POINTS": int(lidar_cfg.get("min_support_points", 3)),
+        "MIN_SUPPORT_POINTS_ACCUM": int(lidar_cfg.get("min_support_points_accum", 3)),
         "DBSCAN_EPS_M": float(lidar_cfg.get("dbscan_eps_m", 0.6)),
         "DBSCAN_MIN_SAMPLES": int(lidar_cfg.get("dbscan_min_samples", 10)),
         "ANGLE_SNAP_DEG": float(lidar_cfg.get("angle_snap_deg", 20)),
@@ -4223,6 +4336,8 @@ def main() -> int:
             "lidar_fit_attempted": int(stats.get("lidar_fit_attempted", 0)),
             "lidar_fit_ok": int(stats.get("lidar_fit_ok", 0)),
             "lidar_fit_fail_reason": str(stats.get("lidar_fit_fail_reason", "")),
+            "lidar_fit_source": str(stats.get("lidar_fit_source", "")),
+            "lidar_fit_points_used": int(stats.get("lidar_fit_points_used", 0)),
             "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
             "geom_area_m2_accum": float(stats.get("geom_area_m2_accum", 0.0)),
             "rect_w_m_accum": float(stats.get("rect_w_m_accum", 0.0)),

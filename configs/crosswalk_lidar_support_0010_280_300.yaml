@@ -22,14 +22,15 @@ lidar_proj:
   min_points_mask: 5
   intensity_top_pct: 20
   min_support_points: 3
+  min_support_points_accum: 3
   min_in_image_ratio: 0.02
   ground_z_tol: 0.25
   dbscan_eps_m: 0.8
   dbscan_min_samples: 8
   angle_snap_deg: 20
   plane_score_min: 0.1
-  accum_pre: 5
-  accum_post: 5
+  accum_pre: 10
+  accum_post: 10
 
 cluster:
   cluster_eps_m: 10.0
