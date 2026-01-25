@@ -1410,6 +1410,7 @@ def _build_lidar_candidate_for_frame(
     lidar_world_mode: str,
     cam_id: str,
 ) -> Tuple[dict | None, dict]:
+    allow_candidate = True
     stats = {
         "proj_method": "none",
         "pose_ok": 1 if pose is not None else 0,
@@ -1419,6 +1420,10 @@ def _build_lidar_candidate_for_frame(
         "points_total": 0,
         "points_in_bbox": 0,
         "points_in_mask": 0,
+        "points_in_mask_dilated": 0,
+        "points_intensity_top": 0,
+        "points_ground": 0,
+        "points_support": 0,
         "mask_dilate_px": int(lidar_cfg.get("MASK_DILATE_PX", 5)),
         "intensity_top_pct": 0,
         "ground_filter_used": 0,
@@ -1429,10 +1434,21 @@ def _build_lidar_candidate_for_frame(
         "rect_w_m": 0.0,
         "rect_l_m": 0.0,
         "rectangularity": 0.0,
+        "geom_ok_accum": 0,
+        "geom_area_m2_accum": 0.0,
+        "rect_w_m_accum": 0.0,
+        "rect_l_m_accum": 0.0,
+        "rectangularity_accum": 0.0,
+        "rect_w_m_single": 0.0,
+        "rect_l_m_single": 0.0,
+        "rectangularity_single": 0.0,
+        "geom_area_m2_single": 0.0,
         "drop_reason_code": "GEOM_INVALID",
         "accum_frames_used": 1,
-        "points_accum_total": 0,
+        "points_support_accum": 0,
         "support_points": np.empty((0, 2), dtype=float),
+        "support_bbox_w_m": 0.0,
+        "support_bbox_l_m": 0.0,
     }
     raw_gdf = raw_info.get("gdf") if raw_info else None
     bbox_px = raw_info.get("bbox_px") if raw_info else None
@@ -1467,14 +1483,9 @@ def _build_lidar_candidate_for_frame(
     z_vals = points_world[:, 2]
     z_ground = float(np.percentile(z_vals, 10)) if z_vals.size > 0 else 0.0
     stats["ground_z"] = z_ground
-    ground_mask = np.abs(z_vals - z_ground) < float(lidar_cfg.get("GROUND_Z_TOL", 0.2))
-    if np.any(ground_mask):
-        points_world = points_world[ground_mask]
-        intensities = intensities[ground_mask]
-        stats["ground_filter_used"] = 1
-    if points_world.size == 0:
-        stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
-        return None, stats
+    ground_tol = float(lidar_cfg.get("GROUND_Z_TOL", 0.2))
+    ground_mask = np.abs(z_vals - z_ground) < ground_tol
+    stats["ground_filter_used"] = 1 if np.any(ground_mask) else 0
 
     proj_pose = pose_full if pose_full is not None else pose
     proj = _project_world_to_image(points_world, proj_pose, calib)
@@ -1519,6 +1530,9 @@ def _build_lidar_candidate_for_frame(
         stats["drop_reason_code"] = "CALIB_IMAGE_SIZE_MISMATCH"
         return None, stats
 
+    minx, miny, maxx, maxy = bbox_px
+    in_bbox = in_image & visible & (u >= minx) & (u <= maxx) & (v >= miny) & (v <= maxy)
+    stats["points_in_bbox"] = int(np.sum(in_bbox))
     min_ratio = float(lidar_cfg.get("MIN_IN_IMAGE_RATIO", 0.1))
     if stats["proj_in_image_ratio"] < min_ratio:
         valid_ratio = float(np.mean(valid)) if points_world.shape[0] > 0 else 0.0
@@ -1528,15 +1542,12 @@ def _build_lidar_candidate_for_frame(
             stats["drop_reason_code"] = "CALIB_PROJ_OUTSIDE"
         else:
             stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
-        return None, stats
+        allow_candidate = False
 
-    minx, miny, maxx, maxy = bbox_px
-    in_bbox = in_image & (u >= minx) & (u <= maxx) & (v >= miny) & (v <= maxy)
-    stats["points_in_bbox"] = int(np.sum(in_bbox))
     min_points_bbox = int(lidar_cfg.get("MIN_POINTS_BBOX", 20))
     if stats["points_in_bbox"] < min_points_bbox:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
-        return None, stats
+        allow_candidate = False
     bbox_metrics = None
     bbox_world_pts = points_world[in_bbox][:, :2]
     if bbox_world_pts.shape[0] >= 3:
@@ -1562,16 +1573,22 @@ def _build_lidar_candidate_for_frame(
             continue
         if mask_geom.contains(Point(float(u[idx]), float(v[idx]))):
             mask_hits.append(idx)
-    stats["points_in_mask"] = int(len(mask_hits))
+    stats["points_in_mask_dilated"] = int(len(mask_hits))
+    stats["points_in_mask"] = stats["points_in_mask_dilated"]
     intensity_pct = int(lidar_cfg.get("INTENSITY_TOP_PCT", 10))
     stats["intensity_top_pct"] = intensity_pct
     bbox_indices = np.where(in_bbox)[0]
     if bbox_indices.size == 0:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
         return None, stats
-    vals = intensities[bbox_indices]
+    base_indices = mask_hits if mask_hits else bbox_indices.tolist()
+    vals = intensities[base_indices]
     thr = np.percentile(vals, 100 - intensity_pct) if vals.size > 0 else None
-    support_idx = bbox_indices[vals >= thr].tolist() if thr is not None else bbox_indices.tolist()
+    intensity_idx = [base_indices[i] for i in range(len(base_indices)) if thr is None or vals[i] >= thr]
+    stats["points_intensity_top"] = int(len(intensity_idx))
+    ground_idx = [idx for idx in intensity_idx if ground_mask[idx]]
+    stats["points_ground"] = int(len(ground_idx))
+    support_idx = ground_idx
     min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
     if len(support_idx) < min_points_mask:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
@@ -1587,6 +1604,7 @@ def _build_lidar_candidate_for_frame(
         stats["dbscan_points"] = int(cluster_idx.size)
     else:
         stats["dbscan_points"] = int(support_pts_all.shape[0])
+    stats["points_support"] = int(support_pts.shape[0])
     if support_pts_all.shape[0] < 3:
         stats["drop_reason_code"] = "GEOM_INVALID"
         return None, stats
@@ -1606,12 +1624,18 @@ def _build_lidar_candidate_for_frame(
     rect = _align_rect_to_heading(rect, pose[2], float(lidar_cfg.get("ANGLE_SNAP_DEG", 20)))
     metrics = _rect_metrics(rect)
 
-    stats["proj_method"] = "lidar"
-    stats["geom_ok"] = 1
-    stats["geom_area_m2"] = float(metrics["geom_area_m2"])
-    stats["rect_w_m"] = float(metrics["rect_w_m"])
-    stats["rect_l_m"] = float(metrics["rect_l_m"])
-    stats["rectangularity"] = float(metrics["rectangularity"])
+    stats["proj_method"] = "lidar" if allow_candidate else stats["proj_method"]
+    stats["geom_ok"] = 1 if allow_candidate else 0
+    stats["geom_area_m2"] = float(metrics["geom_area_m2"]) if allow_candidate else 0.0
+    stats["rect_w_m"] = float(metrics["rect_w_m"]) if allow_candidate else 0.0
+    stats["rect_l_m"] = float(metrics["rect_l_m"]) if allow_candidate else 0.0
+    stats["rectangularity"] = float(metrics["rectangularity"]) if allow_candidate else 0.0
+    stats["geom_area_m2_single"] = stats["geom_area_m2"]
+    stats["rect_w_m_single"] = stats["rect_w_m"]
+    stats["rect_l_m_single"] = stats["rect_l_m"]
+    stats["rectangularity_single"] = stats["rectangularity"]
+    stats["support_bbox_w_m"] = stats["rect_w_m"]
+    stats["support_bbox_l_m"] = stats["rect_l_m"]
     if mask_world_geom is not None:
         mask_metrics = _rect_metrics(mask_world_geom)
         if mask_metrics["rect_w_m"] > 0 and mask_metrics["rect_l_m"] > 0:
@@ -1622,8 +1646,11 @@ def _build_lidar_candidate_for_frame(
         stats["rect_w_m"] = float(bbox_metrics["rect_w_m"])
         stats["rect_l_m"] = float(bbox_metrics["rect_l_m"])
         stats["rectangularity"] = float(bbox_metrics["rectangularity"])
-    stats["drop_reason_code"] = "LIDAR_OK"
+    if allow_candidate:
+        stats["drop_reason_code"] = "LIDAR_OK"
     stats["support_points"] = support_pts
+    if not allow_candidate:
+        return None, stats
     candidate = {
         "geometry": rect,
         "properties": {
@@ -1761,9 +1788,11 @@ def _build_lidar_candidates_for_range(
     lidar_cfg: dict,
     lidar_world_mode: str,
     cam_id: str,
+    debug_dir: Path | None = None,
 ) -> Tuple[List[dict], Dict[str, dict]]:
     candidates = []
     stats_by_frame: Dict[str, dict] = {}
+    candidate_by_frame: Dict[str, dict] = {}
     for frame in range(frame_start, frame_end + 1):
         frame_id = _normalize_frame_id(str(frame))
         raw_info = raw_frames.get((drive_id, frame_id))
@@ -1786,6 +1815,123 @@ def _build_lidar_candidates_for_range(
         stats_by_frame[frame_id] = stats
         if cand:
             candidates.append(cand)
+            candidate_by_frame[frame_id] = cand
+    accum_pre = int(lidar_cfg.get("ACCUM_PRE", 5))
+    accum_post = int(lidar_cfg.get("ACCUM_POST", 5))
+    angle_snap = float(lidar_cfg.get("ANGLE_SNAP_DEG", 20))
+    min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        stats = stats_by_frame.get(frame_id)
+        if stats is None:
+            continue
+        stats["accum_pre"] = accum_pre
+        stats["accum_post"] = accum_post
+        accum_pts = []
+        used_frames = []
+        for offset in range(-accum_pre, accum_post + 1):
+            cand_frame = frame + offset
+            if cand_frame < frame_start or cand_frame > frame_end:
+                continue
+            cand_id = _normalize_frame_id(str(cand_frame))
+            cand_stats = stats_by_frame.get(cand_id)
+            if not cand_stats:
+                continue
+            pts = cand_stats.get("support_points")
+            if isinstance(pts, np.ndarray) and pts.size > 0:
+                accum_pts.append(pts)
+                used_frames.append(cand_id)
+        stats["accum_frames_used"] = len(used_frames)
+        stats["points_support_accum"] = int(np.sum([p.shape[0] for p in accum_pts])) if accum_pts else 0
+        if not accum_pts:
+            continue
+        merged = np.vstack(accum_pts)
+        if merged.shape[0] < 3:
+            continue
+        pose = pose_map.get(frame_id)
+        if pose is None:
+            continue
+        hull = MultiPoint([Point(float(x), float(y)) for x, y in merged]).convex_hull
+        rect = hull.minimum_rotated_rectangle
+        if rect is None or rect.is_empty:
+            continue
+        if not rect.is_valid:
+            rect = rect.buffer(0)
+        if rect is None or rect.is_empty or not rect.is_valid:
+            continue
+        rect = _align_rect_to_heading(rect, pose[2], angle_snap)
+        metrics = _rect_metrics(rect)
+        stats["geom_ok_accum"] = 1
+        stats["geom_area_m2_accum"] = float(metrics["geom_area_m2"])
+        stats["rect_w_m_accum"] = float(metrics["rect_w_m"])
+        stats["rect_l_m_accum"] = float(metrics["rect_l_m"])
+        stats["rectangularity_accum"] = float(metrics["rectangularity"])
+        if merged.shape[0] >= min_points_mask:
+            cand = candidate_by_frame.get(frame_id)
+            if cand is None:
+                cand = {
+                    "geometry": rect,
+                    "properties": {
+                        "candidate_id": f"{drive_id}_crosswalk_lidar_accum_{frame_id}",
+                        "drive_id": drive_id,
+                        "frame_id": frame_id,
+                        "entity_type": "crosswalk",
+                        "reject_reasons": "",
+                        "proj_method": "lidar",
+                        "points_in_bbox": stats.get("points_in_bbox", 0),
+                        "points_in_mask": stats.get("points_in_mask", 0),
+                        "mask_dilate_px": stats.get("mask_dilate_px", 0),
+                        "intensity_top_pct": stats.get("intensity_top_pct", 0),
+                        "ground_filter_used": stats.get("ground_filter_used", 0),
+                        "dbscan_points": stats.get("dbscan_points", 0),
+                        "drop_reason_code": stats.get("drop_reason_code", ""),
+                        "geom_ok": 1,
+                        "geom_area_m2": stats["geom_area_m2_accum"],
+                        "rect_w_m": stats["rect_w_m_accum"],
+                        "rect_l_m": stats["rect_l_m_accum"],
+                        "rectangularity": stats["rectangularity_accum"],
+                        "bbox_px": raw_frames.get((drive_id, frame_id), {}).get("bbox_px"),
+                        "qa_flag": "ok_accum",
+                    },
+                }
+                candidates.append(cand)
+                candidate_by_frame[frame_id] = cand
+            else:
+                cand["geometry"] = rect
+                cand["properties"]["geom_area_m2"] = stats["geom_area_m2_accum"]
+                cand["properties"]["rect_w_m"] = stats["rect_w_m_accum"]
+                cand["properties"]["rect_l_m"] = stats["rect_l_m_accum"]
+                cand["properties"]["rectangularity"] = stats["rectangularity_accum"]
+                cand["properties"]["qa_flag"] = "ok_accum"
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        for frame in range(frame_start, frame_end + 1):
+            frame_id = _normalize_frame_id(str(frame))
+            stats = stats_by_frame.get(frame_id)
+            if not stats:
+                continue
+            debug_path = debug_dir / f"point_support_{frame_id}.json"
+            payload = {
+                "drive_id": drive_id,
+                "frame_id": frame_id,
+                "accum_pre": accum_pre,
+                "accum_post": accum_post,
+                "accum_frames_used": int(stats.get("accum_frames_used", 0)),
+                "points_in_bbox": int(stats.get("points_in_bbox", 0)),
+                "points_in_mask_dilated": int(stats.get("points_in_mask_dilated", 0)),
+                "points_intensity_top": int(stats.get("points_intensity_top", 0)),
+                "points_ground": int(stats.get("points_ground", 0)),
+                "points_support": int(stats.get("points_support", 0)),
+                "points_support_accum": int(stats.get("points_support_accum", 0)),
+                "proj_method": str(stats.get("proj_method", "")),
+                "drop_reason_code": str(stats.get("drop_reason_code", "")),
+                "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
+                "geom_area_m2_accum": float(stats.get("geom_area_m2_accum", 0.0)),
+                "rect_w_m_accum": float(stats.get("rect_w_m_accum", 0.0)),
+                "rect_l_m_accum": float(stats.get("rect_l_m_accum", 0.0)),
+                "rectangularity_accum": float(stats.get("rectangularity_accum", 0.0)),
+            }
+            debug_path.write_text(json.dumps(payload, ensure_ascii=True), encoding="utf-8")
     return candidates, stats_by_frame
 
 
@@ -2100,14 +2246,28 @@ def _render_gated_overlay(
         proj_method = str(diag.get("proj_method") or "none")
         points_in_bbox = int(diag.get("points_in_bbox", 0))
         points_in_mask = int(diag.get("points_in_mask", 0))
+        points_in_mask_dilated = int(diag.get("points_in_mask_dilated", points_in_mask))
+        points_support = int(diag.get("points_support", 0))
+        points_support_accum = int(diag.get("points_support_accum", 0))
+        accum_pre = int(diag.get("accum_pre", 0))
+        accum_post = int(diag.get("accum_post", 0))
         drop_reason = str(diag.get("drop_reason_code") or "")
-        draw.text((10, 60), f"{proj_method} bbox={points_in_bbox} mask={points_in_mask}", fill=(200, 200, 200, 220))
+        draw.text(
+            (10, 60),
+            f"{proj_method} bbox={points_in_bbox} maskd={points_in_mask_dilated}",
+            fill=(200, 200, 200, 220),
+        )
+        draw.text(
+            (10, 86),
+            f"support={points_support} accum={points_support_accum} pre/post={accum_pre}/{accum_post}",
+            fill=(200, 200, 200, 220),
+        )
         if drop_reason:
-            draw.text((10, 86), drop_reason, fill=(200, 120, 120, 220))
+            draw.text((10, 112), drop_reason, fill=(200, 120, 120, 220))
         if proj_method in {"plane", "bbox_only"}:
-            draw.text((10, 112), "WEAK_PROJ", fill=(255, 128, 0, 220))
+            draw.text((10, 138), "WEAK_PROJ", fill=(255, 128, 0, 220))
     if stage2_added:
-        draw.text((10, 138), "STAGE2_ADDED", fill=(0, 200, 255, 220))
+        draw.text((10, 164), "STAGE2_ADDED", fill=(0, 200, 255, 220))
 
     if stage2_items:
         for item in stage2_items:
@@ -3010,6 +3170,12 @@ def _build_trace_records(
                 "points_in_image_visible": int(lidar_info.get("points_in_image_visible", 0)),
                 "points_in_bbox": int(lidar_info.get("points_in_bbox", 0)),
                 "points_in_mask": int(lidar_info.get("points_in_mask", 0)),
+                "points_in_mask_dilated": int(lidar_info.get("points_in_mask_dilated", 0)),
+                "points_intensity_top": int(lidar_info.get("points_intensity_top", 0)),
+                "points_ground": int(lidar_info.get("points_ground", 0)),
+                "points_support": int(lidar_info.get("points_support", 0)),
+                "points_support_accum": int(lidar_info.get("points_support_accum", 0)),
+                "accum_frames_used": int(lidar_info.get("accum_frames_used", 0)),
                 "mask_dilate_px": int(lidar_info.get("mask_dilate_px", 0)),
                 "intensity_top_pct": int(lidar_info.get("intensity_top_pct", 0)),
                 "ground_filter_used": int(lidar_info.get("ground_filter_used", 0)),
@@ -3019,6 +3185,15 @@ def _build_trace_records(
                 "rect_w_m": rect_w_m,
                 "rect_l_m": rect_l_m,
                 "rectangularity": rectangularity,
+                "geom_ok_accum": int(lidar_info.get("geom_ok_accum", 0)),
+                "geom_area_m2_accum": float(lidar_info.get("geom_area_m2_accum", 0.0)),
+                "rect_w_m_accum": float(lidar_info.get("rect_w_m_accum", 0.0)),
+                "rect_l_m_accum": float(lidar_info.get("rect_l_m_accum", 0.0)),
+                "rectangularity_accum": float(lidar_info.get("rectangularity_accum", 0.0)),
+                "geom_area_m2_single": float(lidar_info.get("geom_area_m2_single", 0.0)),
+                "rect_w_m_single": float(lidar_info.get("rect_w_m_single", 0.0)),
+                "rect_l_m_single": float(lidar_info.get("rect_l_m_single", 0.0)),
+                "rectangularity_single": float(lidar_info.get("rectangularity_single", 0.0)),
                 "cluster_id": cluster_id,
                 "cluster_frames_hit": cluster_frames_hit,
                 "jitter_p90": jitter_p90,
@@ -3090,6 +3265,39 @@ def _build_report(
         lines.append("## proj_in_image_ratio_visible Summary")
         lines.append(f"- p50: {np.percentile(visible_vals, 50):.3f}")
         lines.append(f"- p90: {np.percentile(visible_vals, 90):.3f}")
+        lines.append("")
+    bbox_vals = [int(r.get("points_in_bbox", 0) or 0) for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
+    if bbox_vals:
+        lines.append("## points_in_bbox Summary")
+        lines.append(f"- p50: {np.percentile(bbox_vals, 50):.1f}")
+        lines.append(f"- p90: {np.percentile(bbox_vals, 90):.1f}")
+        lines.append("")
+    support_vals = [int(r.get("points_support", 0) or 0) for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
+    accum_vals = [int(r.get("points_support_accum", 0) or 0) for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
+    if support_vals:
+        lines.append("## points_support Summary")
+        lines.append(f"- p50: {np.percentile(support_vals, 50):.1f}")
+        lines.append(f"- p90: {np.percentile(support_vals, 90):.1f}")
+        lines.append("")
+    if accum_vals:
+        lines.append("## points_support_accum Summary")
+        lines.append(f"- p50: {np.percentile(accum_vals, 50):.1f}")
+        lines.append(f"- p90: {np.percentile(accum_vals, 90):.1f}")
+        lines.append("")
+    proj_methods = [str(r.get("proj_method") or "none") for r in trace_records]
+    if proj_methods:
+        lines.append("## proj_method Distribution")
+        counts: Dict[str, int] = {}
+        for val in proj_methods:
+            counts[val] = counts.get(val, 0) + 1
+        for key, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"- {key}: {count}")
+        lines.append("")
+    iou_vals = [float(r.get("reproj_iou") or 0.0) for r in trace_records if r.get("reproj_iou") is not None]
+    if iou_vals:
+        lines.append("## reproj_iou Summary")
+        lines.append(f"- p50: {np.percentile(iou_vals, 50):.3f}")
+        lines.append(f"- p90: {np.percentile(iou_vals, 90):.3f}")
         lines.append("")
     subset = [
         r
@@ -3210,6 +3418,16 @@ def _build_report(
         rows.sort(reverse=True)
         for after, cid, before, all_before, all_after in rows[:3]:
             lines.append(f"- {cid}: support_before={before} support_after={after} all_before={all_before} all_after={all_after}")
+    if proj_methods:
+        lidar_ratio = counts.get("lidar", 0) / max(1, len(proj_methods))
+        support_accum_p50 = float(np.percentile(accum_vals, 50)) if accum_vals else 0.0
+        iou_p50 = float(np.percentile(iou_vals, 50)) if iou_vals else 0.0
+        lines.append("")
+        lines.append("## Conclusion")
+        if support_accum_p50 > 0 and lidar_ratio >= 0.5 and iou_p50 > 0:
+            lines.append("- 单帧稀疏已解决")
+        else:
+            lines.append("- 仍需检查帧对齐/索引/投影链路")
     lines.append(f"- outputs_dir: {outputs_dir}")
     out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -3652,6 +3870,8 @@ def main() -> int:
         "DBSCAN_EPS_M": float(lidar_cfg.get("dbscan_eps_m", 0.6)),
         "DBSCAN_MIN_SAMPLES": int(lidar_cfg.get("dbscan_min_samples", 10)),
         "ANGLE_SNAP_DEG": float(lidar_cfg.get("angle_snap_deg", 20)),
+        "ACCUM_PRE": int(lidar_cfg.get("accum_pre", 5)),
+        "ACCUM_POST": int(lidar_cfg.get("accum_post", 5)),
         "VISIBLE_X_FORWARD_ONLY": bool(visible_cfg.get("x_forward_only", True)),
         "VISIBLE_MIN_RANGE_M": float(visible_cfg.get("min_range_m", 1.0)),
         "VISIBLE_MAX_RANGE_M": float(visible_cfg.get("max_range_m", 80.0)),
@@ -3669,7 +3889,43 @@ def main() -> int:
         lidar_cfg_norm,
         lidar_world_mode,
         camera,
+        outputs_dir / "debug",
     )
+    point_support_dir = outputs_dir / "debug"
+    point_support_dir.mkdir(parents=True, exist_ok=True)
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        stats = lidar_stats.get(frame_id, {})
+        raw_info = raw_stats.get(
+            (drive_id, frame_id),
+            {"raw_status": "unknown", "raw_has_crosswalk": 0.0},
+        )
+        payload = {
+            "drive_id": drive_id,
+            "frame_id": frame_id,
+            "raw_status": str(raw_info.get("raw_status", "unknown")),
+            "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
+            "accum_pre": int(lidar_cfg_norm.get("ACCUM_PRE", 0)),
+            "accum_post": int(lidar_cfg_norm.get("ACCUM_POST", 0)),
+            "accum_frames_used": int(stats.get("accum_frames_used", 0)),
+            "points_in_bbox": int(stats.get("points_in_bbox", 0)),
+            "points_in_mask_dilated": int(stats.get("points_in_mask_dilated", 0)),
+            "points_intensity_top": int(stats.get("points_intensity_top", 0)),
+            "points_ground": int(stats.get("points_ground", 0)),
+            "points_support": int(stats.get("points_support", 0)),
+            "points_support_accum": int(stats.get("points_support_accum", 0)),
+            "proj_method": str(stats.get("proj_method", "")),
+            "drop_reason_code": str(stats.get("drop_reason_code", "")),
+            "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
+            "geom_area_m2_accum": float(stats.get("geom_area_m2_accum", 0.0)),
+            "rect_w_m_accum": float(stats.get("rect_w_m_accum", 0.0)),
+            "rect_l_m_accum": float(stats.get("rect_l_m_accum", 0.0)),
+            "rectangularity_accum": float(stats.get("rectangularity_accum", 0.0)),
+        }
+        (point_support_dir / f"point_support_{frame_id}.json").write_text(
+            json.dumps(payload, ensure_ascii=True),
+            encoding="utf-8",
+        )
     if lidar_candidates:
         lidar_gdf = gpd.GeoDataFrame.from_features(lidar_candidates, crs="EPSG:32632")
         if candidate_gdf.empty:
@@ -4053,6 +4309,7 @@ def main() -> int:
     _build_trace(trace_path, trace_records)
 
     report_path = outputs_dir / "crosswalk_stage2_report.md"
+    quick_report_path = outputs_dir / "crosswalk_quick_report.md"
     runtime_snapshot = {
         "camera": camera,
         "image_dir": str(image_dir or ""),
@@ -4067,6 +4324,21 @@ def main() -> int:
     }
     _build_report(
         report_path,
+        drive_id,
+        frame_start,
+        frame_end,
+        trace_records,
+        candidate_gdf,
+        review_gdf,
+        final_gdf,
+        cluster_info,
+        outputs_dir,
+        final_cfg,
+        float(lidar_cfg_norm.get("MIN_IN_IMAGE_RATIO", 0.1)),
+        runtime_snapshot,
+    )
+    _build_report(
+        quick_report_path,
         drive_id,
         frame_start,
         frame_end,
