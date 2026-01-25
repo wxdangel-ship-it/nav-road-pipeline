@@ -1468,12 +1468,15 @@ def _build_lidar_candidate_for_frame(
         "points_ground_plane": 0,
         "points_support": 0,
         "mask_dilate_px": int(lidar_cfg.get("MASK_DILATE_PX", 5)),
+        "mask_dilate_px_used": 0,
         "intensity_top_pct": 0,
+        "intensity_top_pct_used": 0,
         "ground_filter_used": 0,
         "ground_z": 0.0,
         "ground_z_global": 0.0,
         "ground_z_local": 0.0,
         "ground_filter_mode": "",
+        "support_source": "",
         "plane_ok": 0,
         "plane_dist_p10": None,
         "plane_dist_p50": None,
@@ -1628,6 +1631,7 @@ def _build_lidar_candidate_for_frame(
     dilate_px = int(lidar_cfg.get("MASK_DILATE_PX", 5))
     if dilate_px > 0:
         mask_geom = mask_geom.buffer(float(dilate_px))
+    stats["mask_dilate_px_used"] = dilate_px
     mask_hits = []
     for idx, ok in enumerate(in_bbox):
         if not ok:
@@ -1638,6 +1642,7 @@ def _build_lidar_candidate_for_frame(
     stats["points_in_mask"] = stats["points_in_mask_dilated"]
     intensity_pct = int(lidar_cfg.get("INTENSITY_TOP_PCT", 10))
     stats["intensity_top_pct"] = intensity_pct
+    stats["intensity_top_pct_used"] = intensity_pct
     bbox_indices = np.where(in_bbox)[0]
     if bbox_indices.size == 0:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
@@ -1675,6 +1680,7 @@ def _build_lidar_candidate_for_frame(
         support_idx = ground_idx_local
         stats["ground_filter_mode"] = "local"
         stats["ground_filter_used"] = 1
+        stats["support_source"] = "ground_local"
     else:
         if len(intensity_idx) >= 3:
             xs = x_ego[intensity_idx]
@@ -1698,15 +1704,21 @@ def _build_lidar_candidate_for_frame(
             stats["ground_filter_mode"] = "plane"
             stats["ground_filter_used"] = 1
             stats["plane_ok"] = 1
+            stats["support_source"] = "ground_plane"
         else:
             support_idx = []
     min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
     if len(support_idx) < min_points_mask:
-        if stats.get("points_ground_local", 0) == 0 and stats.get("points_ground_plane", 0) == 0:
+        if stats.get("points_ground_local", 0) > 0:
+            stats["support_source"] = "ground_local_fallback"
+        elif stats.get("points_in_bbox", 0) > 0:
+            stats["support_source"] = "bbox_intensity_fallback"
+            stats["points_support"] = int(stats["points_intensity_top"])
             stats["drop_reason_code"] = "LIDAR_NO_POINTS_GROUND"
+            return None, stats
         else:
-            stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
-        return None, stats
+            stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
+            return None, stats
 
     support_pts_all = points_world[support_idx][:, :2]
     support_pts = support_pts_all
@@ -1716,8 +1728,20 @@ def _build_lidar_candidate_for_frame(
     if cluster_idx.size > 0:
         support_pts = support_pts_all[cluster_idx]
         stats["dbscan_points"] = int(cluster_idx.size)
+        if stats["support_source"] not in {
+            "ground_local_fallback",
+            "ground_plane_fallback",
+            "bbox_intensity_fallback",
+        }:
+            stats["support_source"] = "dbscan_cluster"
     else:
         stats["dbscan_points"] = int(support_pts_all.shape[0])
+        if stats.get("points_ground_local", 0) > 0:
+            stats["support_source"] = "ground_local_fallback"
+        elif stats.get("points_ground_plane", 0) > 0:
+            stats["support_source"] = "ground_plane_fallback"
+        elif not stats["support_source"]:
+            stats["support_source"] = "dbscan_empty"
     stats["points_support"] = int(support_pts.shape[0])
     if support_pts_all.shape[0] < 3:
         stats["drop_reason_code"] = "GEOM_INVALID"
@@ -1779,8 +1803,11 @@ def _build_lidar_candidate_for_frame(
             "points_in_mask": stats["points_in_mask"],
             "mask_dilate_px": stats["mask_dilate_px"],
             "intensity_top_pct": stats["intensity_top_pct"],
+            "mask_dilate_px_used": stats["mask_dilate_px_used"],
+            "intensity_top_pct_used": stats["intensity_top_pct_used"],
             "ground_filter_used": stats["ground_filter_used"],
             "dbscan_points": stats["dbscan_points"],
+            "support_source": stats["support_source"],
             "drop_reason_code": stats["drop_reason_code"],
             "geom_ok": stats["geom_ok"],
             "geom_area_m2": stats["geom_area_m2"],
@@ -3282,6 +3309,8 @@ def _build_trace_records(
                 "drive_id": drive_id,
                 "frame_id": frame_id,
                 "image_path": index_lookup.get(key, ""),
+                "frame_scanned": 1,
+                "raw_attempted": 1,
                 "raw_status": raw_info.get("raw_status", "unknown"),
                 "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
@@ -3319,8 +3348,11 @@ def _build_trace_records(
                 "accum_frames_used": int(lidar_info.get("accum_frames_used", 0)),
                 "mask_dilate_px": int(lidar_info.get("mask_dilate_px", 0)),
                 "intensity_top_pct": int(lidar_info.get("intensity_top_pct", 0)),
+                "mask_dilate_px_used": int(lidar_info.get("mask_dilate_px_used", 0)),
+                "intensity_top_pct_used": int(lidar_info.get("intensity_top_pct_used", 0)),
                 "ground_filter_used": int(lidar_info.get("ground_filter_used", 0)),
                 "dbscan_points": int(lidar_info.get("dbscan_points", 0)),
+                "support_source": str(lidar_info.get("support_source", "")),
                 "geom_ok": geom_ok if geom_ok else int(lidar_info.get("geom_ok", 0)),
                 "geom_area_m2": geom_area if geom_area else float(lidar_info.get("geom_area_m2", 0.0)),
                 "rect_w_m": rect_w_m,
@@ -3380,6 +3412,13 @@ def _build_report(
     lines.append("# Crosswalk Stage2 Report\n")
     lines.append(f"- report_time: {dt.datetime.now():%Y-%m-%d %H:%M:%S}")
     lines.append("")
+    scan_stride = runtime_snapshot.get("scan_stride", "")
+    scanned_frames_total = len(
+        [r for r in trace_records if int(r.get("frame_scanned", 0)) == 1]
+    ) or len(trace_records)
+    raw_has_crosswalk_count = len(
+        [r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
+    )
     lines.append("## Runtime Config Snapshot")
     if runtime_snapshot:
         for key in sorted(runtime_snapshot.keys()):
@@ -3389,6 +3428,9 @@ def _build_report(
     lines.append(f"- drive_id: {drive_id}")
     lines.append(f"- frame_range: {frame_start}-{frame_end}")
     lines.append(f"- total_frames: {frame_end - frame_start + 1}")
+    lines.append(f"- scan_stride: {scan_stride}")
+    lines.append(f"- scanned_frames_total: {scanned_frames_total}")
+    lines.append(f"- raw_has_crosswalk_count: {raw_has_crosswalk_count}")
     lines.append("")
     n_pos = len([r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1 and r.get("raw_status") in {"ok", "on_demand_infer_ok"}])
     n_miss = len([r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1 and r.get("raw_status") in {"ok", "on_demand_infer_ok"} and int(r.get("candidate_written", 0)) == 0])
@@ -3884,6 +3926,11 @@ def main() -> int:
     )
 
     index_records = _build_index_records(kitti_root, drive_id, frame_start, frame_end, camera)
+    expected_frames = frame_end - frame_start + 1
+    scanned_frames_total = len(index_records)
+    if scanned_frames_total != expected_frames:
+        log.error("scanned_frames_total=%d expected=%d", scanned_frames_total, expected_frames)
+        return 2
     index_path = debug_dir / "monitor_index.jsonl"
     _write_index(index_records, index_path)
     log.info("index=%s total=%d", index_path, len(index_records))
@@ -4081,6 +4128,9 @@ def main() -> int:
             "points_support_accum": int(stats.get("points_support_accum", 0)),
             "proj_method": str(stats.get("proj_method", "")),
             "drop_reason_code": str(stats.get("drop_reason_code", "")),
+            "support_source": str(stats.get("support_source", "")),
+            "mask_dilate_px_used": int(stats.get("mask_dilate_px_used", 0)),
+            "intensity_top_pct_used": int(stats.get("intensity_top_pct_used", 0)),
             "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
             "geom_area_m2_accum": float(stats.get("geom_area_m2_accum", 0.0)),
             "rect_w_m_accum": float(stats.get("rect_w_m_accum", 0.0)),
@@ -4487,6 +4537,7 @@ def main() -> int:
         "cam_to_velo_path": str(kitti_root / "calibration" / "calib_cam_to_velo.txt"),
         "roi_used": "false",
         "roi_strategy": "full_frame",
+        "scan_stride": str(stage1_stride),
     }
     _build_report(
         report_path,

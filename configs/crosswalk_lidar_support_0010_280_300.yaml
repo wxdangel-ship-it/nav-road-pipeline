@@ -17,10 +17,10 @@ road_root: "runs\\full_stack_20260121_000548"
 config: "configs\\road_entities.yaml"
 
 lidar_proj:
-  mask_dilate_px: 7
+  mask_dilate_px: 11
   min_points_bbox: 5
   min_points_mask: 5
-  intensity_top_pct: 10
+  intensity_top_pct: 20
   min_in_image_ratio: 0.02
   ground_z_tol: 0.25
   dbscan_eps_m: 0.8
