@@ -60,32 +60,34 @@ def _load_layer(path: Path, layer: str) -> gpd.GeoDataFrame:
 
 def _expected_clusters(
     cluster_df: pd.DataFrame,
-    review_gdf: gpd.GeoDataFrame,
+    candidate_gdf: gpd.GeoDataFrame,
     trace_df: pd.DataFrame,
-    min_frames_hit: int,
+    min_frames_hit_any: int,
     min_reproj_iou_bbox_p50: float,
     max_gore_like_ratio: float,
 ) -> Dict[str, Any]:
     expected = {}
-    if cluster_df.empty or review_gdf.empty:
+    if cluster_df.empty or candidate_gdf.empty:
         return expected
     reproj_p50 = {}
     if not trace_df.empty and "cluster_id" in trace_df.columns and "reproj_iou_bbox" in trace_df.columns:
         grouped = trace_df.dropna(subset=["cluster_id"]).groupby("cluster_id")["reproj_iou_bbox"]
         reproj_p50 = grouped.median().to_dict()
-    review = review_gdf.copy()
-    review["cluster_id"] = review.get("cluster_id", "").astype(str)
+    candidate = candidate_gdf.copy()
+    candidate["cluster_id"] = candidate.get("cluster_id", "").astype(str)
     for _, row in cluster_df.iterrows():
         cid = str(row.get("cluster_id") or "")
         if not cid:
             continue
-        if int(row.get("frames_hit_support", 0)) < min_frames_hit:
+        frames_hit_any = int(row.get("frames_hit_all", 0))
+        stage2_added = int(row.get("stage2_added_frames_count", 0))
+        if frames_hit_any < min_frames_hit_any and stage2_added < min_frames_hit_any:
             continue
         if float(row.get("gore_like_ratio", 0.0)) > max_gore_like_ratio:
             continue
         if float(reproj_p50.get(cid, 0.0) or 0.0) < min_reproj_iou_bbox_p50:
             continue
-        subset = review[review["cluster_id"] == cid]
+        subset = candidate[candidate["cluster_id"] == cid]
         if subset.empty:
             continue
         geom = subset.unary_union
@@ -102,20 +104,31 @@ def _score_trial(
     gpkg_path = outputs_dir / "crosswalk_entities_utm32.gpkg"
     trace_path = outputs_dir / "crosswalk_trace.csv"
     cluster_path = outputs_dir / "cluster_summary.csv"
+    candidate_gdf = _load_layer(gpkg_path, "crosswalk_candidate_poly")
     final_gdf = _load_layer(gpkg_path, "crosswalk_poly")
-    review_gdf = _load_layer(gpkg_path, "crosswalk_review_poly")
     cluster_df = pd.read_csv(cluster_path) if cluster_path.exists() else pd.DataFrame()
     trace_df = pd.read_csv(trace_path) if trace_path.exists() else pd.DataFrame()
 
     expected_cfg = cfg.get("autotune", {}).get("expected", {})
     expected = _expected_clusters(
         cluster_df,
-        review_gdf,
+        candidate_gdf,
         trace_df,
-        int(expected_cfg.get("min_frames_hit_support", 10)),
+        int(expected_cfg.get("min_frames_hit_any", 2)),
         float(expected_cfg.get("min_reproj_iou_bbox_p50", 0.10)),
         float(expected_cfg.get("max_gore_like_ratio", 0.7)),
     )
+    if not expected:
+        fallback = trace_df[trace_df.get("raw_has_crosswalk", 0).fillna(0).astype(int) == 1]
+        fallback_ids = {str(cid) for cid in fallback.get("cluster_id", []).tolist() if str(cid)}
+        for cid in fallback_ids:
+            subset = candidate_gdf[candidate_gdf.get("cluster_id", "").astype(str) == cid]
+            if subset.empty:
+                continue
+            geom = subset.unary_union
+            if geom is None or geom.is_empty:
+                continue
+            expected[cid] = geom.centroid
     expected_centroids = list(expected.values())
     expected_count = len(expected_centroids)
     final_centroids = [geom.centroid for geom in final_gdf.geometry] if not final_gdf.empty else []
@@ -169,6 +182,7 @@ def _score_trial(
         count_score = max(0.0, 1.0 - count_diff)
         variance = float((span_score + count_score) * 0.5)
 
+    empty_penalty = 1.0 if expected_count > 0 and len(final_centroids) == 0 else 0.0
     scoring = cfg.get("autotune", {}).get("scoring", {})
     score = (
         float(scoring.get("w_recall", 1.0)) * recall
@@ -176,6 +190,7 @@ def _score_trial(
         - float(scoring.get("w_drift", 0.5)) * drift_ratio
         + float(scoring.get("w_variance", 0.3)) * variance
         + float(scoring.get("w_stability", 0.3)) * stability
+        - float(scoring.get("w_empty", 1.0)) * empty_penalty
     )
 
     return {
@@ -186,12 +201,21 @@ def _score_trial(
         "drift_ratio": drift_ratio,
         "variance": variance,
         "stability": stability,
+        "empty_penalty": empty_penalty,
         "score": score,
     }
 
 
 def _stop_condition(metrics: Dict[str, Any], cfg: Dict[str, Any]) -> bool:
     stop_cfg = cfg.get("autotune", {}).get("stop", {})
+    recall_min = float(stop_cfg.get("recall_min", 0.8))
+    if metrics.get("expected_count", 0) > 0:
+        if (
+            metrics.get("final_count", 0) >= int(stop_cfg.get("final_min", 1))
+            and metrics.get("recall_proxy", 0.0) >= recall_min
+            and metrics.get("fp_count", 999) <= int(stop_cfg.get("max_fp", 1))
+        ):
+            return True
     return (
         metrics.get("score", 0.0) >= float(stop_cfg.get("score_min", 0.75))
         and metrics.get("fp_count", 999) <= int(stop_cfg.get("max_fp", 1))
@@ -213,7 +237,13 @@ def main() -> int:
 
     drive_id = str(run_overrides.get("drive_id") or base_cfg.get("drive_id") or "unknown")
     tag = drive_id.split("_")[-2] if "_" in drive_id else drive_id
-    out_root = Path(args.out_dir) if args.out_dir else Path("runs") / f"crosswalk_autotune_{tag}_250_500_{dt.datetime.now():%Y%m%d_%H%M%S}"
+    frame_start = int(run_overrides.get("frame_start", base_cfg.get("frame_start", 0)))
+    frame_end = int(run_overrides.get("frame_end", base_cfg.get("frame_end", 0)))
+    out_root = (
+        Path(args.out_dir)
+        if args.out_dir
+        else Path("runs") / f"crosswalk_autotune_{tag}_{frame_start}_{frame_end}_{dt.datetime.now():%Y%m%d_%H%M%S}"
+    )
     out_root.mkdir(parents=True, exist_ok=True)
 
     rng = random.Random(int(autotune_cfg.get("seed", 42)))
@@ -353,6 +383,29 @@ def main() -> int:
         if best_dir.exists():
             best_out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(best_dir, best_out)
+        trial_cfg_path = trials_dir / best_trial / "trial_config.yaml"
+        if trial_cfg_path.exists():
+            full_cfg = _load_yaml(trial_cfg_path)
+            full_cfg["export_all_frames"] = True
+            full_cfg["qa_policy"] = {"enable": False}
+            best_run_dir = out_root / "best_full"
+            best_run_dir.mkdir(parents=True, exist_ok=True)
+            best_cfg_path = best_run_dir / "trial_config.yaml"
+            best_cfg_path.write_text(yaml.safe_dump(full_cfg, sort_keys=False), encoding="utf-8")
+            cmd = [
+                sys.executable,
+                str(REPO_ROOT / "tools" / "run_crosswalk_stage2_full.py"),
+                "--config",
+                str(best_cfg_path),
+                "--out-run",
+                str(best_run_dir),
+            ]
+            subprocess.run(cmd, check=False, timeout=trial_timeout)
+            best_outputs = best_run_dir / "outputs"
+            if best_outputs.exists():
+                if best_out.exists():
+                    shutil.rmtree(best_out)
+                shutil.copytree(best_outputs, best_out)
         report_lines.append(f"- best_outputs: {best_out}")
     (out_root / "autotune_report.md").write_text("\n".join(report_lines) + "\n", encoding="utf-8")
     return 0
