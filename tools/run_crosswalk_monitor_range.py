@@ -2950,6 +2950,9 @@ def _fallback_candidate_from_pose(
         proj_method = "plane" if use_plane else "bbox_only"
         plane_ok = 1 if use_plane else 0
     half = max(0.5, size_m / 2.0)
+    forward = max(1.0, size_m)
+    x = x + float(np.cos(yaw)) * forward
+    y = y + float(np.sin(yaw)) * forward
     geom = box(x - half, y - half, x + half, y + half)
     if proj_method == "plane":
         geom = affinity.rotate(geom, np.degrees(yaw), origin=(x, y))
@@ -3778,6 +3781,8 @@ def main() -> int:
         str(stage_dir),
         "--emit-qa-images",
         "1",
+        "--lidar-world-mode",
+        str(lidar_world_mode),
     ]
     log.info("stage1: %s", " ".join(cmd))
     if subprocess.run(cmd, check=False).returncode != 0:

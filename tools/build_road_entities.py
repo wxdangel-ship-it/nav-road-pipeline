@@ -33,6 +33,7 @@ from pipeline.datasets.kitti360_io import (
     load_kitti360_pose,
     load_kitti360_pose_full,
 )
+from tools.build_image_sample_index import _extract_frame_id, _find_image_dir, _list_images
 
 
 LOG = logging.getLogger("build_road_entities")
@@ -327,6 +328,20 @@ def _assign_frame_by_nearest_pose(
             if best_frame:
                 gdf.at[idx, "frame_id"] = best_frame
     return gdf
+
+
+def _load_drive_frames(
+    data_root: Path,
+    drive_id: str,
+    camera: str = "image_00",
+) -> List[dict]:
+    img_dir = _find_image_dir(data_root, drive_id, camera)
+    if not img_dir:
+        return []
+    frames = []
+    for path in _list_images(img_dir):
+        frames.append({"frame_id": _extract_frame_id(path)})
+    return frames
 
 
 def _assert_required_fields(gdf: gpd.GeoDataFrame, label: str) -> None:
@@ -1501,7 +1516,11 @@ def main() -> int:
             gdf = _assign_drive_by_spatial(gdf, drive_polys)
             miss_mask = gdf["frame_id"].isna() | (gdf["frame_id"] == "")
             if miss_mask.any():
-                gdf = _assign_frame_by_nearest_pose(gdf, data_root, by_drive)
+                full_frames = _load_drive_frames(data_root, str(drive_id), "image_00")
+                if full_frames:
+                    gdf = _assign_frame_by_nearest_pose(gdf, data_root, {str(drive_id): full_frames})
+                else:
+                    gdf = _assign_frame_by_nearest_pose(gdf, data_root, by_drive)
             if "frame_id" not in gdf.columns:
                 gdf["frame_id"] = ""
             gdf.loc[gdf["frame_id"] == "", "frame_id"] = "unknown"
