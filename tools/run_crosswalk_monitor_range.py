@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import geopandas as gpd
 import numpy as np
@@ -197,6 +197,22 @@ def _mask_to_polygon(mask: np.ndarray, max_points: int = 4000) -> Polygon | None
     if hull is None or hull.is_empty or hull.geom_type != "Polygon":
         return None
     return hull
+
+
+def _geom_to_points_xy(geom: Polygon | LineString, max_points: int = 500) -> np.ndarray:
+    if geom is None or geom.is_empty:
+        return np.empty((0, 2), dtype=float)
+    coords = []
+    if isinstance(geom, Polygon):
+        coords = list(geom.exterior.coords)
+    elif isinstance(geom, LineString):
+        coords = list(geom.coords)
+    if not coords:
+        return np.empty((0, 2), dtype=float)
+    if len(coords) > max_points:
+        step = max(1, len(coords) // max_points)
+        coords = coords[::step]
+    return np.array([[float(x), float(y)] for x, y in coords], dtype=float)
 
 
 def _geom_to_image_points(
@@ -462,6 +478,44 @@ def _expand_bbox(bbox: List[float], margin: float, width: int, height: int) -> L
     if maxy <= miny:
         maxy = miny + 1.0
     return [minx, miny, maxx, maxy]
+
+
+def _shrink_bbox_to_max(bbox: List[float], max_side: float, width: int, height: int) -> List[float]:
+    minx, miny, maxx, maxy = bbox
+    cx = 0.5 * (minx + maxx)
+    cy = 0.5 * (miny + maxy)
+    w = maxx - minx
+    h = maxy - miny
+    side = max(w, h)
+    if side <= max_side:
+        return [minx, miny, maxx, maxy]
+    scale = max_side / side
+    half_w = 0.5 * w * scale
+    half_h = 0.5 * h * scale
+    minx = max(0.0, cx - half_w)
+    maxx = min(float(width - 1), cx + half_w)
+    miny = max(0.0, cy - half_h)
+    maxy = min(float(height - 1), cy + half_h)
+    if maxx <= minx:
+        maxx = minx + 1.0
+    if maxy <= miny:
+        maxy = miny + 1.0
+    return [minx, miny, maxx, maxy]
+
+
+def _crop_mask_to_bbox(mask: np.ndarray, bbox: List[float]) -> np.ndarray:
+    if mask is None or mask.size == 0:
+        return mask
+    if bbox is None or len(bbox) != 4:
+        return mask
+    minx, miny, maxx, maxy = [int(round(v)) for v in bbox]
+    minx = max(0, minx)
+    miny = max(0, miny)
+    maxx = min(mask.shape[1] - 1, maxx)
+    maxy = min(mask.shape[0] - 1, maxy)
+    cropped = np.zeros_like(mask, dtype=bool)
+    cropped[miny : maxy + 1, minx : maxx + 1] = mask[miny : maxy + 1, minx : maxx + 1]
+    return cropped
 
 
 def _bbox_contains_point(bbox: List[float], pt: Tuple[float, float]) -> bool:
@@ -1502,6 +1556,101 @@ def _align_rect_to_heading(rect: Polygon, heading_rad: float, snap_deg: float) -
     return affinity.rotate(rect, np.degrees(diff), origin=rect.centroid)
 
 
+def _pose_xy_yaw(pose: Tuple[float, ...] | None) -> Tuple[float, float, float] | None:
+    if pose is None:
+        return None
+    if len(pose) >= 6:
+        return float(pose[0]), float(pose[1]), float(pose[5])
+    if len(pose) >= 3:
+        return float(pose[0]), float(pose[1]), float(pose[2])
+    return None
+
+
+def _compute_road_heading_map(
+    pose_map: Dict[str, Tuple[float, ...] | None],
+    frame_start: int,
+    frame_end: int,
+    window_k: int,
+) -> Dict[str, float]:
+    headings: Dict[str, float] = {}
+    frames = list(range(frame_start, frame_end + 1))
+    for idx, frame in enumerate(frames):
+        frame_id = _normalize_frame_id(str(frame))
+        pose = _pose_xy_yaw(pose_map.get(frame_id))
+        if pose is None:
+            continue
+        x0, y0, yaw = pose
+        idx_prev = max(0, idx - window_k)
+        idx_next = min(len(frames) - 1, idx + window_k)
+        prev_pose = _pose_xy_yaw(pose_map.get(_normalize_frame_id(str(frames[idx_prev]))))
+        next_pose = _pose_xy_yaw(pose_map.get(_normalize_frame_id(str(frames[idx_next]))))
+        if prev_pose is not None and next_pose is not None and idx_next != idx_prev:
+            dx = next_pose[0] - prev_pose[0]
+            dy = next_pose[1] - prev_pose[1]
+            if abs(dx) > 1e-3 or abs(dy) > 1e-3:
+                headings[frame_id] = float(np.degrees(np.arctan2(dy, dx)))
+                continue
+        headings[frame_id] = float(np.degrees(yaw))
+    return headings
+
+
+def _pca_heading_rad(points_xy: np.ndarray) -> Optional[float]:
+    if points_xy is None or points_xy.shape[0] < 2:
+        return None
+    pts = points_xy.astype(float)
+    pts = pts[~np.isnan(pts).any(axis=1)]
+    if pts.shape[0] < 2:
+        return None
+    pts = pts - np.mean(pts, axis=0, keepdims=True)
+    cov = np.cov(pts.T)
+    try:
+        eigvals, eigvecs = np.linalg.eigh(cov)
+    except Exception:
+        return None
+    idx = int(np.argmax(eigvals))
+    vec = eigvecs[:, idx]
+    return float(np.arctan2(vec[1], vec[0]))
+
+
+def _fit_rect_fixed_heading(
+    points_xy: np.ndarray,
+    heading_deg: float,
+    trim_p: Tuple[float, float] = (5.0, 95.0),
+) -> Tuple[Optional[Polygon], float, float, Tuple[float, float], int]:
+    if points_xy is None or points_xy.shape[0] < 3:
+        return None, 0.0, 0.0, trim_p, 0
+    pts = points_xy.astype(float)
+    pts = pts[~np.isnan(pts).any(axis=1)]
+    if pts.shape[0] < 3:
+        return None, 0.0, 0.0, trim_p, int(pts.shape[0])
+    perp = np.deg2rad(float(heading_deg)) + np.pi / 2.0
+    u = np.array([np.cos(perp), np.sin(perp)], dtype=float)
+    v = np.array([-np.sin(perp), np.cos(perp)], dtype=float)
+    su = pts @ u
+    sv = pts @ v
+    p_lo, p_hi = trim_p
+    su_min, su_max = np.percentile(su, [p_lo, p_hi])
+    sv_min, sv_max = np.percentile(sv, [p_lo, p_hi])
+    rect_w = float(su_max - su_min)
+    rect_l = float(sv_max - sv_min)
+    if rect_w <= 0 or rect_l <= 0:
+        return None, 0.0, 0.0, trim_p, int(pts.shape[0])
+    corners = [
+        (su_min, sv_min),
+        (su_max, sv_min),
+        (su_max, sv_max),
+        (su_min, sv_max),
+        (su_min, sv_min),
+    ]
+    world = [(float(c[0] * u[0] + c[1] * v[0]), float(c[0] * u[1] + c[1] * v[1])) for c in corners]
+    rect = Polygon(world)
+    if not rect.is_valid:
+        rect = rect.buffer(0)
+    if rect is None or rect.is_empty or not rect.is_valid:
+        return None, 0.0, 0.0, trim_p, int(pts.shape[0])
+    return rect, rect_w, rect_l, trim_p, int(pts.shape[0])
+
+
 def _rect_metrics(geom: Polygon) -> dict:
     if geom is None or geom.is_empty:
         return {
@@ -1892,6 +2041,7 @@ def _build_lidar_candidate_for_frame(
         pose_for_world = pose_full if pose_full is not None else pose
         if pose_for_world is not None and calib is not None:
             mask_world_geom = _project_geometry_ground_plane(mask_geom, calib, pose_for_world, cam_to_pose)
+            stats["mask_world_geom"] = mask_world_geom
     if mask_geom is None or mask_geom.is_empty:
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
         return None, stats
@@ -2296,6 +2446,7 @@ def _build_lidar_candidates_for_range(
         if not accum_pts:
             continue
         merged = np.vstack(accum_pts)
+        stats["support_points_accum"] = merged
         if merged.shape[0] < min_support_points_accum:
             continue
         pose = pose_map.get(frame_id)
@@ -2943,6 +3094,119 @@ def _render_entities_overlay(
     base.save(out_path)
 
 
+def _render_heading_annotation(
+    out_path: Path,
+    base_path: Path,
+    image_path: str,
+    pose: Tuple[float, ...] | None,
+    calib: Dict[str, np.ndarray] | None,
+    road_heading_deg: float | None,
+    rect_geom: Polygon | None,
+    rect_w: float,
+    rect_l: float,
+    trim_p: Tuple[float, float] | None,
+    heading_diff: float | None,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if base_path.exists():
+        try:
+            base = Image.open(base_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    elif image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    if pose is None or calib is None or road_heading_deg is None:
+        _render_text_overlay(image_path, out_path, ["NO_HEADING_OR_POSE"])
+        return
+    pose_xy = _pose_xy_yaw(pose)
+    if pose_xy is None:
+        _render_text_overlay(image_path, out_path, ["NO_POSE"])
+        return
+    x0, y0, _yaw = pose_xy
+    road_rad = math.radians(float(road_heading_deg))
+    road_dir = np.array([math.cos(road_rad), math.sin(road_rad)], dtype=float)
+    road_pt = np.array([x0, y0], dtype=float)
+    road_line = np.vstack([road_pt, road_pt + 5.0 * road_dir])
+    road_world = np.column_stack([road_line, np.zeros((2, 1), dtype=float)])
+    proj = _project_world_to_image(road_world, pose, calib)
+    if proj.size > 0 and np.all(proj[:, 2]):
+        draw.line([(proj[0, 0], proj[0, 1]), (proj[1, 0], proj[1, 1])], fill=(255, 200, 0, 220), width=3)
+    if rect_geom is not None and not rect_geom.is_empty:
+        c = rect_geom.centroid
+        perp_rad = road_rad + math.pi / 2.0
+        u = np.array([math.cos(perp_rad), math.sin(perp_rad)], dtype=float)
+        rect_line = np.vstack([[c.x, c.y], [c.x + 3.0 * u[0], c.y + 3.0 * u[1]]])
+        rect_world = np.column_stack([rect_line, np.zeros((2, 1), dtype=float)])
+        proj = _project_world_to_image(rect_world, pose, calib)
+        if proj.size > 0 and np.all(proj[:, 2]):
+            draw.line([(proj[0, 0], proj[0, 1]), (proj[1, 0], proj[1, 1])], fill=(0, 255, 128, 220), width=3)
+    text = [
+        f"road_heading_deg={road_heading_deg:.1f}",
+        f"rect_w={rect_w:.2f} rect_l={rect_l:.2f}",
+        f"heading_diff={heading_diff:.1f}" if heading_diff is not None else "heading_diff=NA",
+        f"trim_p={trim_p}" if trim_p else "trim_p=NA",
+    ]
+    y = 10
+    for line in text:
+        draw.text((10, y), line, fill=(255, 255, 0, 220))
+        y += 22
+    base.save(out_path)
+
+
+def _write_fixed_heading_annotations(
+    outputs_dir: Path,
+    drive_id: str,
+    final_gdf: gpd.GeoDataFrame,
+    cluster_info: Dict[str, dict],
+    pose_map: Dict[str, Tuple[float, ...] | None],
+    road_heading_map: Dict[str, float],
+    calib: Dict[str, np.ndarray] | None,
+    index_lookup: Dict[Tuple[str, str], str],
+) -> Dict[str, List[str]]:
+    annotated: Dict[str, List[str]] = {}
+    if final_gdf.empty:
+        return annotated
+    qa_dir = outputs_dir / "qa_images" / drive_id
+    for _, row in final_gdf.iterrows():
+        cid = str(row.get("cluster_id") or "")
+        if not cid:
+            continue
+        info = cluster_info.get(cid, {})
+        frames = info.get("support_frames", [])[:10]
+        rect_geom = info.get("refined_geom")
+        rect_w = float(info.get("rect_w_m", 0.0))
+        rect_l = float(info.get("rect_l_m", 0.0))
+        trim_p = info.get("fixed_trim_p")
+        heading_diff = info.get("heading_diff")
+        heading_deg = info.get("road_heading_cluster_deg")
+        for frame_id in frames:
+            image_path = index_lookup.get((drive_id, str(frame_id)), "")
+            base_path = qa_dir / f"{frame_id}_overlay_gated.png"
+            out_path = qa_dir / f"{frame_id}_overlay_gated_annotated.png"
+            _render_heading_annotation(
+                out_path,
+                base_path,
+                image_path,
+                pose_map.get(str(frame_id)),
+                calib,
+                float(heading_deg) if heading_deg is not None else road_heading_map.get(str(frame_id)),
+                rect_geom,
+                rect_w,
+                rect_l,
+                trim_p if isinstance(trim_p, tuple) else None,
+                float(heading_diff) if heading_diff is not None else None,
+            )
+            annotated.setdefault(cid, []).append(str(out_path))
+    return annotated
+
+
 def _append_reject_reason(current: str, reason: str) -> str:
     tokens = [r for r in str(current or "").split(",") if r]
     if reason not in tokens:
@@ -3336,6 +3600,265 @@ def _refine_clusters(
     return gdf, cluster_info
 
 
+def _refine_clusters_fixed_heading(
+    candidate_gdf: gpd.GeoDataFrame,
+    cluster_info: Dict[str, dict],
+    pose_map: Dict[str, Tuple[float, ...] | None],
+    lidar_stats: Dict[str, dict],
+    roundtrip_by_frame: Dict[str, dict],
+    stage2_stats: Dict[Tuple[str, str], dict],
+    road_heading_map: Dict[str, float],
+    frame_start: int,
+    frame_end: int,
+    fixed_cfg: dict,
+    drive_id: str,
+) -> Dict[str, dict]:
+    if not cluster_info or candidate_gdf.empty:
+        return cluster_info
+    iou_thr = float(fixed_cfg.get("reproj_iou_bbox_min", 0.10))
+    iou_thr_fallback = float(fixed_cfg.get("reproj_iou_bbox_fallback", 0.05))
+    iou_thr_fallback2 = float(fixed_cfg.get("reproj_iou_bbox_fallback2", 0.02))
+    iou_thr_fallback3 = float(fixed_cfg.get("reproj_iou_bbox_fallback3", 0.0))
+    points_accum_min = int(fixed_cfg.get("points_support_accum_min", 10))
+    points_accum_min_fallback = int(
+        fixed_cfg.get("points_support_accum_min_fallback", max(3, int(points_accum_min * 0.5)))
+    )
+    topk = int(fixed_cfg.get("support_topk", 15))
+    min_support_frames = int(fixed_cfg.get("support_min_frames", 3))
+    trim_p = fixed_cfg.get("trim_p", (5.0, 95.0))
+    if isinstance(trim_p, list):
+        trim_p = tuple(trim_p)
+    rect_w_min = float(fixed_cfg.get("rect_w_min", 0.8))
+    rect_w_max = float(fixed_cfg.get("rect_w_max", 8.0))
+    rect_l_min = float(fixed_cfg.get("rect_l_min", 0.3))
+    rect_l_max = float(fixed_cfg.get("rect_l_max", 20.0))
+    heading_window = int(fixed_cfg.get("heading_window_k", 5))
+    heading_source_default = f"traj_window_k{heading_window}"
+    for cid, info in cluster_info.items():
+        members = info.get("member_indices", [])
+        if not members:
+            continue
+        subset = candidate_gdf.iloc[members].copy()
+        if subset.empty:
+            continue
+        subset["frame_id_norm"] = subset["frame_id"].apply(_normalize_frame_id)
+        support_candidates = []
+        for _, row in subset.iterrows():
+            frame_id = str(row.get("frame_id_norm") or "")
+            if not frame_id:
+                continue
+            if not in_range(frame_id, frame_start, frame_end):
+                continue
+            if int(row.get("geom_ok", 0)) != 1:
+                continue
+            if str(row.get("proj_method") or "") != "lidar":
+                continue
+            stage2 = stage2_stats.get((drive_id, frame_id), {})
+            if int(stage2.get("prop_drift_flag", 0)) == 1:
+                continue
+            pose = pose_map.get(frame_id)
+            if pose is None:
+                continue
+            x_ego = _x_ego_from_geom(pose, row.geometry)
+            if x_ego is None or x_ego <= 0:
+                continue
+            reproj = roundtrip_by_frame.get(frame_id, {})
+            iou_bbox = reproj.get("reproj_iou_bbox", None)
+            if iou_bbox is None or float(iou_bbox) < iou_thr:
+                continue
+            stats = lidar_stats.get(frame_id, {})
+            pts_accum = int(stats.get("points_support_accum", 0))
+            if pts_accum < points_accum_min:
+                continue
+            score = float(iou_bbox) + 0.01 * float(pts_accum)
+            support_candidates.append((score, frame_id))
+        if not support_candidates and iou_thr_fallback > 0:
+            for _, row in subset.iterrows():
+                frame_id = str(row.get("frame_id_norm") or "")
+                if not frame_id:
+                    continue
+                if not in_range(frame_id, frame_start, frame_end):
+                    continue
+                if int(row.get("geom_ok", 0)) != 1:
+                    continue
+                if str(row.get("proj_method") or "") != "lidar":
+                    continue
+                stage2 = stage2_stats.get((drive_id, frame_id), {})
+                if int(stage2.get("prop_drift_flag", 0)) == 1:
+                    continue
+                pose = pose_map.get(frame_id)
+                if pose is None:
+                    continue
+                x_ego = _x_ego_from_geom(pose, row.geometry)
+                if x_ego is None or x_ego <= 0:
+                    continue
+                reproj = roundtrip_by_frame.get(frame_id, {})
+                iou_bbox = reproj.get("reproj_iou_bbox", None)
+                if iou_bbox is None or float(iou_bbox) < iou_thr_fallback:
+                    continue
+                stats = lidar_stats.get(frame_id, {})
+                pts_accum = int(stats.get("points_support_accum", 0))
+                if pts_accum < points_accum_min:
+                    continue
+                score = float(iou_bbox) + 0.01 * float(pts_accum)
+                support_candidates.append((score, frame_id))
+        support_candidates.sort(key=lambda v: v[0], reverse=True)
+        if len(support_candidates) < min_support_frames and iou_thr_fallback2 > 0:
+            extra = []
+            for _, row in subset.iterrows():
+                frame_id = str(row.get("frame_id_norm") or "")
+                if not frame_id or frame_id in {f for _s, f in support_candidates}:
+                    continue
+                if not in_range(frame_id, frame_start, frame_end):
+                    continue
+                if int(row.get("geom_ok", 0)) != 1:
+                    continue
+                if str(row.get("proj_method") or "") != "lidar":
+                    continue
+                stage2 = stage2_stats.get((drive_id, frame_id), {})
+                if int(stage2.get("prop_drift_flag", 0)) == 1:
+                    continue
+                pose = pose_map.get(frame_id)
+                if pose is None:
+                    continue
+                x_ego = _x_ego_from_geom(pose, row.geometry)
+                if x_ego is None or x_ego <= 0:
+                    continue
+                reproj = roundtrip_by_frame.get(frame_id, {})
+                iou_bbox = reproj.get("reproj_iou_bbox", None)
+                if iou_bbox is None or float(iou_bbox) < iou_thr_fallback2:
+                    continue
+                stats = lidar_stats.get(frame_id, {})
+                pts_accum = int(stats.get("points_support_accum", 0))
+                min_pts = points_accum_min if len(support_candidates) >= min_support_frames else points_accum_min_fallback
+                if pts_accum < min_pts:
+                    continue
+                score = float(iou_bbox) + 0.01 * float(pts_accum)
+                extra.append((score, frame_id))
+            if extra:
+                support_candidates.extend(extra)
+                support_candidates.sort(key=lambda v: v[0], reverse=True)
+        if len(support_candidates) < min_support_frames and iou_thr_fallback3 >= 0:
+            extra = []
+            for _, row in subset.iterrows():
+                frame_id = str(row.get("frame_id_norm") or "")
+                if not frame_id or frame_id in {f for _s, f in support_candidates}:
+                    continue
+                if not in_range(frame_id, frame_start, frame_end):
+                    continue
+                if int(row.get("geom_ok", 0)) != 1:
+                    continue
+                if str(row.get("proj_method") or "") != "lidar":
+                    continue
+                stage2 = stage2_stats.get((drive_id, frame_id), {})
+                if int(stage2.get("prop_drift_flag", 0)) == 1:
+                    continue
+                pose = pose_map.get(frame_id)
+                if pose is None:
+                    continue
+                x_ego = _x_ego_from_geom(pose, row.geometry)
+                if x_ego is None or x_ego <= 0:
+                    continue
+                reproj = roundtrip_by_frame.get(frame_id, {})
+                iou_bbox = reproj.get("reproj_iou_bbox", None)
+                if iou_bbox is None or float(iou_bbox) < iou_thr_fallback3:
+                    continue
+                stats = lidar_stats.get(frame_id, {})
+                pts_accum = int(stats.get("points_support_accum", 0))
+                min_pts = points_accum_min_fallback
+                if pts_accum < min_pts:
+                    continue
+                score = float(iou_bbox) + 0.01 * float(pts_accum)
+                extra.append((score, frame_id))
+            if extra:
+                support_candidates.extend(extra)
+                support_candidates.sort(key=lambda v: v[0], reverse=True)
+        info["support_iou_thr_used"] = iou_thr if support_candidates else iou_thr_fallback
+        keep_frames = [fid for _s, fid in support_candidates[:topk]]
+        info["support_frames_topk"] = keep_frames
+        info["support_frames"] = keep_frames
+        info["frames_hit_support"] = len(keep_frames)
+        if not keep_frames:
+            continue
+        jitter_frames = subset[subset["frame_id_norm"].isin(keep_frames)]
+        jitter_geoms = jitter_frames.geometry.tolist()
+        if jitter_geoms:
+            jitter_centroids = np.array([[geom.centroid.x, geom.centroid.y] for geom in jitter_geoms], dtype=float)
+            jitter_center = np.median(jitter_centroids, axis=0)
+            jitter_dists = np.linalg.norm(jitter_centroids - jitter_center[None, :], axis=1)
+            info["jitter_p90"] = float(np.percentile(jitter_dists, 90)) if jitter_dists.size > 0 else 0.0
+        else:
+            info["jitter_p90"] = 0.0
+        heading_vals = [road_heading_map.get(fid) for fid in keep_frames if fid in road_heading_map]
+        heading_source = heading_source_default if heading_vals else ""
+        heading_deg = float(np.median(heading_vals)) if heading_vals else 0.0
+        points_list = []
+        for fid in keep_frames:
+            stats = lidar_stats.get(fid, {})
+            pts = stats.get("support_points_accum")
+            if isinstance(pts, np.ndarray) and pts.size > 0:
+                points_list.append(pts)
+            pts_single = stats.get("support_points")
+            if isinstance(pts_single, np.ndarray) and pts_single.size > 0:
+                points_list.append(pts_single)
+            mask_geom = stats.get("mask_world_geom")
+            if mask_geom is not None:
+                mask_pts = _geom_to_points_xy(mask_geom, max_points=500)
+                if mask_pts.size > 0:
+                    points_list.append(mask_pts)
+        if not points_list:
+            info["refined_geom"] = info.get("refined_geom")
+            continue
+        merged = np.vstack(points_list)
+        if not heading_vals:
+            heading_rad = _pca_heading_rad(merged)
+            if heading_rad is not None:
+                heading_deg = float(np.degrees(heading_rad))
+                heading_source = "pca_support"
+        rect_fixed, rect_w, rect_l, used_trim, used_count = _fit_rect_fixed_heading(
+            merged,
+            heading_deg,
+            trim_p=trim_p,
+        )
+        if rect_fixed is None:
+            continue
+        metric_bad = rect_w < rect_w_min or rect_w > rect_w_max or rect_l < rect_l_min or rect_l > rect_l_max
+        if metric_bad and rect_l > rect_l_max:
+            for tighten in [(10.0, 90.0), (15.0, 85.0)]:
+                rect_try, rect_w_try, rect_l_try, used_trim_try, used_count_try = _fit_rect_fixed_heading(
+                    merged,
+                    heading_deg,
+                    trim_p=tighten,
+                )
+                if rect_try is None:
+                    continue
+                if rect_w_try < rect_w_min or rect_w_try > rect_w_max or rect_l_try < rect_l_min or rect_l_try > rect_l_max:
+                    continue
+                rect_fixed = rect_try
+                rect_w = rect_w_try
+                rect_l = rect_l_try
+                used_trim = used_trim_try
+                used_count = used_count_try
+                metric_bad = False
+                break
+        hull = MultiPoint([Point(float(x), float(y)) for x, y in merged]).convex_hull
+        geom_area = float(hull.area) if hull is not None and not hull.is_empty else 0.0
+        rect_area = float(rect_fixed.area) if rect_fixed is not None else 0.0
+        rectangularity = geom_area / rect_area if rect_area > 0 else 0.0
+        heading_diff = 0.0
+        info["refined_geom"] = rect_fixed
+        info["rect_w_m"] = rect_w
+        info["rect_l_m"] = rect_l
+        info["rectangularity"] = rectangularity
+        info["heading_diff"] = heading_diff
+        info["road_heading_cluster_deg"] = heading_deg
+        info["road_heading_source"] = heading_source
+        info["fixed_trim_p"] = used_trim
+        info["fixed_points_used"] = used_count
+        info["metric_bad"] = 1 if metric_bad else 0
+    return cluster_info
+
+
 def _refresh_cluster_members(
     candidate_gdf: gpd.GeoDataFrame,
     cluster_info: Dict[str, dict],
@@ -3548,6 +4071,7 @@ def _build_review_final_layers(
             and heading_diff <= heading_max
             and jitter_p90 <= jitter_max
             and inside_ratio >= min_inside
+            and int(info.get("metric_bad", 0)) == 0
         ):
             final_rows.append(
                 {
@@ -3703,6 +4227,7 @@ def _build_trace_records(
     cluster_info: Dict[str, dict],
     lidar_stats: Dict[str, dict],
     pose_map: Dict[str, Tuple[float, float, float] | None],
+    road_heading_map: Dict[str, float],
     calib_ok: bool,
     stage2_stats: Dict[Tuple[str, str], dict],
     roundtrip_by_frame: Dict[str, dict],
@@ -3801,6 +4326,7 @@ def _build_trace_records(
         cluster_frames_hit = ""
         jitter_p90 = ""
         angle_jitter_p90 = ""
+        road_heading_cluster_deg = ""
         support_flag = 0
         rect_w_m = float(lidar_info.get("rect_w_m", 0.0))
         rect_l_m = float(lidar_info.get("rect_l_m", 0.0))
@@ -3813,6 +4339,7 @@ def _build_trace_records(
                 cluster_frames_hit = str(info.get("frames_hit_support", info.get("frames_hit", "")))
                 jitter_p90 = str(info.get("jitter_p90", ""))
                 angle_jitter_p90 = str(info.get("angle_jitter_p90", ""))
+                road_heading_cluster_deg = str(info.get("road_heading_cluster_deg", ""))
                 support_frames = set(info.get("support_frames", []))
                 support_flag = 1 if frame_id in support_frames else 0
             if rect_w_m <= 0 and "rect_w_m" in candidates.columns:
@@ -3835,6 +4362,9 @@ def _build_trace_records(
                 "raw_top_score": raw_info.get("raw_top_score", 0.0),
                 "source_frame_id": source_frame_id,
                 "x_ego": x_ego,
+                "road_heading_deg": road_heading_map.get(frame_id),
+                "road_heading_cluster_deg": road_heading_cluster_deg,
+                "road_heading_source": str(lidar_info.get("road_heading_source", "")),
                 "pose_ok": pose_ok,
                 "pose_source": pose_source,
                 "calib_ok": 1 if calib_ok else 0,
@@ -4150,6 +4680,46 @@ def _build_report(
         lines.append(f"- p50: {np.percentile(jitters, 50):.1f}")
         lines.append(f"- p90: {np.percentile(jitters, 90):.1f}")
         lines.append("")
+        lines.append("## fixed_rect_clusters_top10")
+        lines.append(
+            "| cluster_id | frames_hit_support | road_heading_cluster_deg | rect_w_m | rect_l_m | heading_diff | reproj_iou_bbox_p50 | reproj_iou_bbox_p90 | reject_reason_top3 |"
+        )
+        lines.append(
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+        )
+        cluster_rank = sorted(
+            cluster_info.items(),
+            key=lambda item: float(item[1].get("frames_hit_support", 0)),
+            reverse=True,
+        )[:10]
+        trace_by_cluster: Dict[str, List[dict]] = {}
+        for row in trace_records:
+            cid = str(row.get("cluster_id") or "")
+            if not cid:
+                continue
+            trace_by_cluster.setdefault(cid, []).append(row)
+        for cid, info in cluster_rank:
+            frames = set(str(f) for f in info.get("support_frames", []) if f)
+            rows = trace_by_cluster.get(cid, [])
+            iou_vals = [
+                float(r.get("reproj_iou_bbox"))
+                for r in rows
+                if r.get("frame_id") in frames
+                and isinstance(r.get("reproj_iou_bbox"), (int, float))
+            ]
+            iou_p50 = float(np.percentile(iou_vals, 50)) if iou_vals else 0.0
+            iou_p90 = float(np.percentile(iou_vals, 90)) if iou_vals else 0.0
+            reject_counts: Dict[str, int] = {}
+            for r in rows:
+                if r.get("frame_id") not in frames:
+                    continue
+                for reason in [t for t in str(r.get("reject_reasons") or "").split("|") if t]:
+                    reject_counts[reason] = reject_counts.get(reason, 0) + 1
+            top_reject = ",".join([k for k, _ in sorted(reject_counts.items(), key=lambda x: x[1], reverse=True)[:3]])
+            lines.append(
+                f"| {cid} | {info.get('frames_hit_support', 0)} | {info.get('road_heading_cluster_deg', '')} | {info.get('rect_w_m', 0.0):.2f} | {info.get('rect_l_m', 0.0):.2f} | {info.get('heading_diff', 0.0)} | {iou_p50:.3f} | {iou_p90:.3f} | {top_reject} |"
+            )
+        lines.append("")
         lines.append("## Top5 Near-Final Clusters")
         min_frames_final = int(final_cfg.get("min_frames_hit_final", 3))
         rect_min_w = float(final_cfg.get("rect_min_w", 1.5))
@@ -4346,6 +4916,8 @@ def _final_fail_reason(info: dict, final_cfg: dict) -> str:
     inside_ratio = float(inside_ratio) if inside_ratio is not None else 1.0
     if frames_hit_support < min_frames_final:
         return "frames_hit_support"
+    if int(info.get("metric_bad", 0)) == 1:
+        return "metric_bad"
     if not (rect_min_w <= rect_w <= rect_max_w) or not (rect_min_l <= rect_l <= rect_max_l):
         return "size"
     if rectangularity < rect_min:
@@ -4385,6 +4957,10 @@ def _write_cluster_summary(
         rectangularity = float(info.get("rectangularity", 0.0))
         jitter_p90 = float(info.get("jitter_p90", 0.0))
         angle_jitter_p90 = float(info.get("angle_jitter_p90", 0.0))
+        road_heading_cluster_deg = info.get("road_heading_cluster_deg")
+        heading_diff = info.get("heading_diff")
+        fixed_trim_p = info.get("fixed_trim_p")
+        fixed_points_used = info.get("fixed_points_used")
         final_pass = 1 if cid in final_clusters else 0
         fail_reason = "pass" if final_pass else _final_fail_reason(info, final_cfg)
         rows.append(
@@ -4406,6 +4982,10 @@ def _write_cluster_summary(
                 "refined_rect_l_m": refined_rect_l,
                 "refined_rect_area_m2": refined_rect_area,
                 "rectangularity": rectangularity,
+                "road_heading_cluster_deg": road_heading_cluster_deg,
+                "heading_diff": heading_diff,
+                "fixed_trim_p": fixed_trim_p,
+                "fixed_points_used": fixed_points_used,
                 "metric_bug_suspected": metric_bug_suspected,
                 "final_pass": final_pass,
                 "final_fail_reason": fail_reason,
@@ -4478,6 +5058,7 @@ def main() -> int:
     refine_cfg = merged.get("refine", {}) if isinstance(merged.get("refine"), dict) else {}
     final_cfg = merged.get("final_gate", {}) if isinstance(merged.get("final_gate"), dict) else {}
     review_cfg = merged.get("review_gate", {}) if isinstance(merged.get("review_gate"), dict) else {}
+    fixed_cfg = merged.get("fixed_rect", {}) if isinstance(merged.get("fixed_rect"), dict) else {}
 
     auto_range = bool(merged.get("auto_frame_range", False) or args.auto_frame_range)
     if auto_range:
@@ -4666,6 +5247,8 @@ def main() -> int:
                 pose_map[frame_id] = (x, y, yaw)
         except Exception:
             pose_map[frame_id] = None
+    heading_window = int(fixed_cfg.get("heading_window_k", 5))
+    road_heading_map = _compute_road_heading_map(pose_map, frame_start, frame_end, heading_window)
     calib_ok = calib is not None
     alignment_cfg = merged.get("alignment", {}) if isinstance(merged.get("alignment"), dict) else {}
     visible_cfg = alignment_cfg.get("visible_filter", {}) if isinstance(alignment_cfg.get("visible_filter"), dict) else {}
@@ -4707,6 +5290,10 @@ def main() -> int:
     for frame in range(frame_start, frame_end + 1):
         frame_id = _normalize_frame_id(str(frame))
         stats = lidar_stats.get(frame_id, {})
+        road_heading_deg = road_heading_map.get(frame_id)
+        if road_heading_deg is not None:
+            stats["road_heading_deg"] = float(road_heading_deg)
+            stats["road_heading_source"] = f"traj_window_k{heading_window}"
         raw_info = raw_stats.get(
             (drive_id, frame_id),
             {"raw_status": "unknown", "raw_has_crosswalk": 0.0},
@@ -4754,6 +5341,8 @@ def main() -> int:
             "lidar_fit_fail_reason": str(stats.get("lidar_fit_fail_reason", "")),
             "lidar_fit_source": str(stats.get("lidar_fit_source", "")),
             "lidar_fit_points_used": int(stats.get("lidar_fit_points_used", 0)),
+            "road_heading_deg": stats.get("road_heading_deg"),
+            "road_heading_source": stats.get("road_heading_source", ""),
             "geom_ok_accum": int(stats.get("geom_ok_accum", 0)),
             "geom_area_m2_accum": float(stats.get("geom_area_m2_accum", 0.0)),
             "rect_w_m_accum": float(stats.get("rect_w_m_accum", 0.0)),
@@ -4819,6 +5408,7 @@ def main() -> int:
     rect_min_support = float(stage2_cfg.get("rectangularity_min_support", 0.35))
     allow_gore_support = bool(stage2_cfg.get("allow_gore_like_support", False))
     roi_margin_px = int(stage2_cfg.get("roi_margin_px", stage2_cfg.get("ROI_MARGIN_PX", 80)))
+    roi_long_ratio = float(stage2_cfg.get("roi_long_ratio_max", 2.5))
     iou_prev_min = float(stage2_cfg.get("iou_prev_min", stage2_cfg.get("IOU_PREV_MIN", 0.05)))
     center_drift_ratio = float(stage2_cfg.get("center_drift_ratio", stage2_cfg.get("CENTER_DRIFT_RATIO", 0.35)))
     drift_consec_stop = int(stage2_cfg.get("drift_consec_stop", stage2_cfg.get("DRIFT_CONSEC_STOP", 3)))
@@ -4891,8 +5481,18 @@ def main() -> int:
             image_path = index_lookup.get((drive_id, seed_frame), "")
             width, height = _load_image_size(image_path)
             roi_bbox = None
+            roi_too_long = False
             if seed_bbox is not None and width > 0 and height > 0 and roi_margin_px > 0:
                 roi_bbox = _expand_bbox(seed_bbox, float(roi_margin_px), width, height)
+                seed_w = float(seed_bbox[2] - seed_bbox[0])
+                seed_h = float(seed_bbox[3] - seed_bbox[1])
+                seed_long = max(seed_w, seed_h)
+                roi_w = float(roi_bbox[2] - roi_bbox[0])
+                roi_h = float(roi_bbox[3] - roi_bbox[1])
+                roi_long = max(roi_w, roi_h)
+                if seed_long > 1.0 and roi_long > seed_long * roi_long_ratio:
+                    roi_bbox = _shrink_bbox_to_max(roi_bbox, seed_long * roi_long_ratio, width, height)
+                    roi_too_long = True
             prev_bbox = None
             prev_area = None
             consec_drift = 0
@@ -4901,6 +5501,8 @@ def main() -> int:
                 if frame_idx is None or frame_idx < window_start_idx or frame_idx > window_end_idx:
                     continue
                 mask = np.array(Image.open(mask_path).convert("L")) > 0
+                if roi_bbox is not None and roi_too_long:
+                    mask = _crop_mask_to_bbox(mask, roi_bbox)
                 area = mask_area_px(mask)
                 image_path = index_lookup.get((drive_id, frame_id), "")
                 width, height = _load_image_size(image_path)
@@ -4921,6 +5523,8 @@ def main() -> int:
                     center = _bbox_center(mask_bbox)
                     if not _bbox_contains_point(roi_bbox, center):
                         drift_reasons.append("roi_center")
+                if roi_too_long:
+                    drift_reasons.append("roi_too_long")
                 if prev_bbox is not None and mask_bbox is not None:
                     if _bbox_iou(prev_bbox, mask_bbox) < iou_prev_min:
                         drift_reasons.append("iou_prev")
@@ -5055,6 +5659,19 @@ def main() -> int:
         lidar_stats,
         bool(merged.get("roundtrip_only_raw_has", False)),
     )
+    cluster_info = _refine_clusters_fixed_heading(
+        candidate_gdf,
+        cluster_info,
+        pose_map,
+        lidar_stats,
+        roundtrip_by_frame,
+        stage2_stats,
+        road_heading_map,
+        frame_start,
+        frame_end,
+        fixed_cfg,
+        drive_id,
+    )
     roundtrip_path = outputs_dir / "roundtrip_metrics.csv"
     pd.DataFrame(roundtrip_rows).to_csv(roundtrip_path, index=False)
     proj_debug_frames = _select_proj_debug_frames(roundtrip_rows, lidar_stats, frame_start, frame_end)
@@ -5172,6 +5789,16 @@ def main() -> int:
         camera,
         stage2_overlay,
     )
+    _write_fixed_heading_annotations(
+        outputs_dir,
+        drive_id,
+        final_gdf,
+        cluster_info,
+        pose_map,
+        road_heading_map,
+        calib,
+        index_lookup,
+    )
 
     pose_source_label = "oxts_full" if lidar_world_mode == "fullpose" else "oxts"
     trace_records = _build_trace_records(
@@ -5185,6 +5812,7 @@ def main() -> int:
         cluster_info,
         lidar_stats,
         pose_map,
+        road_heading_map,
         calib_ok,
         stage2_stats,
         roundtrip_by_frame,
