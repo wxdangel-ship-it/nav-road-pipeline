@@ -1463,11 +1463,31 @@ def _build_lidar_candidate_for_frame(
         "points_in_mask_dilated": 0,
         "points_intensity_top": 0,
         "points_ground": 0,
+        "points_ground_global": 0,
+        "points_ground_local": 0,
+        "points_ground_plane": 0,
         "points_support": 0,
         "mask_dilate_px": int(lidar_cfg.get("MASK_DILATE_PX", 5)),
         "intensity_top_pct": 0,
         "ground_filter_used": 0,
         "ground_z": 0.0,
+        "ground_z_global": 0.0,
+        "ground_z_local": 0.0,
+        "ground_filter_mode": "",
+        "plane_ok": 0,
+        "plane_dist_p10": None,
+        "plane_dist_p50": None,
+        "plane_dist_p90": None,
+        "z_p01": None,
+        "z_p10": None,
+        "z_p50": None,
+        "z_p90": None,
+        "z_p99": None,
+        "dz_p01": None,
+        "dz_p10": None,
+        "dz_p50": None,
+        "dz_p90": None,
+        "dz_p99": None,
         "dbscan_points": 0,
         "geom_ok": 0,
         "geom_area_m2": 0.0,
@@ -1523,6 +1543,7 @@ def _build_lidar_candidate_for_frame(
     z_vals = points_world[:, 2]
     z_ground = float(np.percentile(z_vals, 10)) if z_vals.size > 0 else 0.0
     stats["ground_z"] = z_ground
+    stats["ground_z_global"] = z_ground
     ground_tol = float(lidar_cfg.get("GROUND_Z_TOL", 0.2))
     ground_mask = np.abs(z_vals - z_ground) < ground_tol
     stats["ground_filter_used"] = 1 if np.any(ground_mask) else 0
@@ -1622,16 +1643,69 @@ def _build_lidar_candidate_for_frame(
         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
         return None, stats
     base_indices = mask_hits if mask_hits else bbox_indices.tolist()
+    if base_indices:
+        base_z = z_vals[base_indices]
+        stats["z_p01"] = float(np.percentile(base_z, 1))
+        stats["z_p10"] = float(np.percentile(base_z, 10))
+        stats["z_p50"] = float(np.percentile(base_z, 50))
+        stats["z_p90"] = float(np.percentile(base_z, 90))
+        stats["z_p99"] = float(np.percentile(base_z, 99))
+        dz = base_z - z_ground
+        stats["dz_p01"] = float(np.percentile(dz, 1))
+        stats["dz_p10"] = float(np.percentile(dz, 10))
+        stats["dz_p50"] = float(np.percentile(dz, 50))
+        stats["dz_p90"] = float(np.percentile(dz, 90))
+        stats["dz_p99"] = float(np.percentile(dz, 99))
     vals = intensities[base_indices]
     thr = np.percentile(vals, 100 - intensity_pct) if vals.size > 0 else None
     intensity_idx = [base_indices[i] for i in range(len(base_indices)) if thr is None or vals[i] >= thr]
     stats["points_intensity_top"] = int(len(intensity_idx))
-    ground_idx = [idx for idx in intensity_idx if ground_mask[idx]]
-    stats["points_ground"] = int(len(ground_idx))
-    support_idx = ground_idx
+    ground_idx_global = [idx for idx in intensity_idx if ground_mask[idx]]
+    stats["points_ground"] = int(len(ground_idx_global))
+    stats["points_ground_global"] = int(len(ground_idx_global))
+    support_idx = ground_idx_global
+    ground_idx_local = []
+    if intensity_idx:
+        z_local = float(np.percentile(z_vals[intensity_idx], 10))
+        stats["ground_z_local"] = z_local
+        ground_idx_local = [idx for idx in intensity_idx if abs(z_vals[idx] - z_local) < ground_tol]
+        stats["points_ground_local"] = int(len(ground_idx_local))
+    ground_idx_plane = []
+    if stats["points_ground_local"] > 0:
+        support_idx = ground_idx_local
+        stats["ground_filter_mode"] = "local"
+        stats["ground_filter_used"] = 1
+    else:
+        if len(intensity_idx) >= 3:
+            xs = x_ego[intensity_idx]
+            ys = y_ego[intensity_idx]
+            zs = z_vals[intensity_idx]
+            a_mat = np.column_stack([xs, ys, np.ones_like(xs)])
+            try:
+                coeff, _, _, _ = np.linalg.lstsq(a_mat, zs, rcond=None)
+                a, b, c0 = coeff.tolist()
+                denom = math.sqrt(a * a + b * b + 1.0)
+                dists = np.abs((a * xs + b * ys + c0) - zs) / denom
+                stats["plane_dist_p10"] = float(np.percentile(dists, 10))
+                stats["plane_dist_p50"] = float(np.percentile(dists, 50))
+                stats["plane_dist_p90"] = float(np.percentile(dists, 90))
+                ground_idx_plane = [intensity_idx[i] for i, d in enumerate(dists) if d < ground_tol]
+            except Exception:
+                ground_idx_plane = []
+        stats["points_ground_plane"] = int(len(ground_idx_plane))
+        if stats["points_ground_plane"] > 0:
+            support_idx = ground_idx_plane
+            stats["ground_filter_mode"] = "plane"
+            stats["ground_filter_used"] = 1
+            stats["plane_ok"] = 1
+        else:
+            support_idx = []
     min_points_mask = int(lidar_cfg.get("MIN_POINTS_MASK", 5))
     if len(support_idx) < min_points_mask:
-        stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
+        if stats.get("points_ground_local", 0) == 0 and stats.get("points_ground_plane", 0) == 0:
+            stats["drop_reason_code"] = "LIDAR_NO_POINTS_GROUND"
+        else:
+            stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
         return None, stats
 
     support_pts_all = points_world[support_idx][:, :2]
@@ -3228,6 +3302,18 @@ def _build_trace_records(
                 "points_in_mask_dilated": int(lidar_info.get("points_in_mask_dilated", 0)),
                 "points_intensity_top": int(lidar_info.get("points_intensity_top", 0)),
                 "points_ground": int(lidar_info.get("points_ground", 0)),
+                "points_ground_global": int(lidar_info.get("points_ground_global", 0)),
+                "points_ground_local": int(lidar_info.get("points_ground_local", 0)),
+                "points_ground_plane": int(lidar_info.get("points_ground_plane", 0)),
+                "ground_z_global": lidar_info.get("ground_z_global"),
+                "ground_z_local": lidar_info.get("ground_z_local"),
+                "z_p10": lidar_info.get("z_p10"),
+                "z_p50": lidar_info.get("z_p50"),
+                "z_p90": lidar_info.get("z_p90"),
+                "plane_ok": int(lidar_info.get("plane_ok", 0)),
+                "plane_dist_p10": lidar_info.get("plane_dist_p10"),
+                "plane_dist_p50": lidar_info.get("plane_dist_p50"),
+                "plane_dist_p90": lidar_info.get("plane_dist_p90"),
                 "points_support": int(lidar_info.get("points_support", 0)),
                 "points_support_accum": int(lidar_info.get("points_support_accum", 0)),
                 "accum_frames_used": int(lidar_info.get("accum_frames_used", 0)),
@@ -3972,6 +4058,25 @@ def main() -> int:
             "points_in_mask_dilated": int(stats.get("points_in_mask_dilated", 0)),
             "points_intensity_top": int(stats.get("points_intensity_top", 0)),
             "points_ground": int(stats.get("points_ground", 0)),
+            "points_ground_global": int(stats.get("points_ground_global", 0)),
+            "points_ground_local": int(stats.get("points_ground_local", 0)),
+            "points_ground_plane": int(stats.get("points_ground_plane", 0)),
+            "ground_z_global": stats.get("ground_z_global"),
+            "ground_z_local": stats.get("ground_z_local"),
+            "z_p01": stats.get("z_p01"),
+            "z_p10": stats.get("z_p10"),
+            "z_p50": stats.get("z_p50"),
+            "z_p90": stats.get("z_p90"),
+            "z_p99": stats.get("z_p99"),
+            "dz_p01": stats.get("dz_p01"),
+            "dz_p10": stats.get("dz_p10"),
+            "dz_p50": stats.get("dz_p50"),
+            "dz_p90": stats.get("dz_p90"),
+            "dz_p99": stats.get("dz_p99"),
+            "plane_ok": int(stats.get("plane_ok", 0)),
+            "plane_dist_p10": stats.get("plane_dist_p10"),
+            "plane_dist_p50": stats.get("plane_dist_p50"),
+            "plane_dist_p90": stats.get("plane_dist_p90"),
             "points_support": int(stats.get("points_support", 0)),
             "points_support_accum": int(stats.get("points_support_accum", 0)),
             "proj_method": str(stats.get("proj_method", "")),
