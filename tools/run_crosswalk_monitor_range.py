@@ -25,6 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from tools.utils.range_filter import in_range
 from pipeline.datasets.kitti360_io import (
     load_kitti360_calib,
     load_kitti360_cam_to_pose_key,
@@ -689,6 +690,210 @@ def _render_lidar_proj_debug(
     img.save(out_path)
 
 
+def _iter_polygon_points(geom: Polygon | None) -> List[List[Tuple[float, float]]]:
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        return [[(float(x), float(y)) for x, y in geom.exterior.coords]]
+    if geom.geom_type == "MultiPolygon":
+        rings = []
+        for poly in geom.geoms:
+            if poly is None or poly.is_empty:
+                continue
+            rings.append([(float(x), float(y)) for x, y in poly.exterior.coords])
+        return rings
+    return []
+
+
+def _render_mask_and_lidar_debug(
+    image_path: str,
+    out_path: Path,
+    raw_info: dict | None,
+    points_world: np.ndarray,
+    pose: Tuple[float, ...] | None,
+    calib: Dict[str, np.ndarray] | None,
+    max_points: int = 5000,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if not image_path or not Path(image_path).exists():
+        return
+    if pose is None or calib is None:
+        _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+        return
+    base = Image.open(image_path).convert("RGBA")
+    draw = ImageDraw.Draw(base, "RGBA")
+    raw_gdf = raw_info.get("gdf") if raw_info else None
+    if raw_gdf is not None and not raw_gdf.empty:
+        for geom in raw_gdf.geometry:
+            for ring in _iter_polygon_points(geom):
+                if len(ring) >= 2:
+                    draw.line(ring, fill=(255, 255, 0, 200), width=2)
+    bbox_px = raw_info.get("bbox_px") if raw_info else None
+    if isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4:
+        draw.rectangle(bbox_px, outline=(255, 255, 0, 200), width=2)
+    pts = points_world
+    if pts is not None and pts.size > 0:
+        if len(pts) > max_points:
+            idx = np.random.choice(len(pts), size=max_points, replace=False)
+            pts = pts[idx]
+        proj = _project_world_to_image(pts, pose, calib)
+        valid = proj[:, 2].astype(bool)
+        u = proj[:, 0][valid]
+        v = proj[:, 1][valid]
+        for x, y in zip(u, v):
+            draw.point((float(x), float(y)), fill=(0, 255, 0, 120))
+    base.save(out_path)
+
+
+def _render_reproj_vs_mask_debug(
+    image_path: str,
+    out_path: Path,
+    raw_info: dict | None,
+    geom: Polygon | None,
+    pose: Tuple[float, ...] | None,
+    calib: Dict[str, np.ndarray] | None,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if not image_path or not Path(image_path).exists():
+        return
+    if pose is None or calib is None:
+        _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+        return
+    base = Image.open(image_path).convert("RGBA")
+    draw = ImageDraw.Draw(base, "RGBA")
+    raw_gdf = raw_info.get("gdf") if raw_info else None
+    if raw_gdf is not None and not raw_gdf.empty:
+        for geom_raw in raw_gdf.geometry:
+            for ring in _iter_polygon_points(geom_raw):
+                if len(ring) >= 2:
+                    draw.line(ring, fill=(255, 255, 0, 200), width=2)
+    bbox_px = raw_info.get("bbox_px") if raw_info else None
+    if isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4:
+        draw.rectangle(bbox_px, outline=(255, 255, 0, 200), width=2)
+    if geom is not None and not geom.is_empty:
+        pts = _geom_to_image_points(geom, pose, calib)
+        if len(pts) >= 2:
+            draw.line(pts + [pts[0]], fill=(0, 200, 255, 220), width=2)
+    else:
+        draw.text((10, 10), "NO_GEOM", fill=(255, 128, 0, 220))
+    base.save(out_path)
+
+
+def _select_proj_debug_frames(
+    roundtrip_rows: List[dict],
+    lidar_stats: Dict[str, dict],
+    frame_start: int,
+    frame_end: int,
+) -> List[int]:
+    frames = set()
+    iou_rows = []
+    for row in roundtrip_rows:
+        fid = _parse_frame_id(row.get("frame_id"))
+        iou = row.get("reproj_iou_bbox")
+        if fid is None or not isinstance(iou, (int, float)):
+            continue
+        iou_rows.append((fid, float(iou)))
+    if iou_rows:
+        iou_rows.sort(key=lambda v: v[1])
+        frames.add(iou_rows[0][0])
+        if len(iou_rows) > 1:
+            frames.add(iou_rows[1][0])
+        frames.add(iou_rows[-1][0])
+        if len(iou_rows) > 1:
+            frames.add(iou_rows[-2][0])
+    accum_rows = []
+    for frame in range(frame_start, frame_end + 1):
+        frame_id = _normalize_frame_id(str(frame))
+        stats = lidar_stats.get(frame_id, {})
+        if "points_support_accum" not in stats:
+            continue
+        accum_rows.append((frame, float(stats.get("points_support_accum", 0))))
+    if accum_rows:
+        accum_rows.sort(key=lambda v: v[1])
+        frames.add(accum_rows[0][0])
+        frames.add(accum_rows[-1][0])
+    return sorted([f for f in frames if in_range(f, frame_start, frame_end)])
+
+
+def _write_proj_debug_bundle(
+    outputs_dir: Path,
+    drive_id: str,
+    frames: List[int],
+    candidate_gdf: gpd.GeoDataFrame,
+    raw_frames: Dict[Tuple[str, str], dict],
+    pose_map: Dict[str, Tuple[float, ...] | None],
+    calib: Dict[str, np.ndarray] | None,
+    index_lookup: Dict[Tuple[str, str], str],
+    lidar_stats: Dict[str, dict],
+    kitti_root: Path,
+    lidar_world_mode: str,
+    camera: str,
+    roundtrip_by_frame: Dict[str, dict],
+) -> None:
+    if not frames:
+        return
+    debug_dir = outputs_dir / "proj_debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    if candidate_gdf is None or candidate_gdf.empty:
+        candidate_gdf = gpd.GeoDataFrame(
+            columns=["frame_id", "frame_id_norm"],
+            geometry=[],
+            crs="EPSG:32632",
+        )
+    if "frame_id_norm" not in candidate_gdf.columns:
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+    for frame in frames:
+        frame_id = _normalize_frame_id(str(frame))
+        image_path = index_lookup.get((drive_id, frame_id), "")
+        if not image_path:
+            continue
+        raw_info = raw_frames.get((drive_id, frame_id), {})
+        candidates = candidate_gdf[candidate_gdf["frame_id_norm"] == frame_id]
+        row = _select_roundtrip_candidate(candidates)
+        geom = row.geometry if row is not None else None
+        pose = pose_map.get(frame_id)
+        try:
+            points_world = load_kitti360_lidar_points_world(
+                kitti_root,
+                drive_id,
+                frame_id,
+                mode=lidar_world_mode,
+                cam_id=camera,
+            )
+        except Exception:
+            points_world = np.empty((0, 3), dtype=float)
+        lidar_on_path = debug_dir / f"{frame_id}_lidar_on_image.png"
+        _render_lidar_proj_debug(image_path, lidar_on_path, points_world, pose, calib)
+        mask_lidar_path = debug_dir / f"{frame_id}_mask_and_lidar.png"
+        _render_mask_and_lidar_debug(image_path, mask_lidar_path, raw_info, points_world, pose, calib)
+        reproj_path = debug_dir / f"{frame_id}_reproj_vs_mask.png"
+        _render_reproj_vs_mask_debug(image_path, reproj_path, raw_info, geom, pose, calib)
+        calib_payload = {}
+        if calib is not None:
+            calib_payload = {k: v.tolist() for k, v in calib.items() if isinstance(v, np.ndarray)}
+        lidar_info = lidar_stats.get(frame_id, {})
+        payload = {
+            "frame_id": frame_id,
+            "image_path": image_path,
+            "pose": list(pose) if pose is not None else None,
+            "proj_method": str(row.get("proj_method", "")) if row is not None else "",
+            "geom_ok": int(row.get("geom_ok", 0)) if row is not None else 0,
+            "raw_bbox_px": raw_info.get("bbox_px") if raw_info else None,
+            "lidar": {
+                "points_support": int(lidar_info.get("points_support", 0) or 0),
+                "points_support_accum": int(lidar_info.get("points_support_accum", 0) or 0),
+                "lidar_fit_source": str(lidar_info.get("lidar_fit_source", "")),
+            },
+            "roundtrip": roundtrip_by_frame.get(frame_id, {}),
+            "calib": calib_payload,
+        }
+        debug_json = debug_dir / f"proj_debug_{frame_id}.json"
+        debug_json.write_text(json.dumps(payload, ensure_ascii=True, indent=2) + "\n", encoding="utf-8")
+
+
 def _select_roundtrip_candidate(candidates: gpd.GeoDataFrame) -> pd.Series | None:
     if candidates is None or candidates.empty:
         return None
@@ -716,10 +921,17 @@ def _compute_roundtrip_metrics_for_range(
 ) -> Tuple[List[dict], Dict[str, dict]]:
     rows = []
     by_frame: Dict[str, dict] = {}
-    if candidate_gdf.empty:
-        return rows, by_frame
-    candidate_gdf = candidate_gdf.copy()
-    candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+    if candidate_gdf is None or candidate_gdf.empty:
+        candidate_gdf = gpd.GeoDataFrame(
+            columns=["frame_id", "frame_id_norm"],
+            geometry=[],
+            crs="EPSG:32632",
+        )
+    else:
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+    if "frame_id_norm" not in candidate_gdf.columns:
+        candidate_gdf["frame_id_norm"] = ""
     for frame in range(frame_start, frame_end + 1):
         frame_id = _normalize_frame_id(str(frame))
         candidates = candidate_gdf[candidate_gdf["frame_id_norm"] == frame_id]
@@ -760,6 +972,9 @@ def _compute_roundtrip_metrics_for_range(
             "reproj_area_ratio": area_ratio,
             "points_in_bbox": int(lidar_info.get("points_in_bbox", 0) or 0),
             "points_in_mask": int(lidar_info.get("points_in_mask", 0) or 0),
+            "points_support": int(lidar_info.get("points_support", 0) or 0),
+            "points_support_accum": int(lidar_info.get("points_support_accum", 0) or 0),
+            "lidar_fit_source": str(lidar_info.get("lidar_fit_source", "")),
             "proj_in_image_ratio_visible": float(lidar_info.get("proj_in_image_ratio_visible", 0.0) or 0.0),
         }
         rows.append(record)
@@ -944,9 +1159,7 @@ def _assert_frame_evidence_frame_id(
             failed = True
             continue
         parsed = gdf["frame_id"].apply(_parse_frame_id)
-        mask = parsed.notna()
-        mask &= parsed >= frame_start
-        mask &= parsed <= frame_end
+        mask = parsed.apply(lambda v: in_range(v, frame_start, frame_end))
         gdf = gdf.loc[mask]
         total = len(gdf)
         distinct = gdf["frame_id"].nunique() if total else 0
@@ -2068,7 +2281,7 @@ def _build_lidar_candidates_for_range(
         used_frames = []
         for offset in range(-accum_pre, accum_post + 1):
             cand_frame = frame + offset
-            if cand_frame < frame_start or cand_frame > frame_end:
+            if not in_range(cand_frame, frame_start, frame_end):
                 continue
             cand_id = _normalize_frame_id(str(cand_frame))
             cand_stats = stats_by_frame.get(cand_id)
@@ -2210,6 +2423,141 @@ def _ensure_wgs84_range(gdf: gpd.GeoDataFrame) -> bool:
         return False
     minx, miny, maxx, maxy = bounds
     return -180.0 <= minx <= 180.0 and -180.0 <= maxx <= 180.0 and -90.0 <= miny <= 90.0 and -90.0 <= maxy <= 90.0
+
+
+def _assert_frame_range(
+    outputs_dir: Path,
+    drive_id: str,
+    frame_start: int,
+    frame_end: int,
+    trace_path: Path,
+    candidate_gdf: gpd.GeoDataFrame,
+    review_gdf: gpd.GeoDataFrame,
+    final_gdf: gpd.GeoDataFrame,
+    qa_index_path: Path,
+) -> None:
+    violations = []
+    lines = []
+
+    def _record_range(name: str, frames: List[int]) -> None:
+        if not frames:
+            lines.append(f"- {name}: min_frame_id=NA max_frame_id=NA")
+            return
+        lines.append(f"- {name}: min_frame_id={min(frames)} max_frame_id={max(frames)}")
+
+    def _collect_frames(values: List[object]) -> List[int]:
+        frames = []
+        for v in values:
+            try:
+                frames.append(int(str(v)))
+            except Exception:
+                continue
+        return frames
+
+    # trace
+    if trace_path.exists():
+        trace_df = pd.read_csv(trace_path)
+        trace_frames = _collect_frames(trace_df.get("frame_id", []).tolist())
+        _record_range("crosswalk_trace.csv", trace_frames)
+        for _, row in trace_df.iterrows():
+            frame_id = row.get("frame_id")
+            if not in_range(frame_id, frame_start, frame_end):
+                violations.append(
+                    {
+                        "frame_id": frame_id,
+                        "source_stage": "trace",
+                        "cluster_id": row.get("cluster_id", ""),
+                    }
+                )
+    else:
+        lines.append("- crosswalk_trace.csv: missing")
+
+    # gpkg layers
+    for name, gdf in [
+        ("crosswalk_candidate_poly", candidate_gdf),
+        ("crosswalk_review_poly", review_gdf),
+        ("crosswalk_poly", final_gdf),
+    ]:
+        frame_col = gdf.get("frame_id") if not gdf.empty else None
+        frames = _collect_frames(frame_col.tolist()) if frame_col is not None else []
+        _record_range(name, frames)
+        if gdf.empty:
+            continue
+        for _, row in gdf.iterrows():
+            frame_id = row.get("frame_id")
+            if not in_range(frame_id, frame_start, frame_end):
+                violations.append(
+                    {
+                        "frame_id": frame_id,
+                        "source_stage": row.get("source", row.get("qa_flag", name)),
+                        "cluster_id": row.get("cluster_id", ""),
+                    }
+                )
+
+    # qa_index
+    if qa_index_path.exists():
+        qa_gdf = gpd.read_file(qa_index_path)
+        qa_frames = _collect_frames(qa_gdf.get("frame_id", []).tolist()) if not qa_gdf.empty else []
+        _record_range("qa_index_wgs84.geojson", qa_frames)
+        for _, row in qa_gdf.iterrows():
+            frame_id = row.get("frame_id")
+            if not in_range(frame_id, frame_start, frame_end):
+                violations.append(
+                    {
+                        "frame_id": frame_id,
+                        "source_stage": "qa_index",
+                        "cluster_id": row.get("cluster_id", ""),
+                    }
+                )
+    else:
+        lines.append("- qa_index_wgs84.geojson: missing")
+
+    # qa_images
+    qa_dir = outputs_dir / "qa_images" / drive_id
+    qa_frames = []
+    if qa_dir.exists():
+        for path in qa_dir.glob("*.png"):
+            frame_token = path.stem.split("_", 1)[0]
+            try:
+                qa_frames.append(int(frame_token))
+            except Exception:
+                continue
+            if not in_range(frame_token, frame_start, frame_end):
+                violations.append(
+                    {
+                        "frame_id": frame_token,
+                        "source_stage": "qa_images",
+                        "cluster_id": "",
+                    }
+                )
+    _record_range("qa_images", qa_frames)
+
+    assert_path = outputs_dir / "frame_range_assert.txt"
+    assert_lines = ["# Frame Range Assert", f"- frame_start: {frame_start}", f"- frame_end: {frame_end}", ""]
+    assert_lines.append("## Range Summary")
+    assert_lines.extend(lines)
+    if violations:
+        assert_lines.append("")
+        assert_lines.append("## Violations (first 20)")
+        for item in violations[:20]:
+            assert_lines.append(
+                f"- frame_id={item['frame_id']} source_stage={item['source_stage']} cluster_id={item['cluster_id']}"
+            )
+    assert_path.write_text("\n".join(assert_lines) + "\n", encoding="utf-8")
+    if violations:
+        raise ValueError("frame range assertion failed")
+
+
+def _filter_gdf_by_frame_range(
+    gdf: gpd.GeoDataFrame,
+    frame_start: int,
+    frame_end: int,
+) -> gpd.GeoDataFrame:
+    if gdf.empty or "frame_id" not in gdf.columns:
+        return gdf
+    gdf = gdf.copy()
+    mask = gdf["frame_id"].apply(lambda v: in_range(v, frame_start, frame_end))
+    return gdf.loc[mask].reset_index(drop=True)
 
 
 def _write_crosswalk_gpkg(
@@ -2600,6 +2948,32 @@ def _append_reject_reason(current: str, reason: str) -> str:
     if reason not in tokens:
         tokens.append(reason)
     return ",".join(tokens)
+
+
+def _mark_behind_ego(
+    candidate_gdf: gpd.GeoDataFrame,
+    pose_map: Dict[str, Tuple[float, float, float] | Tuple[float, float, float, float, float, float] | None],
+) -> gpd.GeoDataFrame:
+    if candidate_gdf.empty:
+        return candidate_gdf
+    candidate_gdf = candidate_gdf.copy()
+    candidate_gdf["x_ego"] = candidate_gdf.get("x_ego", np.nan)
+    candidate_gdf["reject_reasons"] = candidate_gdf.get("reject_reasons", "").fillna("").astype(str)
+    for idx, row in candidate_gdf.iterrows():
+        frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
+        pose = pose_map.get(frame_id)
+        geom = row.geometry
+        x_ego = _x_ego_from_geom(pose, geom)
+        if x_ego is None:
+            continue
+        candidate_gdf.at[idx, "x_ego"] = float(x_ego)
+        if x_ego < 0:
+            candidate_gdf.at[idx, "reject_reasons"] = _append_reject_reason(
+                candidate_gdf.at[idx, "reject_reasons"], "behind_ego"
+            )
+            candidate_gdf.at[idx, "geom_ok"] = 0
+            candidate_gdf.at[idx, "qa_flag"] = "behind_ego"
+    return candidate_gdf
 
 
 def _is_gore_like(rect_w: float, rect_l: float, rectangularity: float) -> bool:
@@ -3080,12 +3454,32 @@ def _stage2_roi_refine(
     return merged, stage2_stats
 
 
+def _select_frame_in_range(
+    frames: List[object],
+    frame_start: int,
+    frame_end: int,
+) -> str:
+    hits = []
+    for frame in frames:
+        if in_range(frame, frame_start, frame_end):
+            try:
+                hits.append(int(str(frame)))
+            except Exception:
+                continue
+    if not hits:
+        return ""
+    hits.sort()
+    return _normalize_frame_id(str(hits[len(hits) // 2]))
+
+
 def _build_review_final_layers(
     drive_id: str,
     candidate_gdf: gpd.GeoDataFrame,
     cluster_info: Dict[str, dict],
     final_cfg: dict,
     review_cfg: dict,
+    frame_start: int,
+    frame_end: int,
 ) -> Tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     if not cluster_info:
         empty = gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:32632")
@@ -3104,6 +3498,7 @@ def _build_review_final_layers(
     min_frames_review = int(review_cfg.get("min_frames_hit_review", 2))
     for cid, info in cluster_info.items():
         geom = info.get("refined_geom")
+        subset = None
         if (geom is None or geom.is_empty) and "member_indices" in info and not candidate_gdf.empty:
             subset = candidate_gdf.iloc[info["member_indices"]]
             union_geom = subset.geometry.union_all()
@@ -3119,6 +3514,14 @@ def _build_review_final_layers(
         jitter_p90 = float(info.get("jitter_p90", 0.0))
         inside_ratio = info.get("inside_road_ratio")
         inside_ratio = float(inside_ratio) if inside_ratio is not None else 1.0
+        frame_id = _select_frame_in_range(info.get("support_frames", []), frame_start, frame_end)
+        if not frame_id:
+            if subset is None and "member_indices" in info and not candidate_gdf.empty:
+                subset = candidate_gdf.iloc[info["member_indices"]]
+            if subset is not None and not subset.empty and "frame_id" in subset.columns:
+                frame_id = _select_frame_in_range(subset["frame_id"].tolist(), frame_start, frame_end)
+        if not frame_id:
+            frame_id = _normalize_frame_id(str(frame_start))
         if frames_hit_all >= min_frames_review:
             review_rows.append(
                 {
@@ -3126,6 +3529,7 @@ def _build_review_final_layers(
                     "properties": {
                         "entity_id": f"{drive_id}_crosswalk_review_{cid}",
                         "drive_id": drive_id,
+                        "frame_id": frame_id,
                         "cluster_id": cid,
                         "frames_hit": frames_hit_all,
                         "frames_hit_support": frames_hit_support,
@@ -3151,6 +3555,7 @@ def _build_review_final_layers(
                     "properties": {
                         "entity_id": f"{drive_id}_crosswalk_final_{cid}",
                         "drive_id": drive_id,
+                        "frame_id": frame_id,
                         "cluster_id": cid,
                         "frames_hit": frames_hit_all,
                         "frames_hit_support": frames_hit_support,
@@ -3497,6 +3902,8 @@ def _build_trace_records(
                 "prop_area_px": float(stage2.get("prop_area_px", 0.0)),
                 "prop_drift_flag": int(stage2.get("prop_drift_flag", 0)),
                 "prop_reason": str(stage2.get("prop_reason", "")),
+                "prop_window_start": str(stage2.get("prop_window_start", "")),
+                "prop_window_end": str(stage2.get("prop_window_end", "")),
                 "frames_hit_support_after": cluster_frames_hit,
                 "candidate_written": 1 if cand_ids else 0,
                 "candidate_count": candidate_count,
@@ -3540,6 +3947,9 @@ def _build_report(
     raw_has_crosswalk_count = len(
         [r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1]
     )
+    behind_ego_count = len(
+        [r for r in trace_records if r.get("x_ego") is not None and r.get("x_ego") < 0]
+    )
     lines.append("## Runtime Config Snapshot")
     if runtime_snapshot:
         for key in sorted(runtime_snapshot.keys()):
@@ -3552,6 +3962,7 @@ def _build_report(
     lines.append(f"- scan_stride: {scan_stride}")
     lines.append(f"- scanned_frames_total: {scanned_frames_total}")
     lines.append(f"- raw_has_crosswalk_count: {raw_has_crosswalk_count}")
+    lines.append(f"- behind_ego_count: {behind_ego_count}")
     lines.append("")
     n_pos = len([r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1 and r.get("raw_status") in {"ok", "on_demand_infer_ok"}])
     n_miss = len([r for r in trace_records if int(r.get("raw_has_crosswalk", 0)) == 1 and r.get("raw_status") in {"ok", "on_demand_infer_ok"} and int(r.get("candidate_written", 0)) == 0])
@@ -4382,6 +4793,7 @@ def main() -> int:
         candidate_gdf["rect_l_m"] = candidate_gdf.get("rect_l_m", 0.0)
         candidate_gdf["rectangularity"] = candidate_gdf.get("rectangularity", 0.0)
         candidate_gdf["reject_reasons"] = candidate_gdf.get("reject_reasons", "").fillna("").astype(str)
+        candidate_gdf = _mark_behind_ego(candidate_gdf, pose_map)
         gore_flags = []
         for _, row in candidate_gdf.iterrows():
             gore_like = _is_gore_like(float(row.get("rect_w_m") or 0.0), float(row.get("rect_l_m") or 0.0), float(row.get("rectangularity") or 0.0))
@@ -4454,6 +4866,10 @@ def main() -> int:
             seed_idx = frame_ids.index(seed_frame) if seed_frame in frame_ids else None
             if seed_idx is None:
                 continue
+            window_start_idx = max(0, seed_idx - stage2_window)
+            window_end_idx = min(len(frame_ids) - 1, seed_idx + stage2_window)
+            window_start_id = frame_ids[window_start_idx]
+            window_end_id = frame_ids[window_end_idx]
             seed_mask_path = Path(seed["seed_mask_path"]) if seed.get("seed_mask_path") else None
             seed_bbox = seed.get("seed_bbox_px")
             if seed_bbox is None and seed_mask_path is not None and seed_mask_path.exists():
@@ -4481,6 +4897,9 @@ def main() -> int:
             prev_area = None
             consec_drift = 0
             for frame_id, mask_path in sorted(saved.items(), key=lambda item: frame_index.get(item[0], 1_000_000)):
+                frame_idx = frame_index.get(frame_id)
+                if frame_idx is None or frame_idx < window_start_idx or frame_idx > window_end_idx:
+                    continue
                 mask = np.array(Image.open(mask_path).convert("L")) > 0
                 area = mask_area_px(mask)
                 image_path = index_lookup.get((drive_id, frame_id), "")
@@ -4536,8 +4955,12 @@ def main() -> int:
                         "prop_area_px": 0.0,
                         "prop_drift_flag": 0,
                         "prop_reason": "",
+                        "prop_window_start": window_start_id,
+                        "prop_window_end": window_end_id,
                     },
                 )
+                stat["prop_window_start"] = window_start_id
+                stat["prop_window_end"] = window_end_id
                 stat["cluster_id"] = cid
                 stat["prop_area_px"] = area
                 stat["prop_drift_flag"] = prop_drift
@@ -4608,6 +5031,7 @@ def main() -> int:
             geometry="geometry",
             crs="EPSG:32632",
         )
+    candidate_gdf = _filter_gdf_by_frame_range(candidate_gdf, frame_start, frame_end)
     frame_candidates_path = outputs_dir / "frame_candidates_utm32.gpkg"
     if frame_candidates_path.exists():
         frame_candidates_path.unlink()
@@ -4633,6 +5057,22 @@ def main() -> int:
     )
     roundtrip_path = outputs_dir / "roundtrip_metrics.csv"
     pd.DataFrame(roundtrip_rows).to_csv(roundtrip_path, index=False)
+    proj_debug_frames = _select_proj_debug_frames(roundtrip_rows, lidar_stats, frame_start, frame_end)
+    _write_proj_debug_bundle(
+        outputs_dir,
+        drive_id,
+        proj_debug_frames,
+        candidate_gdf,
+        raw_frames,
+        pose_map,
+        calib,
+        index_lookup,
+        lidar_stats,
+        kitti_root,
+        lidar_world_mode,
+        camera,
+        roundtrip_by_frame,
+    )
 
     alignment_cfg = merged.get("alignment", {}) if isinstance(merged.get("alignment"), dict) else {}
     offset_min = int(alignment_cfg.get("offset_scan_min", -5))
@@ -4692,7 +5132,15 @@ def main() -> int:
             points_world = np.empty((0, 3), dtype=float)
         debug_path = outputs_dir / f"debug_lidar_proj_{frame_id}.png"
         _render_lidar_proj_debug(image_path, debug_path, points_world, pose_map.get(frame_id), calib)
-    review_gdf, final_gdf = _build_review_final_layers(drive_id, candidate_gdf, cluster_info, final_cfg, review_cfg)
+    review_gdf, final_gdf = _build_review_final_layers(
+        drive_id,
+        candidate_gdf,
+        cluster_info,
+        final_cfg,
+        review_cfg,
+        frame_start,
+        frame_end,
+    )
     out_gpkg = outputs_dir / "crosswalk_entities_utm32.gpkg"
     _write_crosswalk_gpkg(candidate_gdf, review_gdf, final_gdf, out_gpkg)
     if write_wgs84:
@@ -4745,6 +5193,18 @@ def main() -> int:
     )
     trace_path = outputs_dir / "crosswalk_trace.csv"
     _build_trace(trace_path, trace_records)
+    if bool(merged.get("enforce_range", False)):
+        _assert_frame_range(
+            outputs_dir,
+            drive_id,
+            frame_start,
+            frame_end,
+            trace_path,
+            candidate_gdf,
+            review_gdf,
+            final_gdf,
+            qa_out_path,
+        )
 
     report_path = outputs_dir / "crosswalk_stage2_report.md"
     quick_report_path = outputs_dir / "crosswalk_quick_report.md"
