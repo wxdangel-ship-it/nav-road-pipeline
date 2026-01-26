@@ -16,10 +16,14 @@ from PIL import Image, ImageDraw
 from shapely.geometry import Point, Polygon
 from shapely.ops import unary_union
 
+from pipeline.projection.projector import compute_roundtrip_metrics, world_geom_to_image
 from pipeline.datasets.kitti360_io import (
+    load_kitti360_cam_to_pose,
     load_kitti360_calib,
+    load_kitti360_lidar_points,
     load_kitti360_lidar_points_world,
     load_kitti360_pose,
+    load_kitti360_pose_full,
 )
 from tools.build_image_sample_index import _find_image_dir
 from tools.run_crosswalk_monitor_range import _load_crosswalk_raw, _normalize_frame_id, _parse_frame_id
@@ -107,43 +111,11 @@ def _load_candidate_geom(
 
 def _project_world_to_image(
     points: np.ndarray,
-    pose_xy_yaw: Tuple[float, float, float],
+    pose_xy_yaw: Tuple[float, ...],
     calib: Dict[str, np.ndarray],
     mode: str,
 ) -> np.ndarray:
-    x0, y0, yaw = pose_xy_yaw
-    c = float(np.cos(yaw))
-    s = float(np.sin(yaw))
-    dx = points[:, 0] - x0
-    dy = points[:, 1] - y0
-    x_ego = c * dx + s * dy
-    y_ego = -s * dx + c * dy
-    z_ego = points[:, 2]
-    ones = np.ones_like(x_ego)
-    pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
-    cam = calib["t_velo_to_cam"] @ pts_h
-
-    if mode.startswith("p_rect"):
-        proj = calib["p_rect"] @ np.vstack([cam[:3, :], np.ones((1, cam.shape[1]))])
-        zs = proj[2, :]
-        valid = zs > 1e-3
-        us = np.zeros_like(zs)
-        vs = np.zeros_like(zs)
-        us[valid] = proj[0, valid] / zs[valid]
-        vs[valid] = proj[1, valid] / zs[valid]
-        return np.stack([us, vs, valid], axis=1)
-
-    xyz = cam[:3, :].T
-    if mode.endswith("rrect"):
-        xyz = (calib["r_rect"] @ xyz.T).T
-    zs = xyz[:, 2]
-    valid = zs > 1e-3
-    us = np.zeros_like(zs)
-    vs = np.zeros_like(zs)
-    k = calib["k"]
-    us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
-    vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
-    return np.stack([us, vs, valid], axis=1)
+    return world_geom_to_image(points, pose_xy_yaw, calib, mode)
 
 
 def _polygon_from_points(points: List[Tuple[float, float]]) -> Optional[Polygon]:
@@ -209,33 +181,10 @@ def _roundtrip_metrics(
     raw_bbox: Optional[List[float]],
     reproj_poly: Optional[Polygon],
 ) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    if raw_poly is not None and reproj_poly is not None and not raw_poly.is_empty and not reproj_poly.is_empty:
-        inter = raw_poly.intersection(reproj_poly).area
-        union = raw_poly.union(reproj_poly).area
-        iou = float(inter / union) if union > 0 else 0.0
-        area_ratio = float(reproj_poly.area / raw_poly.area) if raw_poly.area > 0 else None
-    else:
-        iou = None
-        area_ratio = None
-        if raw_bbox and reproj_poly is not None:
-            reproj_bbox = _bbox_from_poly(reproj_poly)
-            iou = _bbox_iou(raw_bbox, reproj_bbox or [])
-            if reproj_bbox:
-                area_raw = max(0.0, (raw_bbox[2] - raw_bbox[0]) * (raw_bbox[3] - raw_bbox[1]))
-                if area_raw > 0:
-                    area_ratio = (
-                        (reproj_bbox[2] - reproj_bbox[0]) * (reproj_bbox[3] - reproj_bbox[1])
-                    ) / area_raw
-    center_err = None
-    if raw_bbox and reproj_poly is not None:
-        reproj_bbox = _bbox_from_poly(reproj_poly)
-        if reproj_bbox:
-            cx1 = (raw_bbox[0] + raw_bbox[2]) / 2.0
-            cy1 = (raw_bbox[1] + raw_bbox[3]) / 2.0
-            cx2 = (reproj_bbox[0] + reproj_bbox[2]) / 2.0
-            cy2 = (reproj_bbox[1] + reproj_bbox[3]) / 2.0
-            center_err = float(math.hypot(cx1 - cx2, cy1 - cy2))
-    return iou, center_err, area_ratio
+    reproj_bbox = _bbox_from_poly(reproj_poly) if reproj_poly is not None else None
+    metrics = compute_roundtrip_metrics(raw_poly, raw_bbox, reproj_poly, reproj_bbox)
+    iou = metrics.reproj_iou_bbox if metrics.reproj_iou_bbox is not None else metrics.reproj_iou_mask
+    return iou, metrics.reproj_center_err_px, metrics.reproj_area_ratio
 
 
 def _mask_bounds_ok(raw_bbox: Optional[List[float]], width: int, height: int) -> bool:
@@ -306,6 +255,7 @@ def main() -> int:
     ap.add_argument("--drive", required=True)
     ap.add_argument("--frame", required=True)
     ap.add_argument("--camera", default="image_00")
+    ap.add_argument("--lidar-world-mode", default="legacy")
     ap.add_argument("--candidate-source", default="")
     ap.add_argument("--image-run", default="")
     ap.add_argument("--image-provider", default="")
@@ -340,13 +290,21 @@ def main() -> int:
     world_geom = _load_candidate_geom(candidate_path, drive_id, frame_id) if candidate_path else None
 
     pose = load_kitti360_pose(kitti_root, drive_id, frame_id)
+    pose_full = load_kitti360_pose_full(kitti_root, drive_id, frame_id)
     calib = load_kitti360_calib(kitti_root, camera)
     calib_01 = load_kitti360_calib(kitti_root, "image_01")
 
-    lidar_world = load_kitti360_lidar_points_world(kitti_root, drive_id, frame_id)
+    lidar_world = load_kitti360_lidar_points_world(
+        kitti_root,
+        drive_id,
+        frame_id,
+        mode=str(args.lidar_world_mode).lower(),
+        cam_id=camera,
+    )
     z_vals = lidar_world[:, 2] if lidar_world.size > 0 else np.array([], dtype=float)
     ground_z = float(np.percentile(z_vals, 10)) if z_vals.size > 0 else 0.0
-    lidar_proj = _project_world_to_image(lidar_world, pose, calib, "k_rrect")
+    pose_proj = pose_full if str(args.lidar_world_mode).lower() == "fullpose" else pose
+    lidar_proj = _project_world_to_image(lidar_world, pose_proj, calib, "k_rrect")
     proj_ratio = _proj_in_image_ratio(lidar_proj, width, height)
     points_in_bbox = 0
     if raw_bbox:
@@ -377,7 +335,7 @@ def main() -> int:
         if world_geom is not None:
             coords = np.array(list(world_geom.exterior.coords), dtype=float)
             pts = np.column_stack([coords[:, 0], coords[:, 1], np.full(coords.shape[0], ground_z)])
-            proj = _project_world_to_image(pts, pose, c, mode)
+            proj = _project_world_to_image(pts, pose_proj, c, mode)
             points = [(float(u), float(v)) for u, v, valid in proj if valid]
             reproj_poly = _polygon_from_points(points)
         iou, center_err, area_ratio = _roundtrip_metrics(raw_poly, raw_bbox, reproj_poly)
@@ -401,7 +359,13 @@ def main() -> int:
         target = _normalize_frame_id(str(frame_num + offset))
         try:
             pose_off = load_kitti360_pose(kitti_root, drive_id, target)
-            lidar_world_off = load_kitti360_lidar_points_world(kitti_root, drive_id, target)
+            lidar_world_off = load_kitti360_lidar_points_world(
+                kitti_root,
+                drive_id,
+                target,
+                mode=str(args.lidar_world_mode).lower(),
+                cam_id=camera,
+            )
         except Exception:
             continue
         proj_off = _project_world_to_image(lidar_world_off, pose_off, calib, "k_rrect")
@@ -424,13 +388,67 @@ def main() -> int:
             points = [(float(u), float(v)) for u, v, valid in proj if valid]
             reproj_poly = _polygon_from_points(points)
             offset_iou, _center, _ratio = _roundtrip_metrics(raw_poly, raw_bbox, reproj_poly)
-        offset_rows.append(
-            {
-                "offset": offset,
-                "points_in_bbox": in_bbox,
-                "reproj_iou": offset_iou,
-            }
-        )
+    offset_rows.append(
+        {
+            "offset": offset,
+            "points_in_bbox": in_bbox,
+            "reproj_iou": offset_iou,
+        }
+    )
+
+    uv_err_mean = None
+    uv_err_p90 = None
+    try:
+        velo_pts = load_kitti360_lidar_points(kitti_root, drive_id, frame_id)
+        if velo_pts.size > 0:
+            velo_pts = velo_pts[: min(20000, velo_pts.shape[0])]
+            ones = np.ones((velo_pts.shape[0], 1), dtype=velo_pts.dtype)
+            pts_h = np.hstack([velo_pts[:, :3], ones])
+            cam_direct = (calib["t_velo_to_cam"] @ pts_h.T)[:3].T
+            cam_direct = (calib["r_rect"] @ cam_direct.T).T
+            zs = cam_direct[:, 2]
+            valid_direct = zs > 1e-3
+            uv_direct = np.zeros((velo_pts.shape[0], 2), dtype=float)
+            uv_direct[valid_direct, 0] = (calib["k"][0, 0] * cam_direct[valid_direct, 0] / zs[valid_direct]) + calib["k"][0, 2]
+            uv_direct[valid_direct, 1] = (calib["k"][1, 1] * cam_direct[valid_direct, 1] / zs[valid_direct]) + calib["k"][1, 2]
+
+            cam_to_pose = load_kitti360_cam_to_pose(kitti_root, camera)
+            t_pose_velo = cam_to_pose @ calib["t_velo_to_cam"]
+            t_velo_pose = np.linalg.inv(t_pose_velo)
+            x, y, z, roll, pitch, yaw = pose_full
+            c1 = float(np.cos(yaw))
+            s1 = float(np.sin(yaw))
+            c2 = float(np.cos(pitch))
+            s2 = float(np.sin(pitch))
+            c3 = float(np.cos(roll))
+            s3 = float(np.sin(roll))
+            r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+            r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+            r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+            r_world_pose = r_z @ r_y @ r_x
+            pts_pose = (t_pose_velo @ pts_h.T)[:3].T
+            pts_world = (r_world_pose @ pts_pose.T).T + np.array([x, y, z], dtype=float)
+            pts_pose_back = (r_world_pose.T @ (pts_world - np.array([x, y, z], dtype=float)).T).T
+            pts_pose_back_h = np.hstack([pts_pose_back, ones])
+            pts_velo_back = (t_velo_pose @ pts_pose_back_h.T)[:3].T
+            pts_velo_back_h = np.hstack([pts_velo_back, ones])
+            cam_back = (calib["t_velo_to_cam"] @ pts_velo_back_h.T)[:3].T
+            cam_back = (calib["r_rect"] @ cam_back.T).T
+            zs_back = cam_back[:, 2]
+            valid_back = zs_back > 1e-3
+            uv_back = np.zeros((velo_pts.shape[0], 2), dtype=float)
+            uv_back[valid_back, 0] = (calib["k"][0, 0] * cam_back[valid_back, 0] / zs_back[valid_back]) + calib["k"][0, 2]
+            uv_back[valid_back, 1] = (calib["k"][1, 1] * cam_back[valid_back, 1] / zs_back[valid_back]) + calib["k"][1, 2]
+
+            valid = valid_direct & valid_back
+            if np.any(valid):
+                diff = uv_direct[valid] - uv_back[valid]
+                dist = np.hypot(diff[:, 0], diff[:, 1])
+                uv_err_mean = float(np.mean(dist))
+                uv_err_p90 = float(np.percentile(dist, 90))
+    except Exception:
+        uv_err_mean = None
+        uv_err_p90 = None
 
     debug_json = {
         "drive_id": drive_id,
@@ -453,6 +471,8 @@ def main() -> int:
         "reproj_iou": best_iou if best_iou >= 0 else None,
         "center_err_px": best_center,
         "area_ratio": best_ratio,
+        "uv_err_mean_px": uv_err_mean,
+        "uv_err_p90_px": uv_err_p90,
         "calib": {
             "p_rect": calib["p_rect"].tolist(),
             "k": calib["k"].tolist(),

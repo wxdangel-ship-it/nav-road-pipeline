@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from pipeline.projection.projector import world_geom_to_image
 from pipeline.datasets.kitti360_io import (
     load_kitti360_calib,
     load_kitti360_cam_to_pose_key,
@@ -215,45 +216,7 @@ def _project_world_to_image(
     pose_xy_yaw: Tuple[float, ...],
     calib: Dict[str, np.ndarray],
 ) -> np.ndarray:
-    if len(pose_xy_yaw) == 6:
-        x0, y0, z0, roll, pitch, yaw = pose_xy_yaw
-        c1 = float(np.cos(yaw))
-        s1 = float(np.sin(yaw))
-        c2 = float(np.cos(pitch))
-        s2 = float(np.sin(pitch))
-        c3 = float(np.cos(roll))
-        s3 = float(np.sin(roll))
-        r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
-        r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
-        r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
-        r_world_pose = r_z @ r_y @ r_x
-        delta = points - np.array([x0, y0, z0], dtype=float)
-        pose_xyz = (r_world_pose.T @ delta.T).T
-        x_ego = pose_xyz[:, 0]
-        y_ego = pose_xyz[:, 1]
-        z_ego = pose_xyz[:, 2]
-    else:
-        x0, y0, yaw = pose_xy_yaw
-        c = float(np.cos(yaw))
-        s = float(np.sin(yaw))
-        dx = points[:, 0] - x0
-        dy = points[:, 1] - y0
-        x_ego = c * dx - s * dy
-        y_ego = s * dx + c * dy
-        z_ego = points[:, 2]
-    ones = np.ones_like(x_ego)
-    pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
-    cam = calib["t_velo_to_cam"] @ pts_h
-    xyz = cam[:3, :].T
-    xyz = (calib["r_rect"] @ xyz.T).T
-    zs = xyz[:, 2]
-    valid = zs > 1e-3
-    us = np.zeros_like(zs)
-    vs = np.zeros_like(zs)
-    k = calib["k"]
-    us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
-    vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
-    return np.stack([us, vs, valid], axis=1)
+    return world_geom_to_image(points, pose_xy_yaw, calib, "k_rrect")
 
 
 def _geom_to_image_points(
