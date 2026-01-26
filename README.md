@@ -1,60 +1,88 @@
 # nav-road-pipeline
-Windows-native road production pipeline (POC->Prod)
+Windows-native road production pipeline (POC -> Prod).
 
-## 快速开始（Windows）
+## Project Goals and Three-Stage Outputs
+- Primitive Evidence: source-level evidence in pixel/world space (image masks, lidar projections, SAT priors).
+- World Candidates: aggregated, projected entities in map space (UTM32/WGS84) with QA metrics.
+- Map Features: final curated map features (not part of this phase).
 
-1) 设置数据根目录：
-```
-set POC_DATA_ROOT=D:\KITTI360
-```
-2) 一键运行图像证据层（多 provider）：
-```
-scripts\run_image_providers.cmd
-```
-3) 生成对比报告（AB）：
-```
-scripts\run_ab_eval.cmd
-```
+## Data Sources and Modules
+- Sources: Image / LiDAR / SAT / Traj. Evidence priority is strong -> weak:
+  - Strong: LiDAR + in-vehicle video
+  - Medium: trajectories
+  - Soft prior: OSM/SAT (never override strong evidence; record conflict_rate)
+- Providers (pluggable): image/lidar/sat providers emit Primitive Evidence; see `configs/*_model_zoo.yaml`.
+- Fusion/Resolve: modular stages (M0-M9) combine evidence and produce World Candidates.
+- Schema contracts: `docs/evidence_schema.md`.
 
-## 图像证据层入口
+## Quick Start (Windows)
 
-- 运行 provider：
-  - `scripts/run_image_providers.cmd`
-  - 环境变量：`STRICT_BACKEND=1` 禁止 fallback
-- 生成 AB 报告：
-  - `scripts/run_ab_eval.cmd`
-  - 环境变量：`EXCLUDE_FALLBACK_PROVIDERS=1` 默认剔除 fallback
-- SAM3 权重准备：
-  - `scripts/setup_sam3_weights.cmd`
+### Dependencies (stable, current)
+- `numpy==1.26.4`
+- `shapely==2.0.3`
+- `pyproj==3.6.1`
+- `pyyaml`
+- `rasterio` (required for SAT tools and alignment diagnostics; install separately)
 
-## Provider 配置
-
-- 配置入口：`configs/image_model_zoo.yaml`
-- 重要字段：
-  - `backend=auto|real|fallback`
-  - `weights_path` / `weights_url`
-  - `sam3_builder` / `sam3_predictor` / `sam3_model_cfg`
-
-## Evidence Schema（新增字段）
-
-统一 schema 见 `docs/evidence_schema.md`，新增后端字段：
-`backend_status` / `fallback_used` / `fallback_from` / `fallback_to` / `backend_reason`
-
-## 产物目录（典型）
-
-```
-runs/<exp_id>/
-  model_outputs/
-  debug/
-  evidence/
-  ab_eval/
+Install:
+```cmd
+scripts\setup.cmd
 ```
 
-## 约束
+### One-click scripts (cmd)
+- `scripts\setup.cmd`: venv + requirements
+- `scripts\smoke.cmd`: smoke tests
+- `scripts\index.cmd --max-frames 2000`: build `cache\kitti360_index.json`
+- `scripts\eval.cmd --max-frames 2000`: eval entry (Arm0..3)
+- `scripts\autotune.cmd`: autotune entry
+- `scripts\run_image_providers.cmd`: run image providers
+- `scripts\run_lidar_providers.cmd`: run lidar providers
+- `scripts\run_crosswalk_strict_250_500.cmd`: strict frame-range regression (Stage2)
+- `scripts\run_crosswalk_golden8_full.cmd`: Golden8 full evaluation
 
-- `runs/`、`cache/`、权重与大文件不入库
-- `_wgs84` 必须是 EPSG:4326，否则重投影或改名
+### Required env vars
+```cmd
+set POC_DATA_ROOT=E:\KITTI360\KITTI-360
+set POC_PRIOR_ROOT=E:\KITTI360\_priors   (optional)
+```
 
-- SAM3 ?????
-  - `scripts/setup_sam3_weights.cmd`
-  - ?? HF_TOKEN ? huggingface-cli login
+## QA Workflow
+- raw: per-frame detections from providers before projection/gates.
+- gated: candidates after projection + basic gates (IoU/support/shape).
+- entities: final aggregated world candidates (clustered/refined).
+
+Key QA outputs (per run):
+- `runs\<run_id>\outputs\qa_index_wgs84.geojson` (open in QGIS)
+- `runs\<run_id>\outputs\qa_images\` (raw/gated/entities overlays)
+- `runs\<run_id>\outputs\crosswalk_trace.csv` (per-frame metrics)
+
+QA index usage:
+- QGIS: load `qa_index_wgs84.geojson`, filter by `qa_flag`, `reject_reasons`, `proj_method`.
+- File Explorer: use `overlay_*` paths from the QA index to inspect frames.
+
+## Output Directories and No-Commit Rules
+- Runs: `runs\<run_id>\outputs\...`
+- Eval protocol outputs (Arm0..3):
+  - `runs\<run_id>\StateSnapshot.md`
+  - `runs\<run_id>\RunCard_Arm0..3.md`
+  - `runs\<run_id>\SyncPack_Arm0..3.md`
+- Do not commit: `runs/`, `cache/`, `data/`, or any weights/large media.
+
+## FAQ
+- Why is IoU ~ 0?
+  - Projection alignment likely failed. Check `projection_alignment_report.md` and `crosswalk_trace.csv`
+    for `proj_method`, `reproj_iou_bbox`, `reproj_iou_dilated`.
+- Why is `points_support = 0`?
+  - Lidar projection did not land inside the mask. Verify `LIDAR_CALIB_MISMATCH`,
+    `proj_in_image_ratio`, and `points_support_accum` in `crosswalk_trace.csv`.
+- Why does `frame_id` look overwritten?
+  - Evidence inputs may lack stable `frame_id`. Run alignment diagnostics to verify
+    frame_id diversity and CRS consistency (see `docs/RUNBOOK.md`).
+- How to locate `LIDAR_CALIB_MISMATCH` / `proj_fail`?
+  - Search `crosswalk_trace.csv` for `drop_reason_code` and `qa_flag=proj_fail`,
+    then open `proj_debug_failpack` from the same run.
+
+## Notes
+- Any file ending with `_wgs84` must be true EPSG:4326 (range-checked), otherwise rename to
+  `_utm32` or reproject.
+- See `docs/ARCHITECTURE.md` and `docs/RUNBOOK.md` for detailed architecture and reproducible workflows.

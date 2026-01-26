@@ -221,12 +221,18 @@ data/
 *.png
 *.mp4
 *.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
 
 
 # local cache
 cache/
 pip-*/
 tmp*/
+weights/
+model_weights/
 
 
 # backups

@@ -185,7 +185,25 @@ Stage C：定型验证（Top-3 全量回归 Golden+Refresh+Stress；跑 Arm0–A
 - 后续真实 autotune 将逐步替换 sim_metrics 为真实多保真评测（先小样本/限帧，再全量）
 
 
-## 18. ????????????????
+## 18. Phase Milestones (Stage Summary)
+
+### Current Phase: Crosswalk POC (Delivered)
+- fullpose projection chain
+- v4 lidar support loop (accum lidar-fit)
+- robust IoU metrics (bbox + dilated)
+- Stage2 continuous inference (SAM2 video) with ROI + drift control
+- strict frame-range assertions
+- autotune framework (short range + long range)
+
+### Next Phase: Architecture Consolidation
+- validate "intersection + crosswalk" feature outputs on the unified architecture
+
+## 19. Submission Boundary (This Phase)
+- Includes: documentation upgrades + current runnable script entrypoints
+- Excludes: runs/ cache/ weights (no large artifacts)
+- Minimal reproducibility path: setup -> smoke -> eval -> crosswalk strict regression
+
+## 20. ????????????????
 - ?? schema ?????????backend_status / fallback_used / fallback_from / fallback_to / backend_reason
 - ?????
   - scripts/run_image_providers.cmd
