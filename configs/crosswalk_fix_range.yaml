@@ -16,10 +16,10 @@ config: "configs\\road_entities.yaml"
 
 lidar_proj:
   mask_dilate_px: 5
-  min_points_bbox: 20
-  min_points_mask: 5
+  min_points_bbox: 10
+  min_points_mask: 3
   intensity_top_pct: 10
-  min_in_image_ratio: 0.1
+  min_in_image_ratio: 0.02
   ground_z_tol: 0.2
   dbscan_eps_m: 0.6
   dbscan_min_samples: 10

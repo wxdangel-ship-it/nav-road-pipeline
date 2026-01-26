@@ -1,96 +1,76 @@
-# 统一 Evidence Schema（图像证据层）
+# Evidence Schema (Primitive Evidence + World Candidates)
 
-本规范用于将不同图像基模型的输出统一到同一套可追溯、可抽检、可对比的证据格式。**下游仅依赖该 schema，不针对每个模型写适配分支**。
+This document defines the minimum fields for evidence records and world candidates.
+Downstream modules rely on these fields; do not break the contract.
 
-## 1. 输出形态与目录
+## 1) Scope and Outputs
+- Primitive Evidence: per-frame, per-provider evidence in pixel/world space.
+- World Candidates: aggregated entities in map space, used by fusion/QA/gates.
 
-- 每个 provider 产出：
-  - 模型原始输出：`runs/<exp_id>/model_outputs/<model_id>/<drive_id>/`
-  - 调试可视化：`runs/<exp_id>/debug/<model_id>/<drive_id>/`
-  - 统一证据：`runs/<exp_id>/evidence/<model_id>.jsonl`
-- `evidence/*.jsonl` 为行式 JSON；每行是一个 record。
+Outputs (typical):
+- `runs/<run_id>/evidence/<provider_id>.jsonl` (primitive evidence)
+- `runs/<run_id>/outputs/*_utm32.gpkg` (world candidates)
 
-## 2. record 字段（最小集合）
+## 2) Primitive Evidence Schema
 
-- `kind`: 记录类型，`seg_map` 或 `det`
-- `provider_id`: provider 名（例如 `gdino_sam2_v1`）
-- `model_id`: 模型 ID（与 `provider_id` 一致或更细粒度）
-- `model_version`: 模型版本字符串
-- `ckpt_hash`: 权重标识（文件名或 hash）
-- `backend_status`: `real` / `fallback` / `unavailable`
-- `fallback_used`: 是否启用 fallback（bool）
-- `fallback_from`: 触发 fallback 的 provider（如 `sam3_v1`）
-- `fallback_to`: fallback 实际运行的 provider（如 `gdino_sam2_v1`）
-- `backend_reason`: 可选，`missing_dependency` / `weights_not_found` / `runtime_error` 等
-- `scene_profile`: `car/aerial/sat` 等
-- `drive_id`, `frame_id`
-- `image_path`: 原始图像路径（本地）
-- `prompt`, `prompt_type`: `text/box/point/auto` 等
-- `score`: 置信度（det 记录）
-- `bbox`: `[x1,y1,x2,y2]`（像素坐标，det 记录）
-- `mask`: 掩码信息（seg_map 记录）
-  - `format`: `class_id_png` / `png` / `rle`
-  - `path`: 掩码文件路径（本地）
-- `geometry_frame`: 当前固定为 `image_px`
-- `debug_assets_path`: 叠加图/中间输出路径
-- `config_path`: 运行时配置路径（如 `configs/image_model_zoo.yaml`）
-- `git_commit`: 当前代码版本（commit hash）
-- `generated_at`: 生成时间（ISO）
-
-## 3. 语义与约束
-
-- `kind=seg_map`：`mask.format=class_id_png` 时，PNG 为单通道语义图（像素值为 class_id）。  
-- `kind=det`：仅记录 bbox 与 score；若有实例 mask，可补充 `mask` 字段。
-- `_wgs84` 命名硬规则：**任何文件名带 `_wgs84` 的输出必须是真 EPSG:4326**。如不是，必须重投影或改名 `_utm32`。
-
-## 4. 追溯字段建议
-
-运行级别建议在 `runs/<exp_id>/run_manifest.json` 中记录：
-- `providers` / `sample_index` / `seg_schema` / `feature_schema`
-- `device` / `cuda_available`
-- `git_commit`
-
-## 5. 示例
-
-```json
-{
-  "kind": "det",
-  "provider_id": "gdino_sam2_v1",
-  "model_id": "gdino_sam2_v1",
-  "model_version": "v1",
-  "ckpt_hash": "sam2.1_hiera_base_plus.pt",
-  "scene_profile": "car",
-  "drive_id": "2013_05_28_drive_0007_sync",
-  "frame_id": "000000",
-  "image_path": "D:\\KITTI360\\data_2d_raw\\...\\000000.png",
-  "prompt": "crosswalk",
-  "prompt_type": "text",
-  "score": 0.82,
-  "bbox": [100, 200, 180, 260],
-  "geometry_frame": "image_px",
-  "debug_assets_path": "runs\\...\\debug\\gdino_sam2_v1\\...\\000000_overlay.png",
-  "config_path": "configs\\image_model_zoo.yaml",
-  "git_commit": "<hash>",
-  "generated_at": "2026-01-21T23:45:11"
-}
-```
-
-## 6. LiDAR / 3D Evidence Schema (Map)
-
-This section defines the minimum fields for LiDAR evidence that is projected into map
-coordinates (UTM32). The output is used by downstream geometry consumers.
-
-- `provider_id` / `model_id` / `model_version` / `ckpt_hash`
-- `drive_id`, `frame_id`, `timestamp` (optional)
-- `label` or `prompt` (open-vocab providers should include prompt/label)
-- `score`
-- `geometry_utm32`: map geometry in EPSG:32632 (LineString/Polygon/Point)
-- `bbox3d` (optional): 3D bbox or footprint attributes if available
-- `points_count` (optional): number of points used by this instance
-- `evidence_strength`: `strong` / `weak`
-- `backend_status`: `real` / `fallback` / `unavailable`
+### 2.1 Common fields (pixel + world)
+- `kind`: `seg_map` | `det` | `poly` | `line`
+- `provider_id` / `model_id` / `model_version`
+- `source`: `image` | `lidar` | `sat` | `traj`
+- `drive_id`, `frame_id`, `timestamp` (timestamp optional)
+- `geom_crs`: `pixel` | `utm32` | `wgs84`
+- `geometry`: bbox/mask/line/polygon payload (pixel or world)
+- `quality`: quality stats (ex: score)
+- `support`: support stats (ex: points_support, reproj_iou_bbox)
+- `uncertainty`: drift or confidence details
+- `provenance`: config/git/time details
+- `backend_status`: `real` | `fallback` | `unavailable`
 - `fallback_used` / `fallback_from` / `fallback_to` / `backend_reason`
-- `debug_assets_path` (optional): local debug assets for inspection
+- `score` (if applicable)
+- `config_path` / `git_commit` / `generated_at`
 
-**CRS rule**: any file with `_utm32` must be EPSG:32632. Any file with `_wgs84` must
-be true EPSG:4326 (lon/lat range check), otherwise rename or reproject.
+### 2.2 Pixel-space evidence (`geom_crs = pixel`)
+- `image_path`
+- `bbox` (if `kind=det`)
+- `mask` (if `kind=seg_map`)
+  - `format`: `class_id_png` | `png` | `rle`
+  - `path`
+- `geometry_frame`: `image_px`
+
+### 2.3 World-space evidence (`geom_crs = utm32 | wgs84`)
+- `geometry`: map geometry in EPSG:32632 or EPSG:4326
+- `points_support` (optional)
+- `points_support_accum` (optional)
+- `reproj_iou_bbox` (optional)
+- `reproj_iou_dilated` (optional)
+
+## 3) World Candidate Schema (Aggregated Entities)
+
+### 3.1 Required fields
+- `candidate_id` (stable id within run)
+- `drive_id`, `frame_id`, `timestamp` (timestamp optional)
+- `source` / `provider_id` / `version`
+- `geom_crs`: `utm32` | `wgs84`
+- `geometry` (Polygon/LineString/Point)
+- `quality` (ex: score)
+- `support` (points_support / points_support_accum / reproj_iou_bbox)
+- `uncertainty` (drift_flag + details)
+- `provenance` (config_path / git_commit / generated_at)
+- `support.points_support`
+- `support.points_support_accum`
+- `support.reproj_iou_bbox`
+- `support.reproj_iou_dilated`
+- `rect_w` / `rect_l` / `rectangularity` (meters, minimum rotated rectangle)
+- `drift_flag` (Stage2 drift or propagation failure)
+- `prop_reason` (Stage2 propagation reason)
+- `reject_reasons` (comma-separated or array)
+
+### 3.2 Optional fields
+- `candidate_type` (e.g., crosswalk)
+- `support_frames` (list or json string)
+- `proj_method` (e.g., lidar | plane | bbox_only | stage2_video)
+- `qa_flag` (raw | gated | proj_fail | ...)
+
+## 4) CRS Rules
+- Any file with `_utm32` must be EPSG:32632.
+- Any file with `_wgs84` must be EPSG:4326 (range-checked), otherwise rename or reproject.
