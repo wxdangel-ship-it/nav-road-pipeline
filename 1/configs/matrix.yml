@@ -1,0 +1,4 @@
+matrix:
+  combos:
+    - combo_id: demo_combo
+      skills: ["S0_env_doctor"]

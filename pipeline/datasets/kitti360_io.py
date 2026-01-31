@@ -273,29 +273,10 @@ def load_kitti360_calib(data_root: Path, cam_id: str) -> Dict[str, np.ndarray]:
 def load_kitti360_lidar_points_world_full(
     data_root: Path, drive_id: str, frame_id: str, cam_id: str = "image_00"
 ) -> np.ndarray:
+    # DO NOT USE legacy fullpose math here; unified chain lives in kitti360_world.
+    from pipeline.calib.kitti360_world import transform_points_V_to_W
+
     points = load_kitti360_lidar_points(data_root, drive_id, frame_id)
     if points.size == 0:
         return np.empty((0, 3), dtype=float)
-    x, y, z, roll, pitch, yaw = load_kitti360_pose_full(data_root, drive_id, frame_id)
-    c1 = float(np.cos(yaw))
-    s1 = float(np.sin(yaw))
-    c2 = float(np.cos(pitch))
-    s2 = float(np.sin(pitch))
-    c3 = float(np.cos(roll))
-    s3 = float(np.sin(roll))
-    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
-    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
-    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
-    r_world_pose = r_z @ r_y @ r_x
-
-    t_cam_to_pose = load_kitti360_cam_to_pose(data_root, cam_id)
-    t_cam_to_velo = _parse_cam_to_velo((data_root / "calibration") / "calib_cam_to_velo.txt")
-    t_velo_to_cam = np.linalg.inv(t_cam_to_velo)
-    t_pose_velo = t_cam_to_pose @ t_velo_to_cam
-
-    pts = points[:, :3]
-    ones = np.ones((pts.shape[0], 1), dtype=pts.dtype)
-    pts_h = np.hstack([pts, ones])
-    pts_pose = (t_pose_velo @ pts_h.T)[:3].T
-    pts_world = (r_world_pose @ pts_pose.T).T + np.array([x, y, z], dtype=float)
-    return pts_world
+    return transform_points_V_to_W(points[:, :3], data_root, drive_id, frame_id, cam_id=cam_id)

@@ -1,0 +1,42 @@
+drive_id: "2013_05_28_drive_0010_sync"
+kitti_root: ""
+frame_start: 250
+frame_end: 500
+image_cam: "image_00"
+
+input_stage12_run: "auto_latest"
+input_mask_dir: "stage2/masks"
+qa_frames_path: "qa/qa_frames.json"
+
+output_epsg: 32632
+
+backproject:
+  use_dtm: true
+  dtm_path: "auto_latest_clean_dtm"
+  fixed_plane_z0_mode: "dtm_median"
+  pixel_use_bottom_crop: 0.45
+  pixel_use_side_crop: [0.05, 0.95]
+  pixel_use_bottom_crop_fallback: 0.30
+  pixel_use_side_crop_fallback: [0.02, 0.98]
+  contour_sample_step_px: 2
+  min_valid_world_pts: 60
+  dtm_iterations: 2
+  max_ray_t_m: 200.0
+  min_area_px: 200
+  camera_height_m: 1.6
+
+simplify:
+  simplify_tol_m: 0.20
+  smooth_buffer_m: 0.30
+  min_poly_area_m2: 6.0
+
+merge:
+  merge_dist_m: 2.0
+  merge_iou_min: 0.20
+  min_support_frames: 3
+
+roundtrip:
+  roundtrip_sample_pts: 200
+  roundtrip_valid_ratio_min: 0.30
+  roundtrip_p90_pass_px: 8
+  roundtrip_p90_warn_px: 15

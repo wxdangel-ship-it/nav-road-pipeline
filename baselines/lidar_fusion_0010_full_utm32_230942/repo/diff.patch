@@ -1,0 +1,2369 @@
+diff --git a/.gitignore b/.gitignore
+index d26a7ca..7223688 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -198,6 +198,14 @@ cython_debug/
+ #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
+ #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
+ #  refer to https://docs.cursor.com/context/ignore-files
++
++# Runtime artifacts (project guardrails)
++runs/
++cache/
++weights/
++data/
++datasets/
++outputs/
+ .cursorignore
+ .cursorindexingignore
+ 
+diff --git a/configs/crosswalk_drive_full.yaml b/configs/crosswalk_drive_full.yaml
+index 7aa80ab..89da905 100644
+--- a/configs/crosswalk_drive_full.yaml
++++ b/configs/crosswalk_drive_full.yaml
+@@ -41,3 +41,7 @@ review_gate:
+   min_frames_hit_review: 2
+   rectangularity_min_review: 0.35
+   heading_diff_to_perp_max_deg_review: 35
++
++backproject:
++  fixed_plane_z0: 0.0
++  dtm_path: ""
+diff --git a/configs/crosswalk_fix_range.yaml b/configs/crosswalk_fix_range.yaml
+index f690e6c..409f6be 100644
+--- a/configs/crosswalk_fix_range.yaml
++++ b/configs/crosswalk_fix_range.yaml
+@@ -49,3 +49,7 @@ review_gate:
+   min_frames_hit_review: 2
+   rectangularity_min_review: 0.35
+   heading_diff_to_perp_max_deg_review: 35
++
++backproject:
++  fixed_plane_z0: 0.0
++  dtm_path: ""
+diff --git a/configs/crosswalk_range_250_500_strict.yaml b/configs/crosswalk_range_250_500_strict.yaml
+index d75f13f..e8fcee7 100644
+--- a/configs/crosswalk_range_250_500_strict.yaml
++++ b/configs/crosswalk_range_250_500_strict.yaml
+@@ -69,3 +69,7 @@ review_gate:
+   min_frames_hit_review: 2
+   rectangularity_min_review: 0.35
+   heading_diff_to_perp_max_deg_review: 35
++
++backproject:
++  fixed_plane_z0: 0.0
++  dtm_path: ""
+diff --git a/pipeline/datasets/kitti360_io.py b/pipeline/datasets/kitti360_io.py
+index 0d094d9..c35e385 100644
+--- a/pipeline/datasets/kitti360_io.py
++++ b/pipeline/datasets/kitti360_io.py
+@@ -273,29 +273,10 @@ def load_kitti360_calib(data_root: Path, cam_id: str) -> Dict[str, np.ndarray]:
+ def load_kitti360_lidar_points_world_full(
+     data_root: Path, drive_id: str, frame_id: str, cam_id: str = "image_00"
+ ) -> np.ndarray:
++    # DO NOT USE legacy fullpose math here; unified chain lives in kitti360_world.
++    from pipeline.calib.kitti360_world import transform_points_V_to_W
++
+     points = load_kitti360_lidar_points(data_root, drive_id, frame_id)
+     if points.size == 0:
+         return np.empty((0, 3), dtype=float)
+-    x, y, z, roll, pitch, yaw = load_kitti360_pose_full(data_root, drive_id, frame_id)
+-    c1 = float(np.cos(yaw))
+-    s1 = float(np.sin(yaw))
+-    c2 = float(np.cos(pitch))
+-    s2 = float(np.sin(pitch))
+-    c3 = float(np.cos(roll))
+-    s3 = float(np.sin(roll))
+-    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+-    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+-    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+-    r_world_pose = r_z @ r_y @ r_x
+-
+-    t_cam_to_pose = load_kitti360_cam_to_pose(data_root, cam_id)
+-    t_cam_to_velo = _parse_cam_to_velo((data_root / "calibration") / "calib_cam_to_velo.txt")
+-    t_velo_to_cam = np.linalg.inv(t_cam_to_velo)
+-    t_pose_velo = t_cam_to_pose @ t_velo_to_cam
+-
+-    pts = points[:, :3]
+-    ones = np.ones((pts.shape[0], 1), dtype=pts.dtype)
+-    pts_h = np.hstack([pts, ones])
+-    pts_pose = (t_pose_velo @ pts_h.T)[:3].T
+-    pts_world = (r_world_pose @ pts_pose.T).T + np.array([x, y, z], dtype=float)
+-    return pts_world
++    return transform_points_V_to_W(points[:, :3], data_root, drive_id, frame_id, cam_id=cam_id)
+diff --git a/pipeline/projection/projector.py b/pipeline/projection/projector.py
+index 7b21231..6ee2511 100644
+--- a/pipeline/projection/projector.py
++++ b/pipeline/projection/projector.py
+@@ -6,6 +6,12 @@ from typing import Dict, List, Optional, Tuple
+ import numpy as np
+ from shapely.geometry import LineString, Polygon
+ 
++from pipeline.calib.io_kitti360_calib import Kitti360Calib
++from pipeline.calib.kitti360_projection import (
++    project_cam0_to_image,
++    project_world_to_image_pose,
++)
++
+ 
+ @dataclass
+ class RoundtripMetrics:
+@@ -77,6 +83,62 @@ def world_geom_to_image(
+     return np.stack([us, vs, valid], axis=1)
+ 
+ 
++def project_points_cam0_to_image(
++    points_cam0: np.ndarray,
++    calib: Dict[str, np.ndarray],
++    image_shape: Tuple[int, int],
++    use_rect: bool = True,
++    y_flip: bool = True,
++) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
++    h, w = int(image_shape[0]), int(image_shape[1])
++    k = calib["k"]
++    p_rect = calib.get("p_rect")
++    r_rect = calib.get("r_rect")
++    t_c0_v = calib.get("t_velo_to_cam")
++    t_v_c0 = calib.get("t_cam_to_velo")
++    calib_obj = Kitti360Calib(
++        t_c0_v=t_c0_v,
++        t_v_c0=t_v_c0,
++        r_rect_00=r_rect,
++        p_rect_00=p_rect,
++        k=k,
++        image_size=(w, h),
++        warnings={},
++    )
++    proj = project_cam0_to_image(points_cam0, calib_obj, use_rect=use_rect, y_flip=y_flip, sanity=False)
++    return proj["u"], proj["v"], proj["valid"], proj["in_img"]
++
++
++def world_points_to_image(
++    points_world: np.ndarray,
++    pose: Tuple[float, ...],
++    calib: Dict[str, np.ndarray],
++    image_shape: Tuple[int, int],
++    use_rect: bool = True,
++    y_flip: bool = True,
++) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
++    if points_world.size == 0:
++        empty = np.zeros((0,), dtype=float)
++        return empty, empty, empty, empty
++    h, w = int(image_shape[0]), int(image_shape[1])
++    k = calib["k"]
++    p_rect = calib.get("p_rect")
++    r_rect = calib.get("r_rect")
++    t_c0_v = calib.get("t_velo_to_cam")
++    t_v_c0 = calib.get("t_cam_to_velo")
++    calib_obj = Kitti360Calib(
++        t_c0_v=t_c0_v,
++        t_v_c0=t_v_c0,
++        r_rect_00=r_rect,
++        p_rect_00=p_rect,
++        k=k,
++        image_size=(w, h),
++        warnings={},
++    )
++    proj = project_world_to_image_pose(points_world, pose, calib_obj, use_rect=use_rect, y_flip_mode="fixed_true", sanity=False)
++    return proj["u"], proj["v"], proj["valid"], proj["in_img"]
++
++
+ def image_mask_to_world_geom(
+     geom: Polygon | LineString,
+     calib: Dict[str, np.ndarray],
+diff --git a/tools/archive_legacy_entrypoints.py b/tools/archive_legacy_entrypoints.py
+index e69de29..d385d45 100644
+--- a/tools/archive_legacy_entrypoints.py
++++ b/tools/archive_legacy_entrypoints.py
+@@ -0,0 +1,489 @@
++# -*- coding: utf-8 -*-
++"""
++功能：
++    Phase1 - Legacy Vault：归档现有 cmd/py 入口脚本，并生成索引与依赖关系（不跑链路，不改算法）。
++    目标是从“混乱不可见”变为“可检索、可分组、可追溯”，为后续 Skill 化迁移做准备。
++
++输入：
++    - REPO_ROOT：项目根目录（示例路径应使用原始字符串 r"D:\\Work\\xxx" 形式以避免反斜杠转义问题）
++输出：
++    legacy/
++      snapshot_<timestamp>/
++        orig/                      # 归档副本（按原相对路径保留）
++        catalog.csv                # 全量清单（含未拷贝者）
++        catalog.json
++        deps_cmd_edges.csv         # cmd 调用依赖边（from -> to）
++        LEGACY_INDEX.md            # 人读分组摘要
++        manifest.json              # 快照元信息（时间、commit、统计）
++        logs/run.log
++      ACTIVE_SNAPSHOT.txt          # 指向最新 snapshot 目录
++
++参数：
++    - ARCHIVE_PY_MODE：
++        * "entrypoints"：仅归档入口类 py（tools/scripts 下 或包含 main guard）
++        * "tools_scripts"：归档 tools/ 与 scripts/ 下所有 py
++        * "all"：归档所有 py（不建议，通常太大）
++    - CMD_EXTS：默认只处理 .cmd（可扩展 .bat/.ps1）
++    - EXCLUDE_DIR_NAMES：排除 runs/outputs/.venv/.git 等
++
++说明：
++    - 归档采用“复制副本”，不会移动原文件，避免破坏现有调用。
++    - 依赖解析仅做轻量：从 cmd 中提取 call/python 相关行，构建边列表。
++"""
++
++import os
++import re
++import json
++import csv
++import shutil
++import hashlib
++import logging
++import subprocess
++from pathlib import Path
++from datetime import datetime
++from typing import Dict, Any, List, Tuple, Optional
++
++
++# =========================
++# 参数区（集中可编辑）
++# =========================
++REPO_ROOT = r"E:\Work\nav-road-pipeline"  # TODO：改成你的项目根目录（Windows路径建议用原始字符串）
++OVERWRITE = False  # snapshot 一般不覆盖；若同名存在可改 True
++
++# 归档策略
++ARCHIVE_PY_MODE = "entrypoints"  # "entrypoints" | "tools_scripts" | "all"
++CMD_EXTS = {".cmd"}  # 如需扩展可加 ".bat", ".ps1"
++
++# 扫描范围
++INCLUDE_PY = True
++INCLUDE_CMD = True
++
++EXCLUDE_DIR_NAMES = {
++    ".git", ".svn", ".hg",
++    "__pycache__", ".idea",
++    ".venv", "venv",
++    "runs", "outputs", "baselines",
++    "dist", "build", ".mypy_cache", ".pytest_cache"
++}
++
++MAX_BYTES_FOR_HEAD = 64 * 1024  # 读取文件头部用于摘要/入口判断
++LOG_LEVEL = "INFO"
++
++
++# =========================
++# 函数区
++# =========================
++def setup_logger(log_path: Path) -> logging.Logger:
++    """创建日志对象（控制台+文件）。"""
++    logger = logging.getLogger("legacy_archive")
++    logger.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
++    logger.handlers.clear()
++
++    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
++    ch = logging.StreamHandler()
++    ch.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
++    ch.setFormatter(fmt)
++
++    fh = logging.FileHandler(str(log_path), encoding="utf-8")
++    fh.setLevel(getattr(logging, LOG_LEVEL.upper(), logging.INFO))
++    fh.setFormatter(fmt)
++
++    logger.addHandler(ch)
++    logger.addHandler(fh)
++    return logger
++
++
++def run_cmd(cmd: List[str], cwd: Path) -> Tuple[int, str]:
++    """运行命令并返回(返回码, 输出)。"""
++    try:
++        p = subprocess.run(
++            cmd,
++            cwd=str(cwd),
++            stdout=subprocess.PIPE,
++            stderr=subprocess.STDOUT,
++            text=True,
++            encoding="utf-8",
++            errors="ignore",
++        )
++        return p.returncode, (p.stdout or "").strip()
++    except Exception as e:
++        return 999, f"ERROR: {e}"
++
++
++def ensure_dir(path: Path) -> None:
++    """创建目录（若不存在）。"""
++    path.mkdir(parents=True, exist_ok=True)
++
++
++def read_head_text(path: Path, max_bytes: int) -> str:
++    """读取文件头部文本（用于摘要/入口判断）。"""
++    try:
++        data = path.read_bytes()[:max_bytes]
++        for enc in ("utf-8", "gbk", "utf-16"):
++            try:
++                return data.decode(enc, errors="ignore")
++            except Exception:
++                continue
++        return data.decode("utf-8", errors="ignore")
++    except Exception:
++        return ""
++
++
++def sha1_partial(path: Path, max_bytes: int = 2 * 1024 * 1024) -> str:
++    """计算 sha1（最多读取前2MB，足够用于变更指纹）。"""
++    h = hashlib.sha1()
++    read_bytes = 0
++    with path.open("rb") as f:
++        while True:
++            chunk = f.read(256 * 1024)
++            if not chunk:
++                break
++            h.update(chunk)
++            read_bytes += len(chunk)
++            if read_bytes >= max_bytes:
++                break
++    return h.hexdigest()
++
++
++def is_python_entrypoint(rel_path: str, head_text: str) -> bool:
++    """
++    判断 py 是否入口：
++    - tools/ 或 scripts/ 下的 py：按模式决定
++    - 或包含 if __name__ == "__main__"
++    - 或包含 argparse/click/typer 等 CLI 迹象
++    """
++    p = rel_path.replace("\\", "/").lower()
++
++    has_main_guard = ('__name__' in head_text and '__main__' in head_text)
++    has_cli = ("argparse" in head_text) or ("click" in head_text) or ("typer" in head_text)
++
++    if ARCHIVE_PY_MODE == "all":
++        return True
++    if ARCHIVE_PY_MODE == "tools_scripts":
++        return p.startswith("tools/") or p.startswith("scripts/")
++    # entrypoints
++    if p.startswith("tools/") or p.startswith("scripts/"):
++        return True
++    return has_main_guard or has_cli
++
++
++def extract_summary(ext: str, head_text: str) -> str:
++    """提取短摘要：优先取注释/文档字符串首句。"""
++    lines = [ln.strip() for ln in head_text.splitlines()]
++    lines = [ln for ln in lines if ln]
++    if not lines:
++        return ""
++
++    if ext == ".py":
++        joined = "\n".join(lines[:30])
++        m = re.search(r'"""(.*?)"""', joined, flags=re.DOTALL)
++        if m:
++            s = m.group(1).strip().splitlines()[0].strip()
++            return s[:200]
++        m2 = re.search(r"'''(.*?)'''", joined, flags=re.DOTALL)
++        if m2:
++            s = m2.group(1).strip().splitlines()[0].strip()
++            return s[:200]
++
++    for ln in lines[:15]:
++        if ln.startswith("#") or ln.startswith("::") or ln.startswith("REM") or ln.startswith("//"):
++            s = ln.lstrip("#/:REM ").strip()
++            if s:
++                return s[:200]
++    return lines[0][:200]
++
++
++def tag_by_path(rel_path: str) -> List[str]:
++    """基于路径/文件名做粗标签（便于分组）。"""
++    p = rel_path.replace("\\", "/").lower()
++    name = Path(p).name
++    tags = []
++
++    keys = [
++        ("projection", ["proj", "projection", "crs", "wgs84", "utm", "rect", "roundtrip"]),
++        ("crosswalk", ["crosswalk", "zebra", "ped", "walk"]),
++        ("lidar", ["lidar", "velo", "velodyne", "las", "laz", "pointcloud"]),
++        ("image", ["image", "camera", "rgb", "overlay"]),
++        ("sat", ["sat", "dop", "aerial"]),
++        ("osm", ["osm"]),
++        ("topo", ["topo"]),
++        ("geom", ["geom"]),
++        ("qa", ["qa", "validate", "check", "smoke", "report", "summary"]),
++        ("download", ["download", "fetch"]),
++        ("run", ["run_", "runner", "pipeline"]),
++        ("debug", ["debug", "trace"]),
++        ("tool", ["tools/"]),
++        ("script", ["scripts/"]),
++    ]
++    for t, kws in keys:
++        for kw in kws:
++            if kw in p or kw in name:
++                tags.append(t)
++                break
++    # 去重保持顺序
++    seen = set()
++    out = []
++    for x in tags:
++        if x not in seen:
++            out.append(x)
++            seen.add(x)
++    return out
++
++
++def parse_cmd_edges(rel_path: str, text: str) -> List[Tuple[str, str, str]]:
++    """
++    从 cmd 文本提取依赖边：
++    - call xxx.cmd
++    - python xxx.py
++    - .venv\\Scripts\\python.exe xxx.py
++    返回：(from, to, kind)
++    """
++    edges = []
++    lines = text.splitlines()
++    for ln in lines:
++        s = ln.strip()
++        if not s or s.lower().startswith("rem"):
++            continue
++
++        # call
++        m = re.search(r"(?i)\bcall\s+([^\s]+)", s)
++        if m:
++            tgt = m.group(1).strip().strip('"')
++            edges.append((rel_path, tgt, "call"))
++            continue
++
++        # python
++        if re.search(r"(?i)\bpython(\.exe)?\b", s) or ("Scripts\\python.exe" in s) or ("Scripts/python.exe" in s):
++            # 取第一个 .py 作为目标
++            m2 = re.search(r"([A-Za-z0-9_\-./\\]+\.py)", s)
++            if m2:
++                tgt = m2.group(1).strip()
++                edges.append((rel_path, tgt, "python"))
++    return edges
++
++
++def copy_to_snapshot(src: Path, dst: Path) -> None:
++    """拷贝文件到 snapshot（保留目录结构）。"""
++    ensure_dir(dst.parent)
++    shutil.copy2(str(src), str(dst))
++
++
++def build_legacy_index_md(records: List[Dict[str, Any]]) -> str:
++    """生成 LEGACY_INDEX.md（按标签分组的人读摘要）。"""
++    groups: Dict[str, List[Dict[str, Any]]] = {}
++    for r in records:
++        for t in r.get("tags", []):
++            groups.setdefault(t, []).append(r)
++
++    # 排序：组按数量降序
++    group_items = sorted(groups.items(), key=lambda x: (-len(x[1]), x[0]))
++
++    lines = []
++    lines.append("# Legacy Index\n")
++    lines.append("本文件由 tools/archive_legacy_entrypoints.py 自动生成。\n")
++    lines.append("目标：让后续 Skill 化迁移有清晰的“入口地图”和粗分类。\n")
++
++    total = len(records)
++    cmd_n = sum(1 for r in records if r["ext"] in CMD_EXTS)
++    py_n = sum(1 for r in records if r["ext"] == ".py")
++    py_entry_n = sum(1 for r in records if r["ext"] == ".py" and r.get("py_entrypoint"))
++
++    lines.append("## Summary\n")
++    lines.append(f"- total: {total}")
++    lines.append(f"- cmd: {cmd_n}")
++    lines.append(f"- py: {py_n} (entrypoints={py_entry_n})\n")
++
++    lines.append("## Groups\n")
++    for tag, items in group_items:
++        lines.append(f"### {tag} ({len(items)})\n")
++        # 每组只列前若干，避免太长
++        items_sorted = sorted(items, key=lambda x: (x.get("rel_path", "")))
++        for r in items_sorted[:80]:
++            mark = ""
++            if r["ext"] == ".py" and r.get("py_entrypoint"):
++                mark = " [py-entry]"
++            if r["ext"] in CMD_EXTS:
++                mark = " [cmd]"
++            lines.append(f"- `{r['rel_path']}`{mark} — {r.get('summary','')}")
++        if len(items_sorted) > 80:
++            lines.append(f"- ... ({len(items_sorted)-80} more)")
++        lines.append("")
++    return "\n".join(lines)
++
++
++def main() -> None:
++    repo_root = Path(REPO_ROOT)
++    if not repo_root.exists():
++        raise FileNotFoundError(f"REPO_ROOT 不存在：{repo_root}")
++
++    legacy_root = repo_root / "legacy"
++    ensure_dir(legacy_root)
++
++    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
++    snapshot_dir = legacy_root / f"snapshot_{ts}"
++    if snapshot_dir.exists() and OVERWRITE:
++        shutil.rmtree(str(snapshot_dir), ignore_errors=True)
++    ensure_dir(snapshot_dir)
++
++    orig_dir = snapshot_dir / "orig"
++    logs_dir = snapshot_dir / "logs"
++    ensure_dir(orig_dir)
++    ensure_dir(logs_dir)
++
++    logger = setup_logger(logs_dir / "run.log")
++    logger.info("=== Legacy Vault 归档开始 ===")
++    logger.info(f"repo_root = {repo_root}")
++    logger.info(f"snapshot_dir = {snapshot_dir}")
++    logger.info(f"ARCHIVE_PY_MODE = {ARCHIVE_PY_MODE}")
++
++    # git 快照（可选）
++    git_branch = ""
++    git_commit = ""
++    code, out = run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_root)
++    if code == 0:
++        git_branch = out
++    code, out = run_cmd(["git", "rev-parse", "HEAD"], repo_root)
++    if code == 0:
++        git_commit = out
++
++    records: List[Dict[str, Any]] = []
++    edges: List[Tuple[str, str, str]] = []
++
++    # 扫描
++    for root, dirnames, filenames in os.walk(repo_root):
++        # 过滤目录
++        dirnames[:] = [d for d in dirnames if d not in EXCLUDE_DIR_NAMES]
++
++        for fn in filenames:
++            p = Path(root) / fn
++            ext = p.suffix.lower()
++
++            if INCLUDE_CMD and ext in CMD_EXTS:
++                pass
++            elif INCLUDE_PY and ext == ".py":
++                pass
++            else:
++                continue
++
++            rel_path = str(p.relative_to(repo_root)).replace("\\", "/")
++            head = read_head_text(p, MAX_BYTES_FOR_HEAD)
++            summary = extract_summary(ext, head)
++            tags = tag_by_path(rel_path)
++
++            stat = p.stat()
++            size_bytes = int(stat.st_size)
++            mtime = datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds")
++
++            py_entry = False
++            if ext == ".py":
++                py_entry = is_python_entrypoint(rel_path, head)
++
++            # 决定是否拷贝归档
++            copied = False
++            if ext in CMD_EXTS:
++                copied = True
++            elif ext == ".py":
++                copied = py_entry  # entrypoints 模式默认只拷入口 py
++                if ARCHIVE_PY_MODE == "tools_scripts":
++                    copied = rel_path.lower().startswith("tools/") or rel_path.lower().startswith("scripts/")
++                if ARCHIVE_PY_MODE == "all":
++                    copied = True
++
++            # hash
++            try:
++                h = sha1_partial(p)
++            except Exception:
++                h = ""
++
++            rec = {
++                "rel_path": rel_path,
++                "ext": ext,
++                "size_bytes": size_bytes,
++                "mtime": mtime,
++                "sha1_head2mb": h,
++                "copied": copied,
++                "py_entrypoint": py_entry if ext == ".py" else "",
++                "summary": summary,
++                "tags": tags,
++            }
++            records.append(rec)
++
++            # cmd edges
++            if ext in CMD_EXTS:
++                try:
++                    full_text = p.read_text(encoding="utf-8", errors="ignore")
++                    edges.extend(parse_cmd_edges(rel_path, full_text))
++                except Exception:
++                    pass
++
++            # copy
++            if copied:
++                dst = orig_dir / rel_path
++                try:
++                    copy_to_snapshot(p, dst)
++                except Exception as e:
++                    logger.warning(f"拷贝失败：{rel_path} -> {e}")
++
++    # 写出 catalog
++    catalog_csv = snapshot_dir / "catalog.csv"
++    catalog_json = snapshot_dir / "catalog.json"
++    deps_csv = snapshot_dir / "deps_cmd_edges.csv"
++    index_md = snapshot_dir / "LEGACY_INDEX.md"
++    manifest_json = snapshot_dir / "manifest.json"
++
++    # CSV
++    fields = ["rel_path", "ext", "copied", "py_entrypoint", "size_bytes", "mtime", "sha1_head2mb", "summary", "tags"]
++    with catalog_csv.open("w", encoding="utf-8-sig", newline="") as f:
++        w = csv.DictWriter(f, fieldnames=fields)
++        w.writeheader()
++        for r in records:
++            row = r.copy()
++            row["tags"] = "|".join(r.get("tags", []))
++            w.writerow({k: row.get(k, "") for k in fields})
++
++    catalog_json.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
++
++    # deps edges
++    with deps_csv.open("w", encoding="utf-8-sig", newline="") as f:
++        w = csv.writer(f)
++        w.writerow(["from", "to", "kind"])
++        for a, b, k in edges:
++            w.writerow([a, b, k])
++
++    # index md
++    index_md.write_text(build_legacy_index_md(records), encoding="utf-8")
++
++    # manifest
++    stats = {
++        "total": len(records),
++        "cmd": sum(1 for r in records if r["ext"] in CMD_EXTS),
++        "py": sum(1 for r in records if r["ext"] == ".py"),
++        "py_entrypoints": sum(1 for r in records if r["ext"] == ".py" and r.get("py_entrypoint")),
++        "copied": sum(1 for r in records if r.get("copied")),
++        "edges": len(edges),
++    }
++    manifest = {
++        "snapshot": snapshot_dir.name,
++        "created_at": datetime.now().isoformat(timespec="seconds"),
++        "repo_root": str(repo_root),
++        "git": {"branch": git_branch, "commit": git_commit},
++        "params": {"ARCHIVE_PY_MODE": ARCHIVE_PY_MODE},
++        "stats": stats,
++        "outputs": {
++            "catalog_csv": str(catalog_csv.relative_to(snapshot_dir)),
++            "catalog_json": str(catalog_json.relative_to(snapshot_dir)),
++            "deps_cmd_edges_csv": str(deps_csv.relative_to(snapshot_dir)),
++            "legacy_index_md": str(index_md.relative_to(snapshot_dir)),
++        },
++    }
++    manifest_json.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
++
++    # active pointer
++    (legacy_root / "ACTIVE_SNAPSHOT.txt").write_text(str(snapshot_dir), encoding="utf-8")
++
++    logger.info("=== 完成 ===")
++    logger.info(f"stats: {stats}")
++    logger.info(f"ACTIVE_SNAPSHOT: {legacy_root / 'ACTIVE_SNAPSHOT.txt'}")
++
++
++if __name__ == "__main__":
+diff --git a/tools/project_feature_store_to_map.py b/tools/project_feature_store_to_map.py
+index b1228c6..2077583 100644
+--- a/tools/project_feature_store_to_map.py
++++ b/tools/project_feature_store_to_map.py
+@@ -31,6 +31,8 @@ from pipeline.datasets.kitti360_io import (
+     load_kitti360_pose,
+     load_kitti360_pose_full,
+ )
++from pipeline.calib.kitti360_backproject import BackprojectContext, configure_default_context, pixel_to_world_on_ground
++from pipeline.calib.kitti360_projection import project_velo_to_image
+ from tools.build_image_sample_index import _find_image_dir
+ 
+ 
+@@ -39,6 +41,24 @@ def _setup_logger() -> logging.Logger:
+     return logging.getLogger("project_feature_store_to_map")
+ 
+ 
++def _find_latest_clean_dtm(drive_id: str) -> Optional[Path]:
++    drive_tag = drive_id.split("_")[-2] if "_" in drive_id else drive_id
++    patterns = [
++        f"lidar_ground_{drive_tag}_f250_500_*",
++        f"lidar_ground_{drive_tag}_*",
++    ]
++    candidates: list[Path] = []
++    for pat in patterns:
++        for run_dir in Path("runs").glob(pat):
++            cand = run_dir / "rasters" / "dtm_median_utm32.tif"
++            if cand.exists():
++                candidates.append(cand)
++    if not candidates:
++        return None
++    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
++    return candidates[0]
++
++
+ def _load_camera_defaults(path: Path) -> dict:
+     if not path.exists():
+         return {"default_camera": "image_00", "enforce_camera": True, "allow_override": False}
+@@ -153,125 +173,45 @@ def _velo_to_world(points: np.ndarray, pose_xy: Tuple[float, float], yaw: float)
+     return np.stack([xw, yw, z], axis=1)
+ 
+ 
+-def _project_velodyne_to_image(points: np.ndarray, calib: dict) -> Tuple[np.ndarray, np.ndarray]:
+-    t_velo_to_cam = calib["t_velo_to_cam"]
+-    r_rect = calib["r_rect"]
+-    k = calib["k"]
+-    homog = np.hstack([points[:, :3], np.ones((points.shape[0], 1), dtype=float)])
+-    cam = (t_velo_to_cam @ homog.T).T
+-    xyz = cam[:, :3]
+-    xyz = (r_rect @ xyz.T).T
+-    z = xyz[:, 2]
+-    valid = z > 0.1
+-    xyz = xyz[valid]
+-    z = z[valid]
+-    u = (k[0, 0] * xyz[:, 0] / z) + k[0, 2]
+-    v = (k[1, 1] * xyz[:, 1] / z) + k[1, 2]
+-    return np.stack([u, v], axis=1), valid
+-
+-
+-def _pose_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+-    c1 = float(np.cos(yaw))
+-    s1 = float(np.sin(yaw))
+-    c2 = float(np.cos(pitch))
+-    s2 = float(np.sin(pitch))
+-    c3 = float(np.cos(roll))
+-    s3 = float(np.sin(roll))
+-    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+-    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+-    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+-    return r_z @ r_y @ r_x
+-
+-
+-def _pixel_to_world(
+-    u: float,
+-    v: float,
+-    calib: dict,
+-    pose: Tuple[float, ...],
+-    cam_to_pose: Optional[np.ndarray],
+-) -> Optional[Tuple[float, float]]:
+-    k = calib["k"]
+-    r_rect = calib["r_rect"]
+-    cam_to_velo = calib["t_cam_to_velo"]
+-    fx, fy = k[0, 0], k[1, 1]
+-    cx, cy = k[0, 2], k[1, 2]
+-    if fx == 0 or fy == 0:
+-        return None
+-    dir_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+-    r_rect_inv = np.linalg.inv(r_rect)
+-    dir_cam = r_rect_inv.dot(dir_cam)
+-    if len(pose) == 6 and cam_to_pose is not None:
+-        x, y, z, roll, pitch, yaw = pose
+-        dir_pose = cam_to_pose[:3, :3].dot(dir_cam)
+-        r_world_pose = _pose_rotation_matrix(roll, pitch, yaw)
+-        dir_world = r_world_pose.dot(dir_pose)
+-        origin_pose = cam_to_pose[:3, 3]
+-        origin_world = np.array([x, y, z], dtype=float) + r_world_pose.dot(origin_pose)
+-        if dir_world[2] >= -1e-6:
+-            return None
+-        t = -origin_world[2] / dir_world[2]
+-        if t <= 0:
+-            return None
+-        hit = origin_world + t * dir_world
+-        return float(hit[0]), float(hit[1])
+-    if len(pose) != 3:
+-        return None
+-    pose_xy = (pose[0], pose[1])
+-    yaw = pose[2]
+-    dir_velo = cam_to_velo[:3, :3].dot(dir_cam)
+-    c = float(np.cos(yaw))
+-    s = float(np.sin(yaw))
+-    r_yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+-    dir_world = r_yaw.dot(dir_velo)
+-    cam_offset = cam_to_velo[:3, 3]
+-    origin_z = float(abs(cam_offset[2]))
+-    origin = np.array(
+-        [
+-            pose_xy[0] + c * cam_offset[0] - s * cam_offset[1],
+-            pose_xy[1] + s * cam_offset[0] + c * cam_offset[1],
+-            origin_z,
+-        ],
+-        dtype=float,
+-    )
+-    if dir_world[2] >= -1e-6:
+-        return None
+-    t = -origin[2] / dir_world[2]
+-    if t <= 0:
+-        return None
+-    hit = origin + t * dir_world
+-    return float(hit[0]), float(hit[1])
++def _project_velodyne_to_image(points: np.ndarray, proj_ctx: BackprojectContext) -> Tuple[np.ndarray, np.ndarray]:
++    if points.size == 0:
++        return np.empty((0, 2), dtype=float), np.zeros((0,), dtype=bool)
++    proj = project_velo_to_image(points[:, :3], proj_ctx.calib, use_rect=True, y_flip_mode="fixed_true", sanity=False)
++    uv = np.stack([proj["u"], proj["v"]], axis=1)
++    valid = proj["valid"].astype(bool)
++    return uv, valid
+ 
+ 
+ def _project_geometry_ground_plane(
+     geom,
+-    calib: dict,
+-    pose: Tuple[float, ...],
+-    cam_to_pose: Optional[np.ndarray],
++    frame_id: str,
++    ground_model: Dict[str, object],
++    proj_ctx: BackprojectContext,
+ ):
+     if geom is None or geom.is_empty:
+         return None
+     if geom.geom_type == "LineString":
+         coords = []
+         for u, v in geom.coords:
+-            pt = _pixel_to_world(u, v, calib, pose, cam_to_pose)
++            pt = pixel_to_world_on_ground(frame_id, float(u), float(v), ground_model, ctx=proj_ctx)
+             if pt is not None:
+-                coords.append(pt)
++                coords.append((float(pt[0]), float(pt[1])))
+         if len(coords) < 2:
+             return None
+         return LineString(coords)
+     if geom.geom_type == "Polygon":
+         coords = []
+         for u, v in geom.exterior.coords:
+-            pt = _pixel_to_world(u, v, calib, pose, cam_to_pose)
++            pt = pixel_to_world_on_ground(frame_id, float(u), float(v), ground_model, ctx=proj_ctx)
+             if pt is not None:
+-                coords.append(pt)
++                coords.append((float(pt[0]), float(pt[1])))
+         if len(coords) < 3:
+             return None
+         return Polygon(coords)
+     if geom.geom_type == "MultiLineString":
+         parts = []
+         for part in geom.geoms:
+-            proj = _project_geometry_ground_plane(part, calib, pose, cam_to_pose)
++            proj = _project_geometry_ground_plane(part, frame_id, ground_model, proj_ctx)
+             if proj is not None:
+                 parts.append(proj)
+         if not parts:
+@@ -282,7 +222,7 @@ def _project_geometry_ground_plane(
+     if geom.geom_type == "MultiPolygon":
+         parts = []
+         for part in geom.geoms:
+-            proj = _project_geometry_ground_plane(part, calib, pose, cam_to_pose)
++            proj = _project_geometry_ground_plane(part, frame_id, ground_model, proj_ctx)
+             if proj is not None:
+                 parts.append(proj)
+         if not parts:
+@@ -422,6 +362,8 @@ def main() -> int:
+     ap.add_argument("--min-points", type=int, default=30)
+     ap.add_argument("--min-length", type=float, default=0.8)
+     ap.add_argument("--min-mask-area-px", type=float, default=500.0)
++    ap.add_argument("--dtm-path", default="", help="optional clean DTM path (dtm_median_utm32.tif)")
++    ap.add_argument("--fixed-plane-z0", type=float, default=0.0, help="fallback ground plane z0 in UTM32")
+     ap.add_argument("--max-instances-per-class", type=int, default=200)
+     ap.add_argument("--line-buffer-px", type=float, default=2.0)
+     ap.add_argument("--resume", type=int, default=1)
+@@ -455,12 +397,10 @@ def main() -> int:
+         log.error("calib load failed: %s", exc)
+         return 4
+     cam_to_pose_key = ""
+-    cam_to_pose = None
+     try:
+-        cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(data_root, camera)
++        _cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(data_root, camera)
+     except Exception:
+         cam_to_pose_key = ""
+-        cam_to_pose = None
+     _assert_camera_consistency(
+         camera,
+         image_dir,
+@@ -472,6 +412,11 @@ def main() -> int:
+         allow_override,
+     )
+ 
++    dtm_path = Path(args.dtm_path) if str(args.dtm_path).strip() else _find_latest_clean_dtm(args.drive)
++    ground_mode = "lidar_clean_dtm" if dtm_path else "fixed_plane"
++    ground_model = {"mode": ground_mode, "dtm_path": str(dtm_path) if dtm_path else None, "z0": float(args.fixed_plane_z0)}
++    proj_ctx = configure_default_context(data_root, args.drive, cam_id=camera, dtm_path=dtm_path)
++
+     feature_store = Path(args.feature_store)
+     out_store = Path(args.out_store)
+     out_store.mkdir(parents=True, exist_ok=True)
+@@ -553,7 +498,8 @@ def main() -> int:
+                     )
+                 else:
+                     world_pts = _velo_to_world(pts[:, :3], (pose[0], pose[1]), pose[2])
+-                uv, valid = _project_velodyne_to_image(pts[:, :3], calib)
++                uv, valid = _project_velodyne_to_image(pts[:, :3], proj_ctx)
++                uv = uv[valid]
+                 world_pts = world_pts[valid]
+                 lidar_ok = True
+ 
+@@ -585,7 +531,7 @@ def main() -> int:
+                     if map_mode == "lidar_project":
+                         mapped = None
+             if mapped is None and map_mode in {"ground_plane", "auto"} and is_ground_class:
+-                mapped = _project_geometry_ground_plane(geom, calib, pose, cam_to_pose)
++                mapped = _project_geometry_ground_plane(geom, frame_id, ground_model, proj_ctx)
+                 if mapped is not None:
+                     map_mode_used = "ground_plane"
+                     evidence_strength = "weak"
+diff --git a/tools/run_crosswalk_drive_full.py b/tools/run_crosswalk_drive_full.py
+index aa8ea1e..061fe99 100644
+--- a/tools/run_crosswalk_drive_full.py
++++ b/tools/run_crosswalk_drive_full.py
+@@ -23,7 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
+ if str(REPO_ROOT) not in sys.path:
+     sys.path.insert(0, str(REPO_ROOT))
+ 
+-from pipeline.projection.projector import world_geom_to_image
++from pipeline.calib.kitti360_backproject import BackprojectContext, configure_default_context, world_to_pixel_cam0
+ from pipeline.datasets.kitti360_io import (
+     load_kitti360_calib,
+     load_kitti360_cam_to_pose_key,
+@@ -213,16 +213,19 @@ def _load_crosswalk_raw(
+ 
+ def _project_world_to_image(
+     points: np.ndarray,
+-    pose_xy_yaw: Tuple[float, ...],
+-    calib: Dict[str, np.ndarray],
++    frame_id: str,
++    proj_ctx: BackprojectContext,
+ ) -> np.ndarray:
+-    return world_geom_to_image(points, pose_xy_yaw, calib, "k_rrect")
++    u, v, valid = world_to_pixel_cam0(frame_id, points, ctx=proj_ctx)
++    if u.size == 0:
++        return np.zeros((0, 3), dtype=float)
++    return np.stack([u, v, valid], axis=1)
+ 
+ 
+ def _geom_to_image_points(
+     geom: object,
+-    pose_xy_yaw: Tuple[float, ...],
+-    calib: Dict[str, np.ndarray],
++    frame_id: str,
++    proj_ctx: BackprojectContext,
+ ) -> List[Tuple[float, float]]:
+     if geom is None or geom.is_empty:
+         return []
+@@ -235,7 +238,7 @@ def _geom_to_image_points(
+     if coords.shape[0] == 0:
+         return []
+     points = np.column_stack([coords[:, 0], coords[:, 1], np.zeros(coords.shape[0], dtype=float)])
+-    proj = _project_world_to_image(points, pose_xy_yaw, calib)
++    proj = _project_world_to_image(points, frame_id, proj_ctx)
+     out: List[Tuple[float, float]] = []
+     for u, v, valid in proj:
+         if not valid:
+@@ -374,13 +377,13 @@ def _build_lidar_candidate_for_frame(
+     image_path: str,
+     raw_info: dict,
+     pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+     lidar_cfg: dict,
+ ) -> Tuple[dict | None, dict]:
+     stats = {
+         "proj_method": "none",
+         "pose_ok": 1 if pose is not None else 0,
+-        "calib_ok": 1 if calib is not None else 0,
++        "calib_ok": 1 if proj_ctx is not None else 0,
+         "proj_in_image_ratio": 0.0,
+         "points_total": 0,
+         "points_in_bbox": 0,
+@@ -395,12 +398,12 @@ def _build_lidar_candidate_for_frame(
+     }
+     raw_gdf = raw_info.get("gdf") if raw_info else None
+     bbox_px = raw_info.get("bbox_px") if raw_info else None
+-    if raw_gdf is None or raw_gdf.empty or pose is None or calib is None:
++    if raw_gdf is None or raw_gdf.empty or pose is None or proj_ctx is None:
+         if raw_gdf is None or raw_gdf.empty:
+             stats["drop_reason_code"] = "GEOM_INVALID"
+         elif pose is None:
+             stats["drop_reason_code"] = "PLANE_FALLBACK_USED"
+-        elif calib is None:
++        elif proj_ctx is None:
+             stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
+         return None, stats
+ 
+@@ -416,7 +419,7 @@ def _build_lidar_candidate_for_frame(
+         stats["drop_reason_code"] = "LIDAR_NO_POINTS_BBOX"
+         return None, stats
+ 
+-    proj = _project_world_to_image(points_world, pose, calib)
++    proj = _project_world_to_image(points_world, frame_id, proj_ctx)
+     u = proj[:, 0]
+     v = proj[:, 1]
+     valid = proj[:, 2].astype(bool)
+@@ -595,7 +598,7 @@ def _build_lidar_candidates_for_records(
+     index_lookup: Dict[Tuple[str, str], str],
+     raw_frames: Dict[Tuple[str, str], dict],
+     pose_map: Dict[str, Tuple[float, float, float] | None],
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+     lidar_cfg: dict,
+ ) -> Tuple[List[dict], Dict[str, dict]]:
+     candidates = []
+@@ -615,7 +618,7 @@ def _build_lidar_candidates_for_records(
+             image_path,
+             raw_info,
+             pose_map.get(frame_id),
+-            calib,
++            proj_ctx,
+             lidar_cfg,
+         )
+         stats_by_frame[frame_id] = stats
+@@ -709,16 +712,15 @@ def _ensure_gated_entities_images(
+     kitti_root: Path,
+     lidar_world_mode: str,
+     camera: str,
++    proj_ctx: BackprojectContext | None,
+     frames_to_render: set[str],
+ ) -> None:
+     if not qa_index_path.exists():
+         return
+     qa = gpd.read_file(qa_index_path)
+     pose_map: Dict[str, Tuple[float, float, float] | Tuple[float, float, float, float, float, float]] = {}
+-    try:
+-        calib = load_kitti360_calib(kitti_root, camera)
+-    except Exception:
+-        calib = None
++    if proj_ctx is None:
++        return
+     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
+     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
+     candidate_by_frame: Dict[str, gpd.GeoDataFrame] = {}
+@@ -769,7 +771,7 @@ def _ensure_gated_entities_images(
+             raw_frames.get((drive_id, frame_id)),
+             lidar_stats.get(frame_id, {}),
+             pose_map.get(frame_id),
+-            calib,
++            proj_ctx,
+         )
+         qa.at[idx, "overlay_gated_path"] = str(gated_path)
+         support_ids = final_support.get((drive_id, frame_id), [])
+@@ -780,9 +782,7 @@ def _ensure_gated_entities_images(
+                 final_gdf,
+                 drive_id,
+                 frame_id,
+-                kitti_root,
+-                lidar_world_mode,
+-                camera,
++                proj_ctx,
+             )
+             qa.at[idx, "overlay_entities_path"] = str(entities_path)
+         elif not entities_path.exists():
+@@ -795,7 +795,7 @@ def _ensure_gated_entities_images(
+                 final_support,
+                 raw_has,
+                 pose_map.get(frame_id),
+-                calib,
++                proj_ctx,
+             )
+             qa.at[idx, "overlay_entities_path"] = str(entities_path)
+         qa.at[idx, "candidate_ids_nearby"] = json.dumps(sorted(set(candidate_ids.get((drive_id, frame_id), []))), ensure_ascii=True)
+@@ -808,9 +808,7 @@ def _render_final_entities_image(
+     final_gdf: gpd.GeoDataFrame,
+     drive_id: str,
+     frame_id: str,
+-    kitti_root: Path,
+-    lidar_world_mode: str,
+-    camera: str,
++    proj_ctx: BackprojectContext | None,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+@@ -822,21 +820,9 @@ def _render_final_entities_image(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    try:
+-        calib = load_kitti360_calib(kitti_root, camera)
+-    except Exception:
++    if proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB"])
+         return
+-    try:
+-        if lidar_world_mode == "fullpose":
+-            x, y, z, roll, pitch, yaw = load_kitti360_pose_full(kitti_root, drive_id, frame_id)
+-            pose = (x, y, z, roll, pitch, yaw)
+-        else:
+-            x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
+-            pose = (x, y, yaw)
+-    except Exception:
+-        _render_text_overlay(image_path, out_path, ["NO_POSE"])
+-        return
+     if final_gdf.empty:
+         _render_text_overlay(image_path, out_path, ["NO_FINAL_ENTITY"])
+         return
+@@ -853,7 +839,7 @@ def _render_final_entities_image(
+         if frame_id not in {str(f) for f in frames}:
+             continue
+         geom = row.geometry
+-        pts = _geom_to_image_points(geom, pose, calib)
++        pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+         if len(pts) < 2:
+             continue
+         draw.polygon(pts, outline=(0, 128, 255, 220), fill=(0, 128, 255, 80))
+@@ -868,7 +854,7 @@ def _render_gated_overlay(
+     raw_info: dict | None,
+     lidar_info: dict | None,
+     pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+ ) -> Tuple[int, List[str]]:
+     if out_path.exists():
+         out_path.unlink()
+@@ -880,7 +866,7 @@ def _render_gated_overlay(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    if pose is None or calib is None:
++    if pose is None or proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+         return 0, []
+ 
+@@ -904,7 +890,7 @@ def _render_gated_overlay(
+             drawn = True
+             reject_reasons.extend([r for r in reasons.split(",") if r])
+         elif geom is not None and not geom.is_empty:
+-            pts = _geom_to_image_points(geom, pose, calib)
++            pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+             if len(pts) >= 2:
+                 drawn = True
+                 color = (0, 255, 255, 200) if not is_rejected else (160, 160, 160, 200)
+@@ -952,7 +938,7 @@ def _render_entities_overlay(
+     final_support: Dict[Tuple[str, str], List[str]],
+     raw_has_crosswalk: int,
+     pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+@@ -964,7 +950,7 @@ def _render_entities_overlay(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    if pose is None or calib is None:
++    if pose is None or proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+         return
+ 
+@@ -989,7 +975,7 @@ def _render_entities_overlay(
+         if frame_id not in {str(f) for f in frames}:
+             continue
+         geom = row.geometry
+-        pts = _geom_to_image_points(geom, pose, calib)
++        pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+         if len(pts) < 2:
+             continue
+         draw.polygon(pts, outline=(0, 128, 255, 220), fill=(0, 128, 255, 80))
+@@ -1607,11 +1593,18 @@ def main() -> int:
+         enforce_camera,
+         allow_override,
+     )
+-
+     index_records = _build_index_records(kitti_root, drive_id, camera, stage1_stride)
+     if not index_records:
+         log.error("no frames found for drive=%s", drive_id)
+         return 3
++    first_frame_id = _normalize_frame_id(str(index_records[0].get("frame_id") or "")) if index_records else None
++    proj_ctx = configure_default_context(
++        kitti_root,
++        drive_id,
++        cam_id=camera,
++        dtm_path=None,
++        frame_id_for_size=first_frame_id or None,
++    )
+     index_path = debug_dir / "monitor_index.jsonl"
+     _write_index(index_records, index_path)
+     log.info("index=%s total=%d", index_path, len(index_records))
+@@ -1710,7 +1703,7 @@ def main() -> int:
+     stage_gpkg = stage_outputs / "road_entities_utm32.gpkg"
+     candidate_gdf = _read_candidates(stage_gpkg)
+     final_gdf = _read_final(stage_gpkg)
+-    calib_ok = calib is not None
++    calib_ok = proj_ctx is not None
+     lidar_cfg_norm = {
+         "MASK_DILATE_PX": int(lidar_cfg.get("mask_dilate_px", 5)),
+         "MIN_POINTS_BBOX": int(lidar_cfg.get("min_points_bbox", 20)),
+@@ -1728,7 +1721,7 @@ def main() -> int:
+         index_lookup,
+         raw_frames,
+         pose_map,
+-        calib,
++        proj_ctx,
+         lidar_cfg_norm,
+     )
+     if lidar_candidates:
+@@ -1803,6 +1796,7 @@ def main() -> int:
+         kitti_root,
+         lidar_world_mode,
+         camera,
++        proj_ctx,
+         frames_to_render,
+     )
+ 
+diff --git a/tools/run_crosswalk_monitor_range.py b/tools/run_crosswalk_monitor_range.py
+index 58b195f..f8c7ddc 100644
+--- a/tools/run_crosswalk_monitor_range.py
++++ b/tools/run_crosswalk_monitor_range.py
+@@ -26,7 +26,8 @@ if str(REPO_ROOT) not in sys.path:
+     sys.path.insert(0, str(REPO_ROOT))
+ 
+ from tools.utils.range_filter import in_range
+-from pipeline.projection.projector import compute_roundtrip_metrics, world_geom_to_image
++from pipeline.projection.projector import compute_roundtrip_metrics
++from pipeline.calib.kitti360_backproject import BackprojectContext, configure_default_context, pixel_to_world_on_ground, world_to_pixel_cam0
+ from pipeline.fusion.track_verify import run_stage2_track_verify
+ from pipeline.datasets.kitti360_io import (
+     load_kitti360_calib,
+@@ -68,6 +69,24 @@ def _load_camera_defaults(path: Path) -> dict:
+     return defaults
+ 
+ 
++def _find_latest_clean_dtm(drive_id: str) -> Optional[Path]:
++    drive_tag = drive_id.split("_")[-2] if "_" in drive_id else drive_id
++    patterns = [
++        f"lidar_ground_{drive_tag}_f250_500_*",
++        f"lidar_ground_{drive_tag}_*",
++    ]
++    candidates: List[Path] = []
++    for pat in patterns:
++        for run_dir in Path("runs").glob(pat):
++            cand = run_dir / "rasters" / "dtm_median_utm32.tif"
++            if cand.exists():
++                candidates.append(cand)
++    if not candidates:
++        return None
++    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
++    return candidates[0]
++
++
+ def _assert_camera_consistency(
+     camera: str,
+     image_dir: Path | None,
+@@ -194,6 +213,242 @@ def _mask_to_polygon(mask: np.ndarray, max_points: int = 4000) -> Polygon | None
+     return hull
+ 
+ 
++def _mask_image_to_polygon(mask_path: Path) -> Polygon | None:
++    if not mask_path.exists():
++        return None
++    try:
++        import rasterio.features
++        from affine import Affine
++    except Exception:
++        return None
++    mask = Image.open(mask_path).convert("L")
++    arr = np.array(mask)
++    if arr.size == 0:
++        return None
++    binary = (arr > 0).astype(np.uint8)
++    if binary.sum() == 0:
++        return None
++    polys = []
++    for geom, val in rasterio.features.shapes(binary, transform=Affine.identity()):
++        if int(val) != 1:
++            continue
++        try:
++            poly = Polygon(geom["coordinates"][0])
++        except Exception:
++            continue
++        if poly is not None and not poly.is_empty:
++            polys.append(poly)
++    if not polys:
++        return None
++    try:
++        merged = unary_union(polys)
++    except Exception:
++        merged = polys[0]
++    if merged is None or merged.is_empty:
++        return None
++    if merged.geom_type == "Polygon":
++        return merged
++    if merged.geom_type == "MultiPolygon":
++        try:
++            return unary_union(list(merged.geoms))
++        except Exception:
++            return None
++    return None
++
++
++def _stage2_mask_paths(outputs_dir: Path, frame_id: str) -> List[Path]:
++    mask_root = outputs_dir / "stage2_masks"
++    if not mask_root.exists():
++        return []
++    return sorted(mask_root.rglob(f"{frame_id}.*"))
++
++
++def _load_stage2_mask_poly(outputs_dir: Path, frame_id: str) -> Tuple[Optional[Polygon], str]:
++    paths = _stage2_mask_paths(outputs_dir, frame_id)
++    if not paths:
++        return None, "missing_mask"
++    polys = []
++    for path in paths:
++        poly = _mask_image_to_polygon(path)
++        if poly is not None and not poly.is_empty:
++            polys.append(poly)
++    if not polys:
++        return None, "empty_mask"
++    try:
++        merged = unary_union(polys)
++    except Exception:
++        merged = polys[0]
++    if merged is None or merged.is_empty:
++        return None, "empty_mask"
++    if merged.geom_type == "Polygon":
++        return merged, "stage2_mask"
++    if merged.geom_type == "MultiPolygon":
++        return unary_union(list(merged.geoms)), "stage2_mask"
++    return None, "empty_mask"
++
++
++def _load_pixel_poly_for_frame(
++    outputs_dir: Path,
++    raw_frames: Dict[Tuple[str, str], dict],
++    drive_id: str,
++    frame_id: str,
++) -> Tuple[Optional[Polygon], str]:
++    poly, source = _load_stage2_mask_poly(outputs_dir, frame_id)
++    if poly is not None:
++        return poly, source
++    raw_info = raw_frames.get((drive_id, frame_id))
++    if raw_info and isinstance(raw_info.get("gdf"), gpd.GeoDataFrame) and not raw_info["gdf"].empty:
++        geom = raw_info["gdf"].geometry.union_all()
++        if geom is not None and not geom.is_empty:
++            return geom, "feature_store"
++    return None, "missing_pixel_poly"
++
++
++def _compute_dtm_median(dtm_path: Optional[Path]) -> Optional[float]:
++    if dtm_path is None or not dtm_path.exists():
++        return None
++    try:
++        import rasterio
++    except Exception:
++        return None
++    try:
++        with rasterio.open(dtm_path) as ds:
++            band = ds.read(1, masked=True)
++            if band.size == 0:
++                return None
++            vals = np.asarray(band.compressed(), dtype=float)
++            if vals.size == 0:
++                return None
++            return float(np.median(vals))
++    except Exception:
++        return None
++
++
++def _compute_pose_bbox(pose_map: Dict[str, Tuple[float, float, float] | None], buffer_m: float = 60.0) -> Optional[Tuple[float, float, float, float]]:
++    xs = []
++    ys = []
++    for pose in pose_map.values():
++        if not pose:
++            continue
++        xs.append(float(pose[0]))
++        ys.append(float(pose[1]))
++    if not xs:
++        return None
++    minx, maxx = min(xs), max(xs)
++    miny, maxy = min(ys), max(ys)
++    return (minx - buffer_m, miny - buffer_m, maxx + buffer_m, maxy + buffer_m)
++
++
++def _project_geometry_ground_plane_raw(
++    geom: Polygon,
++    frame_id: str,
++    ground_model: Dict[str, object],
++    proj_ctx: BackprojectContext,
++    image_size: Tuple[int, int],
++    world_bbox: Optional[Tuple[float, float, float, float]],
++) -> Tuple[Optional[Polygon], Dict[str, float], str]:
++    stats: Dict[str, float] = {
++        "contour_points_total": 0.0,
++        "contour_points_used": 0.0,
++        "valid_backproject_points": 0.0,
++        "valid_ratio": 0.0,
++        "dtm_hit_ratio": 0.0,
++    }
++    if geom is None or geom.is_empty:
++        return None, stats, "empty_pixel_geom"
++    if geom.geom_type == "MultiPolygon":
++        polys = [g for g in geom.geoms if g is not None and not g.is_empty and g.geom_type == "Polygon"]
++        if not polys:
++            return None, stats, "empty_pixel_geom"
++        geom = max(polys, key=lambda g: g.area)
++    if geom.geom_type == "GeometryCollection":
++        polys = [g for g in geom.geoms if g is not None and not g.is_empty and g.geom_type == "Polygon"]
++        if not polys:
++            return None, stats, "empty_pixel_geom"
++        geom = max(polys, key=lambda g: g.area)
++    if geom.geom_type != "Polygon":
++        return None, stats, "invalid_pixel_geom"
++
++    w, h = image_size
++    coords = list(geom.exterior.coords)
++    if len(coords) > 4000:
++        step = max(1, len(coords) // 4000)
++        coords = coords[::step]
++    stats["contour_points_total"] = float(len(coords))
++    if not coords:
++        return None, stats, "empty_contour"
++
++    clip_minx = 0.05 * float(w)
++    clip_maxx = 0.95 * float(w)
++    clip_miny = 0.55 * float(h)
++    clip_maxy = float(h)
++    clip_rect = box(clip_minx, clip_miny, clip_maxx, clip_maxy)
++    try:
++        geom = geom.intersection(clip_rect)
++    except Exception:
++        geom = None
++    if geom is None or geom.is_empty:
++        return None, stats, "filtered_out"
++    if geom.geom_type == "MultiPolygon":
++        polys = [g for g in geom.geoms if g is not None and not g.is_empty and g.geom_type == "Polygon"]
++        if not polys:
++            return None, stats, "filtered_out"
++        geom = max(polys, key=lambda g: g.area)
++    if geom.geom_type != "Polygon":
++        return None, stats, "filtered_out"
++
++    coords = list(geom.exterior.coords)
++    if len(coords) > 4000:
++        step = max(1, len(coords) // 4000)
++        coords = coords[::step]
++    if not coords:
++        return None, stats, "filtered_out"
++
++    pts = []
++    dtm_hits = 0
++    used = 0
++    valid = 0
++    for u, v in coords:
++        used += 1
++        hit = pixel_to_world_on_ground(frame_id, float(u), float(v), ground_model, ctx=proj_ctx)
++        if hit is None:
++            continue
++        if world_bbox is not None:
++            minx, miny, maxx, maxy = world_bbox
++            if float(hit[0]) < minx or float(hit[0]) > maxx or float(hit[1]) < miny or float(hit[1]) > maxy:
++                continue
++        pts.append((float(hit[0]), float(hit[1])))
++        valid += 1
++        if proj_ctx.dtm is not None:
++            try:
++                val = next(proj_ctx.dtm.sample([(float(hit[0]), float(hit[1]))]))
++                if val is not None and len(val) > 0:
++                    z = float(val[0])
++                    if proj_ctx.dtm_nodata is None or abs(z - float(proj_ctx.dtm_nodata)) > 1e-6:
++                        dtm_hits += 1
++            except Exception:
++                pass
++
++    stats["contour_points_used"] = float(used)
++    stats["valid_backproject_points"] = float(valid)
++    stats["valid_ratio"] = float(valid) / max(1.0, float(used))
++    stats["dtm_hit_ratio"] = float(dtm_hits) / max(1.0, float(valid))
++
++    if valid < 50:
++        return None, stats, "low_valid_points"
++    if valid < 100:
++        return None, stats, "below_min_polygon_points"
++    try:
++        poly = Polygon(pts)
++    except Exception:
++        return None, stats, "invalid_polygon"
++    if not poly.is_valid:
++        poly = poly.buffer(0)
++    if poly is None or poly.is_empty or not poly.is_valid:
++        return None, stats, "invalid_polygon"
++    return poly, stats, "ok"
++
++
+ def _geom_to_points_xy(geom: Polygon | LineString, max_points: int = 500) -> np.ndarray:
+     if geom is None or geom.is_empty:
+         return np.empty((0, 2), dtype=float)
+@@ -212,8 +467,8 @@ def _geom_to_points_xy(geom: Polygon | LineString, max_points: int = 500) -> np.
+ 
+ def _geom_to_image_points(
+     geom: Polygon | LineString,
+-    pose: Tuple[float, ...],
+-    calib: Dict[str, np.ndarray],
++    frame_id: str,
++    proj_ctx: BackprojectContext,
+ ) -> List[Tuple[float, float]]:
+     if geom is None or geom.is_empty:
+         return []
+@@ -226,7 +481,7 @@ def _geom_to_image_points(
+     if coords.shape[0] == 0:
+         return []
+     points = np.column_stack([coords[:, 0], coords[:, 1], np.zeros(coords.shape[0], dtype=float)])
+-    proj = _project_world_to_image(points, pose, calib)
++    proj = _project_world_to_image(points, frame_id, proj_ctx)
+     out: List[Tuple[float, float]] = []
+     for u, v, valid in proj:
+         if not valid:
+@@ -408,19 +663,19 @@ def _write_seeds_jsonl(seeds: List[dict], out_path: Path) -> None:
+ 
+ def _roi_bbox_from_geom(
+     geom: Polygon,
+-    pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    frame_id: str,
++    proj_ctx: BackprojectContext | None,
+     image_path: str,
+     min_area_px: float,
+     max_area_ratio: float,
+ ) -> List[float] | None:
+-    if geom is None or geom.is_empty or pose is None or calib is None:
++    if geom is None or geom.is_empty or proj_ctx is None:
+         return None
+     coords = np.asarray(geom.exterior.coords, dtype=float)
+     if coords.size == 0:
+         return None
+     world_pts = np.column_stack([coords[:, 0], coords[:, 1], np.zeros(coords.shape[0])])
+-    proj = _project_world_to_image(world_pts, pose, calib)
++    proj = _project_world_to_image(world_pts, frame_id, proj_ctx)
+     if proj.size == 0:
+         return None
+     valid = proj[:, 2].astype(bool)
+@@ -635,12 +890,12 @@ def _polygon_bbox(poly: Polygon | None) -> List[float] | None:
+ def _roundtrip_metrics(
+     raw_info: dict,
+     geom: Polygon | None,
+-    pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    frame_id: str,
++    proj_ctx: BackprojectContext | None,
+     z_override: Optional[float] = None,
+     mask_dilate_px: int = 0,
+ ) -> Tuple[float | None, float | None, float | None, float | None, float | None]:
+-    if geom is None or geom.is_empty or pose is None or calib is None:
++    if geom is None or geom.is_empty or proj_ctx is None:
+         return None, None, None, None, None
+     raw_gdf = raw_info.get("gdf")
+     if raw_gdf is None or raw_gdf.empty:
+@@ -652,11 +907,11 @@ def _roundtrip_metrics(
+         parts = list(geom_use.geoms)
+         geom_use = parts[0] if parts else geom_use
+     if z_override is None:
+-        pts = _geom_to_image_points(geom_use, pose, calib)
++        pts = _geom_to_image_points(geom_use, frame_id, proj_ctx)
+     else:
+         coords = np.array(list(geom_use.exterior.coords), dtype=float)
+         points = np.column_stack([coords[:, 0], coords[:, 1], np.full(coords.shape[0], float(z_override))])
+-        proj = _project_world_to_image(points, pose, calib)
++        proj = _project_world_to_image(points, frame_id, proj_ctx)
+         pts = [(float(u), float(v)) for u, v, valid in proj if valid]
+     reproj_poly = _polygon_from_points(pts)
+     iou_mask = None
+@@ -703,15 +958,15 @@ def _render_lidar_proj_debug(
+     image_path: str,
+     out_path: Path,
+     points_world: np.ndarray,
+-    pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    frame_id: str,
++    proj_ctx: BackprojectContext | None,
+     max_points: int = 5000,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+     if not image_path or not Path(image_path).exists():
+         return
+-    if pose is None or calib is None or points_world.size == 0:
++    if proj_ctx is None or points_world.size == 0:
+         _render_text_overlay(image_path, out_path, ["NO_LIDAR_OR_POSE"])
+         return
+     img = Image.open(image_path).convert("RGB")
+@@ -720,7 +975,7 @@ def _render_lidar_proj_debug(
+     if len(pts) > max_points:
+         idx = np.random.choice(len(pts), size=max_points, replace=False)
+         pts = pts[idx]
+-    proj = _project_world_to_image(pts, pose, calib)
++    proj = _project_world_to_image(pts, frame_id, proj_ctx)
+     valid = proj[:, 2].astype(bool)
+     u = proj[:, 0][valid]
+     v = proj[:, 1][valid]
+@@ -749,15 +1004,15 @@ def _render_mask_and_lidar_debug(
+     out_path: Path,
+     raw_info: dict | None,
+     points_world: np.ndarray,
+-    pose: Tuple[float, ...] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    frame_id: str,
++    proj_ctx: BackprojectContext | None,
+     max_points: int = 5000,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+     if not image_path or not Path(image_path).exists():
+         return
+-    if pose is None or calib is None:
++    if proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+         return
+     base = Image.open(image_path).convert("RGBA")
+@@ -776,7 +1031,7 @@ def _render_mask_and_lidar_debug(
+         if len(pts) > max_points:
+             idx = np.random.choice(len(pts), size=max_points, replace=False)
+             pts = pts[idx]
+-        proj = _project_world_to_image(pts, pose, calib)
++        proj = _project_world_to_image(pts, frame_id, proj_ctx)
+         valid = proj[:, 2].astype(bool)
+         u = proj[:, 0][valid]
+         v = proj[:, 1][valid]
+@@ -790,14 +1045,14 @@ def _render_reproj_vs_mask_debug(
+     out_path: Path,
+     raw_info: dict | None,
+     geom: Polygon | None,
+-    pose: Tuple[float, ...] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    frame_id: str,
++    proj_ctx: BackprojectContext | None,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+     if not image_path or not Path(image_path).exists():
+         return
+-    if pose is None or calib is None:
++    if proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+         return
+     base = Image.open(image_path).convert("RGBA")
+@@ -812,7 +1067,7 @@ def _render_reproj_vs_mask_debug(
+     if isinstance(bbox_px, (list, tuple)) and len(bbox_px) == 4:
+         draw.rectangle(bbox_px, outline=(255, 255, 0, 200), width=2)
+     if geom is not None and not geom.is_empty:
+-        pts = _geom_to_image_points(geom, pose, calib)
++        pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+         if len(pts) >= 2:
+             draw.line(pts + [pts[0]], fill=(0, 200, 255, 220), width=2)
+     else:
+@@ -863,7 +1118,7 @@ def _write_proj_debug_bundle(
+     candidate_gdf: gpd.GeoDataFrame,
+     raw_frames: Dict[Tuple[str, str], dict],
+     pose_map: Dict[str, Tuple[float, ...] | None],
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+     index_lookup: Dict[Tuple[str, str], str],
+     lidar_stats: Dict[str, dict],
+     kitti_root: Path,
+@@ -905,14 +1160,21 @@ def _write_proj_debug_bundle(
+         except Exception:
+             points_world = np.empty((0, 3), dtype=float)
+         lidar_on_path = debug_dir / f"{frame_id}_lidar_on_image.png"
+-        _render_lidar_proj_debug(image_path, lidar_on_path, points_world, pose, calib)
++        _render_lidar_proj_debug(image_path, lidar_on_path, points_world, frame_id, proj_ctx)
+         mask_lidar_path = debug_dir / f"{frame_id}_mask_and_lidar.png"
+-        _render_mask_and_lidar_debug(image_path, mask_lidar_path, raw_info, points_world, pose, calib)
++        _render_mask_and_lidar_debug(image_path, mask_lidar_path, raw_info, points_world, frame_id, proj_ctx)
+         reproj_path = debug_dir / f"{frame_id}_reproj_vs_mask.png"
+-        _render_reproj_vs_mask_debug(image_path, reproj_path, raw_info, geom, pose, calib)
++        _render_reproj_vs_mask_debug(image_path, reproj_path, raw_info, geom, frame_id, proj_ctx)
+         calib_payload = {}
+-        if calib is not None:
+-            calib_payload = {k: v.tolist() for k, v in calib.items() if isinstance(v, np.ndarray)}
++        if proj_ctx is not None:
++            calib_payload = {
++                "k": proj_ctx.calib.k.tolist(),
++                "p_rect": proj_ctx.calib.p_rect_00.tolist() if proj_ctx.calib.p_rect_00 is not None else None,
++                "r_rect": proj_ctx.calib.r_rect_00.tolist() if proj_ctx.calib.r_rect_00 is not None else None,
++                "t_c0_v": proj_ctx.calib.t_c0_v.tolist(),
++                "t_v_c0": proj_ctx.calib.t_v_c0.tolist(),
++                "warnings": dict(proj_ctx.calib.warnings or {}),
++            }
+         lidar_info = lidar_stats.get(frame_id, {})
+         payload = {
+             "frame_id": frame_id,
+@@ -954,7 +1216,7 @@ def _compute_roundtrip_metrics_for_range(
+     raw_frames: Dict[Tuple[str, str], dict],
+     raw_stats: Dict[Tuple[str, str], Dict[str, float]],
+     pose_map: Dict[str, Tuple[float, float, float] | None],
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+     lidar_stats: Dict[str, dict],
+     only_raw_has: bool = False,
+ ) -> Tuple[List[dict], Dict[str, dict]]:
+@@ -988,14 +1250,13 @@ def _compute_roundtrip_metrics_for_range(
+         geom = row.geometry if row is not None else None
+         proj_method = str(row.get("proj_method") or proj_method) if row is not None else proj_method
+         geom_ok = _safe_int(row.get("geom_ok", geom_ok)) if row is not None else geom_ok
+-        pose = pose_map.get(frame_id)
+         z_override = lidar_info.get("ground_z")
+         mask_dilate_px = int(lidar_info.get("mask_dilate_px_used", lidar_info.get("mask_dilate_px", 0)))
+         iou_mask, iou_dilated, iou_bbox, center_err, area_ratio = _roundtrip_metrics(
+             raw_info,
+             geom,
+-            pose,
+-            calib,
++            frame_id,
++            proj_ctx,
+             z_override,
+             mask_dilate_px,
+         )
+@@ -1028,8 +1289,8 @@ def _scan_offsets_for_range(
+     frame_end: int,
+     offsets: List[int],
+     raw_frames: Dict[Tuple[str, str], dict],
+-    calib: Dict[str, np.ndarray] | None,
+-    cam_to_pose: Optional[np.ndarray],
++    proj_ctx: BackprojectContext | None,
++    ground_model: Dict[str, object],
+     lidar_cfg: dict,
+     index_lookup: Dict[Tuple[str, str], str],
+     lidar_world_mode: str,
+@@ -1068,8 +1329,8 @@ def _scan_offsets_for_range(
+                 image_path,
+                 raw_info,
+                 pose,
+-                calib,
+-                cam_to_pose,
++                proj_ctx,
++                ground_model,
+                 lidar_cfg,
+                 lidar_world_mode,
+                 cam_id,
+@@ -1079,8 +1340,8 @@ def _scan_offsets_for_range(
+             iou, _iou_dilated, _iou_bbox, _center, _ratio = _roundtrip_metrics(
+                 raw_info,
+                 geom,
+-                pose,
+-                calib,
++                cand_frame_id,
++                proj_ctx,
+                 None,
+                 mask_dilate_px,
+             )
+@@ -1309,94 +1570,27 @@ def _load_crosswalk_raw(
+ 
+ def _project_world_to_image(
+     points: np.ndarray,
+-    pose: Tuple[float, ...],
+-    calib: Dict[str, np.ndarray],
++    frame_id: str,
++    proj_ctx: BackprojectContext,
+ ) -> np.ndarray:
+-    return world_geom_to_image(points, pose, calib, "k_rrect")
+-
+-
+-def _pose_rotation_matrix(roll: float, pitch: float, yaw: float) -> np.ndarray:
+-    c1 = float(np.cos(yaw))
+-    s1 = float(np.sin(yaw))
+-    c2 = float(np.cos(pitch))
+-    s2 = float(np.sin(pitch))
+-    c3 = float(np.cos(roll))
+-    s3 = float(np.sin(roll))
+-    r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+-    r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+-    r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+-    return r_z @ r_y @ r_x
+-
+-
+-def _pixel_to_world(
+-    u: float,
+-    v: float,
+-    calib: Dict[str, np.ndarray],
+-    pose: Tuple[float, ...],
+-    cam_to_pose: Optional[np.ndarray],
+-) -> Optional[Tuple[float, float]]:
+-    k = calib["k"]
+-    r_rect = calib["r_rect"]
+-    cam_to_velo = calib["t_cam_to_velo"]
+-    fx, fy = k[0, 0], k[1, 1]
+-    cx, cy = k[0, 2], k[1, 2]
+-    if fx == 0 or fy == 0:
+-        return None
+-    dir_cam = np.array([(u - cx) / fx, (v - cy) / fy, 1.0], dtype=float)
+-    r_rect_inv = np.linalg.inv(r_rect)
+-    dir_cam = r_rect_inv.dot(dir_cam)
+-    if len(pose) == 6 and cam_to_pose is not None:
+-        x, y, z, roll, pitch, yaw = pose
+-        dir_pose = cam_to_pose[:3, :3].dot(dir_cam)
+-        r_world_pose = _pose_rotation_matrix(roll, pitch, yaw)
+-        dir_world = r_world_pose.dot(dir_pose)
+-        origin_pose = cam_to_pose[:3, 3]
+-        origin_world = np.array([x, y, z], dtype=float) + r_world_pose.dot(origin_pose)
+-        if dir_world[2] < -1e-6:
+-            t = -origin_world[2] / dir_world[2]
+-            if t > 0:
+-                hit = origin_world + t * dir_world
+-                return float(hit[0]), float(hit[1])
+-    if len(pose) < 3:
+-        return None
+-    pose_xy = (pose[0], pose[1])
+-    yaw = pose[5] if len(pose) >= 6 else pose[2]
+-    dir_velo = cam_to_velo[:3, :3].dot(dir_cam)
+-    c = float(np.cos(yaw))
+-    s = float(np.sin(yaw))
+-    r_yaw = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+-    dir_world = r_yaw.dot(dir_velo)
+-    cam_offset = cam_to_velo[:3, 3]
+-    origin_z = float(abs(cam_offset[2]))
+-    origin = np.array(
+-        [
+-            pose_xy[0] + c * cam_offset[0] - s * cam_offset[1],
+-            pose_xy[1] + s * cam_offset[0] + c * cam_offset[1],
+-            origin_z,
+-        ],
+-        dtype=float,
+-    )
+-    if dir_world[2] >= -1e-6:
+-        return None
+-    t = -origin[2] / dir_world[2]
+-    if t <= 0:
+-        return None
+-    hit = origin + t * dir_world
+-    return float(hit[0]), float(hit[1])
++    u, v, valid = world_to_pixel_cam0(frame_id, points, ctx=proj_ctx)
++    if u.size == 0:
++        return np.zeros((0, 3), dtype=float)
++    return np.stack([u, v, valid], axis=1)
+ 
+ 
+ def _project_geometry_ground_plane(
+     geom: Polygon | LineString,
+-    calib: Dict[str, np.ndarray],
+-    pose: Tuple[float, ...],
+-    cam_to_pose: Optional[np.ndarray],
++    frame_id: str,
++    ground_model: Dict[str, object],
++    proj_ctx: BackprojectContext,
+ ) -> Optional[Polygon]:
+     if geom is None or geom.is_empty:
+         return None
+     if geom.geom_type in {"MultiPolygon", "MultiLineString", "GeometryCollection"}:
+         polys = []
+         for sub in geom.geoms:
+-            poly = _project_geometry_ground_plane(sub, calib, pose, cam_to_pose)
++            poly = _project_geometry_ground_plane(sub, frame_id, ground_model, proj_ctx)
+             if poly is not None and not poly.is_empty:
+                 polys.append(poly)
+         if not polys:
+@@ -1420,9 +1614,9 @@ def _project_geometry_ground_plane(
+         coords = list(geom.coords)
+     pts = []
+     for u, v in coords:
+-        hit = _pixel_to_world(float(u), float(v), calib, pose, cam_to_pose)
++        hit = pixel_to_world_on_ground(frame_id, float(u), float(v), ground_model, ctx=proj_ctx)
+         if hit is not None:
+-            pts.append(hit)
++            pts.append((float(hit[0]), float(hit[1])))
+     if len(pts) < 3:
+         return None
+     try:
+@@ -1806,8 +2000,8 @@ def _build_lidar_candidate_for_frame(
+     image_path: str,
+     raw_info: dict,
+     pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
+-    cam_to_pose: Optional[np.ndarray],
++    proj_ctx: BackprojectContext | None,
++    ground_model: Dict[str, object],
+     lidar_cfg: dict,
+     lidar_world_mode: str,
+     cam_id: str,
+@@ -1816,7 +2010,7 @@ def _build_lidar_candidate_for_frame(
+     stats = {
+         "proj_method": "none",
+         "pose_ok": 1 if pose is not None else 0,
+-        "calib_ok": 1 if calib is not None else 0,
++        "calib_ok": 1 if proj_ctx is not None else 0,
+         "proj_in_image_ratio": 0.0,
+         "proj_in_image_ratio_visible": 0.0,
+         "points_total": 0,
+@@ -1882,21 +2076,14 @@ def _build_lidar_candidate_for_frame(
+     }
+     raw_gdf = raw_info.get("gdf") if raw_info else None
+     bbox_px = raw_info.get("bbox_px") if raw_info else None
+-    if raw_gdf is None or raw_gdf.empty or pose is None or calib is None:
++    if raw_gdf is None or raw_gdf.empty or pose is None or proj_ctx is None:
+         if raw_gdf is None or raw_gdf.empty:
+             stats["drop_reason_code"] = "GEOM_INVALID"
+         elif pose is None:
+             stats["drop_reason_code"] = "PLANE_FALLBACK_USED"
+-        elif calib is None:
++        elif proj_ctx is None:
+             stats["drop_reason_code"] = "LIDAR_CALIB_MISMATCH"
+         return None, stats
+-    pose_full = None
+-    if str(lidar_world_mode).lower() == "fullpose":
+-        try:
+-            pose_full = load_kitti360_pose_full(data_root, drive_id, frame_id)
+-        except Exception:
+-            stats["drop_reason_code"] = "POSE_MISSING"
+-            return None, stats
+ 
+     points_world, intensities = _lidar_points_world_with_intensity(
+         data_root,
+@@ -1918,8 +2105,7 @@ def _build_lidar_candidate_for_frame(
+     ground_mask = np.abs(z_vals - z_ground) < ground_tol
+     stats["ground_filter_used"] = 1 if np.any(ground_mask) else 0
+ 
+-    proj_pose = pose_full if pose_full is not None else pose
+-    proj = _project_world_to_image(points_world, proj_pose, calib)
++    proj = _project_world_to_image(points_world, frame_id, proj_ctx)
+     u = proj[:, 0]
+     v = proj[:, 1]
+     valid = proj[:, 2].astype(bool)
+@@ -1989,9 +2175,8 @@ def _build_lidar_candidate_for_frame(
+     mask_geom = raw_gdf.geometry.union_all() if not raw_gdf.empty else None
+     mask_world_geom = None
+     if mask_geom is not None and not mask_geom.is_empty:
+-        pose_for_world = pose_full if pose_full is not None else pose
+-        if pose_for_world is not None and calib is not None:
+-            mask_world_geom = _project_geometry_ground_plane(mask_geom, calib, pose_for_world, cam_to_pose)
++        if proj_ctx is not None:
++            mask_world_geom = _project_geometry_ground_plane(mask_geom, frame_id, ground_model, proj_ctx)
+             stats["mask_world_geom"] = mask_world_geom
+     if mask_geom is None or mask_geom.is_empty:
+         stats["drop_reason_code"] = "LIDAR_NO_POINTS_MASK"
+@@ -2332,8 +2517,8 @@ def _build_lidar_candidates_for_range(
+     index_lookup: Dict[Tuple[str, str], str],
+     raw_frames: Dict[Tuple[str, str], dict],
+     pose_map: Dict[str, Tuple[float, float, float] | None],
+-    calib: Dict[str, np.ndarray] | None,
+-    cam_to_pose: Optional[np.ndarray],
++    proj_ctx: BackprojectContext | None,
++    ground_model: Dict[str, object],
+     lidar_cfg: dict,
+     lidar_world_mode: str,
+     cam_id: str,
+@@ -2355,8 +2540,8 @@ def _build_lidar_candidates_for_range(
+             image_path,
+             raw_info,
+             pose_map.get(frame_id),
+-            calib,
+-            cam_to_pose,
++            proj_ctx,
++            ground_model,
+             lidar_cfg,
+             lidar_world_mode,
+             cam_id,
+@@ -2723,16 +2908,15 @@ def _ensure_gated_entities_images(
+     kitti_root: Path,
+     lidar_world_mode: str,
+     camera: str,
++    proj_ctx: BackprojectContext | None,
+     stage2_overlay: Dict[str, List[dict]] | None = None,
+ ) -> None:
+     if not qa_index_path.exists():
+         return
+     qa = gpd.read_file(qa_index_path)
+     pose_map: Dict[str, Tuple[float, float, float]] = {}
+-    try:
+-        calib = load_kitti360_calib(kitti_root, camera)
+-    except Exception:
+-        calib = None
++    if proj_ctx is None:
++        return
+     candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
+     candidate_ids: Dict[Tuple[str, str], List[str]] = {}
+     candidate_by_frame: Dict[str, gpd.GeoDataFrame] = {}
+@@ -2782,7 +2966,7 @@ def _ensure_gated_entities_images(
+             raw_frames.get((drive_id, frame_id)),
+             lidar_stats.get(frame_id, {}),
+             pose_map.get(frame_id),
+-            calib,
++            proj_ctx,
+             stage2_items,
+         )
+         qa.at[idx, "overlay_gated_path"] = str(gated_path)
+@@ -2794,9 +2978,7 @@ def _ensure_gated_entities_images(
+                 final_gdf,
+                 drive_id,
+                 frame_id,
+-                kitti_root,
+-                lidar_world_mode,
+-                camera,
++                proj_ctx,
+             )
+             qa.at[idx, "overlay_entities_path"] = str(entities_path)
+         elif not entities_path.exists():
+@@ -2809,7 +2991,7 @@ def _ensure_gated_entities_images(
+                 final_support,
+                 raw_has,
+                 pose_map.get(frame_id),
+-                calib,
++                proj_ctx,
+             )
+             qa.at[idx, "overlay_entities_path"] = str(entities_path)
+         qa.at[idx, "candidate_ids_nearby"] = json.dumps(sorted(set(candidate_ids.get((drive_id, frame_id), []))), ensure_ascii=True)
+@@ -2822,9 +3004,7 @@ def _render_final_entities_image(
+     final_gdf: gpd.GeoDataFrame,
+     drive_id: str,
+     frame_id: str,
+-    kitti_root: Path,
+-    lidar_world_mode: str,
+-    camera: str,
++    proj_ctx: BackprojectContext | None,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+@@ -2836,21 +3016,9 @@ def _render_final_entities_image(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    try:
+-        calib = load_kitti360_calib(kitti_root, camera)
+-    except Exception:
++    if proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB"])
+         return
+-    try:
+-        if lidar_world_mode == "fullpose":
+-            x, y, z, roll, pitch, yaw = load_kitti360_pose_full(kitti_root, drive_id, frame_id)
+-            pose = (x, y, z, roll, pitch, yaw)
+-        else:
+-            x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
+-            pose = (x, y, yaw)
+-    except Exception:
+-        _render_text_overlay(image_path, out_path, ["NO_POSE"])
+-        return
+     if final_gdf.empty:
+         _render_text_overlay(image_path, out_path, ["NO_FINAL_ENTITY"])
+         return
+@@ -2867,7 +3035,7 @@ def _render_final_entities_image(
+         if frame_id not in {str(f) for f in frames}:
+             continue
+         geom = row.geometry
+-        pts = _geom_to_image_points(geom, pose, calib)
++        pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+         if len(pts) < 2:
+             continue
+         draw.polygon(pts, outline=(0, 128, 255, 220), fill=(0, 128, 255, 80))
+@@ -2882,7 +3050,7 @@ def _render_gated_overlay(
+     raw_info: dict | None,
+     lidar_info: dict | None,
+     pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+     stage2_items: List[dict] | None = None,
+ ) -> Tuple[int, List[str]]:
+     if out_path.exists():
+@@ -2895,7 +3063,7 @@ def _render_gated_overlay(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    if pose is None or calib is None:
++    if pose is None or proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+         return 0, []
+ 
+@@ -2923,7 +3091,7 @@ def _render_gated_overlay(
+             drawn = True
+             reject_reasons.extend([r for r in reasons.split(",") if r])
+         elif geom is not None and not geom.is_empty:
+-            pts = _geom_to_image_points(geom, pose, calib)
++            pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+             if len(pts) >= 2:
+                 drawn = True
+                 color = (0, 255, 255, 200) if not is_rejected else (160, 160, 160, 200)
+@@ -3001,7 +3169,7 @@ def _render_entities_overlay(
+     final_support: Dict[Tuple[str, str], List[str]],
+     raw_has_crosswalk: int,
+     pose: Tuple[float, float, float] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+ ) -> None:
+     if out_path.exists():
+         out_path.unlink()
+@@ -3013,7 +3181,7 @@ def _render_entities_overlay(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    if pose is None or calib is None:
++    if pose is None or proj_ctx is None:
+         _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+         return
+ 
+@@ -3038,7 +3206,7 @@ def _render_entities_overlay(
+         if frame_id not in {str(f) for f in frames}:
+             continue
+         geom = row.geometry
+-        pts = _geom_to_image_points(geom, pose, calib)
++        pts = _geom_to_image_points(geom, frame_id, proj_ctx)
+         if len(pts) < 2:
+             continue
+         draw.polygon(pts, outline=(0, 128, 255, 220), fill=(0, 128, 255, 80))
+@@ -3050,7 +3218,8 @@ def _render_heading_annotation(
+     base_path: Path,
+     image_path: str,
+     pose: Tuple[float, ...] | None,
+-    calib: Dict[str, np.ndarray] | None,
++    frame_id: str,
++    proj_ctx: BackprojectContext | None,
+     road_heading_deg: float | None,
+     rect_geom: Polygon | None,
+     rect_w: float,
+@@ -3073,7 +3242,7 @@ def _render_heading_annotation(
+     else:
+         base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+     draw = ImageDraw.Draw(base, "RGBA")
+-    if pose is None or calib is None or road_heading_deg is None:
++    if pose is None or proj_ctx is None or road_heading_deg is None:
+         _render_text_overlay(image_path, out_path, ["NO_HEADING_OR_POSE"])
+         return
+     pose_xy = _pose_xy_yaw(pose)
+@@ -3086,7 +3255,7 @@ def _render_heading_annotation(
+     road_pt = np.array([x0, y0], dtype=float)
+     road_line = np.vstack([road_pt, road_pt + 5.0 * road_dir])
+     road_world = np.column_stack([road_line, np.zeros((2, 1), dtype=float)])
+-    proj = _project_world_to_image(road_world, pose, calib)
++    proj = _project_world_to_image(road_world, frame_id, proj_ctx)
+     if proj.size > 0 and np.all(proj[:, 2]):
+         draw.line([(proj[0, 0], proj[0, 1]), (proj[1, 0], proj[1, 1])], fill=(255, 200, 0, 220), width=3)
+     if rect_geom is not None and not rect_geom.is_empty:
+@@ -3095,7 +3264,7 @@ def _render_heading_annotation(
+         u = np.array([math.cos(perp_rad), math.sin(perp_rad)], dtype=float)
+         rect_line = np.vstack([[c.x, c.y], [c.x + 3.0 * u[0], c.y + 3.0 * u[1]]])
+         rect_world = np.column_stack([rect_line, np.zeros((2, 1), dtype=float)])
+-        proj = _project_world_to_image(rect_world, pose, calib)
++        proj = _project_world_to_image(rect_world, frame_id, proj_ctx)
+         if proj.size > 0 and np.all(proj[:, 2]):
+             draw.line([(proj[0, 0], proj[0, 1]), (proj[1, 0], proj[1, 1])], fill=(0, 255, 128, 220), width=3)
+     text = [
+@@ -3118,7 +3287,7 @@ def _write_fixed_heading_annotations(
+     cluster_info: Dict[str, dict],
+     pose_map: Dict[str, Tuple[float, ...] | None],
+     road_heading_map: Dict[str, float],
+-    calib: Dict[str, np.ndarray] | None,
++    proj_ctx: BackprojectContext | None,
+     index_lookup: Dict[Tuple[str, str], str],
+ ) -> Dict[str, List[str]]:
+     annotated: Dict[str, List[str]] = {}
+@@ -3146,7 +3315,8 @@ def _write_fixed_heading_annotations(
+                 base_path,
+                 image_path,
+                 pose_map.get(str(frame_id)),
+-                calib,
++                str(frame_id),
++                proj_ctx,
+                 float(heading_deg) if heading_deg is not None else road_heading_map.get(str(frame_id)),
+                 rect_geom,
+                 rect_w,
+@@ -3832,8 +4002,8 @@ def _stage2_roi_refine(
+     frame_end: int,
+     index_lookup: Dict[Tuple[str, str], str],
+     pose_map: Dict[str, Tuple[float, float, float] | None],
+-    calib: Dict[str, np.ndarray] | None,
+-    cam_to_pose: Optional[np.ndarray],
++    proj_ctx: BackprojectContext | None,
++    ground_model: Dict[str, object],
+     lidar_cfg: dict,
+     image_provider: str,
+     kitti_root: Path,
+@@ -3865,7 +4035,9 @@ def _stage2_roi_refine(
+                     roi_geom = subset.geometry.union_all()
+             if roi_geom is None or roi_geom.is_empty:
+                 continue
+-            roi_bbox = _roi_bbox_from_geom(roi_geom, pose, calib, image_path, roi_min_area, roi_max_ratio)
++            if proj_ctx is None:
++                continue
++            roi_bbox = _roi_bbox_from_geom(roi_geom, frame_id, proj_ctx, image_path, roi_min_area, roi_max_ratio)
+             key = (drive_id, frame_id)
+             stat = stage2_stats.setdefault(key, {"attempted": 0, "added": 0, "reasons": []})
+             if roi_bbox is None:
+@@ -3891,8 +4063,8 @@ def _stage2_roi_refine(
+                 image_path,
+                 raw_info,
+                 pose,
+-                calib,
+-                cam_to_pose,
++                proj_ctx,
++                ground_model,
+                 lidar_cfg,
+                 lidar_world_mode,
+                 camera,
+@@ -5073,6 +5245,23 @@ def main() -> int:
+         allow_override,
+     )
+ 
++    backproject_cfg = merged.get("backproject", {}) if isinstance(merged.get("backproject"), dict) else {}
++    fixed_plane_z0 = float(backproject_cfg.get("fixed_plane_z0", 0.0))
++    dtm_path_cfg = str(backproject_cfg.get("dtm_path") or "").strip()
++    dtm_path = Path(dtm_path_cfg) if dtm_path_cfg else _find_latest_clean_dtm(drive_id)
++    dtm_median = _compute_dtm_median(dtm_path) if dtm_path else None
++    if dtm_median is not None:
++        fixed_plane_z0 = float(dtm_median)
++    ground_mode = "lidar_clean_dtm" if dtm_path else "fixed_plane"
++    ground_model = {"mode": ground_mode, "dtm_path": str(dtm_path) if dtm_path else None, "z0": fixed_plane_z0}
++    proj_ctx = configure_default_context(
++        kitti_root,
++        drive_id,
++        cam_id=camera,
++        dtm_path=dtm_path,
++        frame_id_for_size=_normalize_frame_id(str(frame_start)),
++    )
++
+     index_records = _build_index_records(kitti_root, drive_id, frame_start, frame_end, camera)
+     expected_frames = frame_end - frame_start + 1
+     scanned_frames_total = len(index_records)
+@@ -5200,7 +5389,7 @@ def main() -> int:
+             pose_map[frame_id] = None
+     heading_window = int(fixed_cfg.get("heading_window_k", 5))
+     road_heading_map = _compute_road_heading_map(pose_map, frame_start, frame_end, heading_window)
+-    calib_ok = calib is not None
++    calib_ok = proj_ctx is not None
+     alignment_cfg = merged.get("alignment", {}) if isinstance(merged.get("alignment"), dict) else {}
+     visible_cfg = alignment_cfg.get("visible_filter", {}) if isinstance(alignment_cfg.get("visible_filter"), dict) else {}
+     lidar_cfg_norm = {
+@@ -5229,8 +5418,8 @@ def main() -> int:
+         index_lookup,
+         raw_frames,
+         pose_map,
+-        calib,
+-        cam_to_pose,
++        proj_ctx,
++        ground_model,
+         lidar_cfg_norm,
+         lidar_world_mode,
+         camera,
+@@ -5378,6 +5567,89 @@ def main() -> int:
+         )
+     else:
+         candidate_gdf.to_file(frame_candidates_path, layer="frame_candidates", driver="GPKG")
++
++    frames_dir = outputs_dir / "frames"
++    merged_dir = outputs_dir / "merged"
++    frames_dir.mkdir(parents=True, exist_ok=True)
++    merged_dir.mkdir(parents=True, exist_ok=True)
++    landing_rows = []
++    world_bbox = None
++    image_size = proj_ctx.calib.image_size if proj_ctx is not None else (0, 0)
++    for frame in range(frame_start, frame_end + 1):
++        frame_id = _normalize_frame_id(str(frame))
++        frame_dir = frames_dir / frame_id
++        frame_dir.mkdir(parents=True, exist_ok=True)
++        frame_path = frame_dir / "crosswalk_frame_utm32.gpkg"
++        if frame_path.exists():
++            frame_path.unlink()
++
++        pixel_poly, pixel_source = _load_pixel_poly_for_frame(outputs_dir, raw_frames, drive_id, frame_id)
++        raw_poly = None
++        raw_stats = {
++            "contour_points_total": 0.0,
++            "contour_points_used": 0.0,
++            "valid_backproject_points": 0.0,
++            "valid_ratio": 0.0,
++            "dtm_hit_ratio": 0.0,
++        }
++        raw_reason = "missing_pixel_poly"
++        if pixel_poly is not None and proj_ctx is not None:
++            raw_poly, raw_stats, raw_reason = _project_geometry_ground_plane_raw(
++                pixel_poly,
++                frame_id,
++                ground_model,
++                proj_ctx,
++                image_size,
++                world_bbox,
++            )
++        landing_rows.append(
++            {
++                "frame_id": frame_id,
++                "has_pixel_mask": 1 if pixel_poly is not None else 0,
++                "pixel_source": pixel_source,
++                "contour_points_total": int(raw_stats["contour_points_total"]),
++                "contour_points_used": int(raw_stats["contour_points_used"]),
++                "valid_backproject_points": int(raw_stats["valid_backproject_points"]),
++                "valid_ratio": float(raw_stats["valid_ratio"]),
++                "dtm_hit_ratio": float(raw_stats["dtm_hit_ratio"]),
++                "reason_if_empty": raw_reason if raw_poly is None else "ok",
++            }
++        )
++
++        if raw_poly is not None:
++            raw_gdf = gpd.GeoDataFrame(
++                [
++                    {
++                        "drive_id": drive_id,
++                        "frame_id": frame_id,
++                        "geometry": raw_poly,
++                    }
++                ],
++                geometry="geometry",
++                crs="EPSG:32632",
++            )
++        else:
++            raw_gdf = gpd.GeoDataFrame(columns=["drive_id", "frame_id", "geometry"], geometry="geometry", crs="EPSG:32632")
++        raw_gdf.to_file(frame_path, layer="crosswalk_frame_raw", driver="GPKG")
++
++        subset = candidate_gdf[candidate_gdf["frame_id_norm"] == frame_id] if not candidate_gdf.empty else gpd.GeoDataFrame()
++        simplified_gdf = subset if not subset.empty else gpd.GeoDataFrame(columns=["geometry"], geometry=[], crs="EPSG:32632")
++        simplified_gdf.to_file(frame_path, layer="crosswalk_frame_simplified", driver="GPKG", mode="a")
++        simplified_gdf.to_file(frame_path, layer="crosswalk_frame", driver="GPKG", mode="a")
++
++    landing_path = outputs_dir / "landing_debug.csv"
++    pd.DataFrame(landing_rows).to_csv(landing_path, index=False)
++    merged_path = merged_dir / "crosswalk_candidates_utm32.gpkg"
++    if merged_path.exists():
++        merged_path.unlink()
++    if candidate_gdf.empty:
++        gpd.GeoDataFrame(columns=["geometry"], geometry=[], crs="EPSG:32632").to_file(
++            merged_path,
++            layer="crosswalk_candidates",
++            driver="GPKG",
++        )
++    else:
++        candidate_gdf.to_file(merged_path, layer="crosswalk_candidates", driver="GPKG")
+     roundtrip_rows, roundtrip_by_frame = _compute_roundtrip_metrics_for_range(
+         drive_id,
+         frame_start,
+@@ -5386,7 +5658,7 @@ def main() -> int:
+         raw_frames,
+         raw_stats,
+         pose_map,
+-        calib,
++        proj_ctx,
+         lidar_stats,
+         bool(merged.get("roundtrip_only_raw_has", False)),
+     )
+@@ -5413,7 +5685,7 @@ def main() -> int:
+         candidate_gdf,
+         raw_frames,
+         pose_map,
+-        calib,
++        proj_ctx,
+         index_lookup,
+         lidar_stats,
+         kitti_root,
+@@ -5433,8 +5705,8 @@ def main() -> int:
+         frame_end,
+         offsets,
+         raw_frames,
+-        calib,
+-        cam_to_pose,
++        proj_ctx,
++        ground_model,
+         lidar_cfg_norm,
+         index_lookup,
+         lidar_world_mode,
+@@ -5479,7 +5751,7 @@ def main() -> int:
+         except Exception:
+             points_world = np.empty((0, 3), dtype=float)
+         debug_path = outputs_dir / f"debug_lidar_proj_{frame_id}.png"
+-        _render_lidar_proj_debug(image_path, debug_path, points_world, pose_map.get(frame_id), calib)
++        _render_lidar_proj_debug(image_path, debug_path, points_world, frame_id, proj_ctx)
+     review_gdf, final_gdf = _build_review_final_layers(
+         drive_id,
+         candidate_gdf,
+@@ -5518,6 +5790,7 @@ def main() -> int:
+         kitti_root,
+         lidar_world_mode,
+         camera,
++        proj_ctx,
+         stage2_overlay,
+     )
+     _write_fixed_heading_annotations(
+@@ -5527,7 +5800,7 @@ def main() -> int:
+         cluster_info,
+         pose_map,
+         road_heading_map,
+-        calib,
++        proj_ctx,
+         index_lookup,
+     )
+ 

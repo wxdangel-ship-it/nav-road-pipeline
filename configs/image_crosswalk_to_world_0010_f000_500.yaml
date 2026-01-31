@@ -1,0 +1,64 @@
+drive_id: "2013_05_28_drive_0010_sync"
+kitti_root: ""
+frame_start: 0
+frame_end: 500
+image_cam: "image_00"
+overwrite: true
+
+image_model_id: "gdino_sam2_v1"
+image_model_zoo: "configs/image_model_zoo.yaml"
+
+qa:
+  random_seed: 20260130
+  sample_n: 18
+  force_include: [0, 100, 250, 290, 400, 500]
+
+stage1:
+  roi_bottom_crop: 0.50
+  roi_side_crop: [0.05, 0.95]
+  gdino_text_prompt:
+    - "crosswalk"
+    - "zebra crossing"
+    - "Zebrastreifen"
+    - "斑马线"
+  gdino_box_th: 0.23
+  gdino_text_th: 0.23
+  gdino_topk: 12
+  nms_iou_th: 0.50
+  box_aspect_min: 2.0
+  box_h_ratio_max: 0.35
+  box_center_v_min: 0.50
+  max_seeds_per_frame: 6
+  sam2_image_max_masks: 2
+  sam2_mask_min_area_px: 600
+  mask_mrr_aspect_min: 2.0
+  stripe_aspect_ratio_min: 2.0
+  stripe_min_count: 6
+
+stage2:
+  seed_frame: 290
+  sam2_video_propagate: "both"
+  output_mask_format: "png"
+
+stage3:
+  output_epsg: 32632
+  pixel_filter_strict_v_min: 0.45
+  pixel_filter_fallback_v_min: 0.30
+  pixel_side_crop: [0.05, 0.95]
+  contour_sample_step_px: 2
+  min_area_px_present: 200
+  min_valid_world_pts: 60
+  use_dtm: true
+  dtm_path: "auto_latest_clean_dtm"
+  dtm_iterations: 2
+  fixed_plane_z0_mode: "dtm_median"
+  camera_height_m: 1.65
+  canonical_from_raw_union: true
+  canonical_margin_m: 0.30
+  canonical_min_area_m2: 10.0
+  canonical_max_area_m2: 350.0
+
+merge:
+  merge_dist_m: 2.0
+  merge_iou_min: 0.20
+  min_support_frames: 3

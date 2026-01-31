@@ -1,0 +1,27 @@
+{
+  "drive_id": "2013_05_28_drive_0010_sync",
+  "frame_range": [
+    0,
+    3835
+  ],
+  "common_frames_used": 300,
+  "frame_span": [
+    0,
+    3835
+  ],
+  "dx": 458260.0820298165,
+  "dy": 5425866.832629329,
+  "dz": -0.6546098876950026,
+  "yaw_deg": -0.5295677087682127,
+  "scale": 0.9999815545569986,
+  "rms_m": 1.3780966023427665,
+  "gate_status": "WARN",
+  "gate_thresholds": {
+    "pass": 1.0,
+    "warn": 1.5
+  },
+  "paths": {
+    "cam0_to_world": "E:\\KITTI360\\KITTI-360\\data_poses\\2013_05_28_drive_0010_sync\\cam0_to_world.txt",
+    "oxts_dir": "E:\\KITTI360\\KITTI-360\\data_poses_oxts\\2013_05_28_drive_0010_sync\\oxts\\data"
+  }
+}

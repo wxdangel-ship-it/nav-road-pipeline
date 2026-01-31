@@ -1,0 +1,1 @@
+banding_check_full: PASS

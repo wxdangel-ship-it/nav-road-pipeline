@@ -1,0 +1,26 @@
+{
+  "snapshot": "snapshot_20260131_171303",
+  "created_at": "2026-01-31T17:13:04",
+  "repo_root": "E:\\Work\\nav-road-pipeline",
+  "git": {
+    "branch": "main",
+    "commit": "c7c1147e153722d91d39de11bf4254a23d6e0175"
+  },
+  "params": {
+    "ARCHIVE_PY_MODE": "entrypoints"
+  },
+  "stats": {
+    "total": 891,
+    "cmd": 107,
+    "py": 784,
+    "py_entrypoints": 168,
+    "copied": 275,
+    "edges": 234
+  },
+  "outputs": {
+    "catalog_csv": "catalog.csv",
+    "catalog_json": "catalog.json",
+    "deps_cmd_edges_csv": "deps_cmd_edges.csv",
+    "legacy_index_md": "LEGACY_INDEX.md"
+  }
+}

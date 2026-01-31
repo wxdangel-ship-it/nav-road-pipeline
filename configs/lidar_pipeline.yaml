@@ -1,0 +1,12 @@
+data_root: ""
+drives_file: configs/golden_drives.txt
+drives: []
+frames_per_drive: 20
+stride: 5
+lidar_world_mode: fullpose
+camera: image_00
+raster_res_m: 1.0
+raster_nodata: -9999.0
+max_points_per_frame: 0
+overwrite: true
+seed: 42

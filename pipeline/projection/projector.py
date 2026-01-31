@@ -6,6 +6,12 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 from shapely.geometry import LineString, Polygon
 
+from pipeline.calib.io_kitti360_calib import Kitti360Calib
+from pipeline.calib.kitti360_projection import (
+    project_cam0_to_image,
+    project_world_to_image_pose,
+)
+
 
 @dataclass
 class RoundtripMetrics:
@@ -75,6 +81,62 @@ def world_geom_to_image(
     us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
     vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
     return np.stack([us, vs, valid], axis=1)
+
+
+def project_points_cam0_to_image(
+    points_cam0: np.ndarray,
+    calib: Dict[str, np.ndarray],
+    image_shape: Tuple[int, int],
+    use_rect: bool = True,
+    y_flip: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    h, w = int(image_shape[0]), int(image_shape[1])
+    k = calib["k"]
+    p_rect = calib.get("p_rect")
+    r_rect = calib.get("r_rect")
+    t_c0_v = calib.get("t_velo_to_cam")
+    t_v_c0 = calib.get("t_cam_to_velo")
+    calib_obj = Kitti360Calib(
+        t_c0_v=t_c0_v,
+        t_v_c0=t_v_c0,
+        r_rect_00=r_rect,
+        p_rect_00=p_rect,
+        k=k,
+        image_size=(w, h),
+        warnings={},
+    )
+    proj = project_cam0_to_image(points_cam0, calib_obj, use_rect=use_rect, y_flip=y_flip, sanity=False)
+    return proj["u"], proj["v"], proj["valid"], proj["in_img"]
+
+
+def world_points_to_image(
+    points_world: np.ndarray,
+    pose: Tuple[float, ...],
+    calib: Dict[str, np.ndarray],
+    image_shape: Tuple[int, int],
+    use_rect: bool = True,
+    y_flip: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if points_world.size == 0:
+        empty = np.zeros((0,), dtype=float)
+        return empty, empty, empty, empty
+    h, w = int(image_shape[0]), int(image_shape[1])
+    k = calib["k"]
+    p_rect = calib.get("p_rect")
+    r_rect = calib.get("r_rect")
+    t_c0_v = calib.get("t_velo_to_cam")
+    t_v_c0 = calib.get("t_cam_to_velo")
+    calib_obj = Kitti360Calib(
+        t_c0_v=t_c0_v,
+        t_v_c0=t_v_c0,
+        r_rect_00=r_rect,
+        p_rect_00=p_rect,
+        k=k,
+        image_size=(w, h),
+        warnings={},
+    )
+    proj = project_world_to_image_pose(points_world, pose, calib_obj, use_rect=use_rect, y_flip_mode="fixed_true", sanity=False)
+    return proj["u"], proj["v"], proj["valid"], proj["in_img"]
 
 
 def image_mask_to_world_geom(

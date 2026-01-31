@@ -1,0 +1,8 @@
+data_root: ""
+dop20_root: "E:\\KITTI360\\KITTI-360\\_lglbw_dop20"
+drives_file: configs/golden_drives.txt
+drives: []
+frames_per_drive: 50
+stride: 5
+roi_buffer_m: 30.0
+overwrite: true

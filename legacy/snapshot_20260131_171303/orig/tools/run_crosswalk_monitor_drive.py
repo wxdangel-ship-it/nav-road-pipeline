@@ -1,0 +1,1240 @@
+﻿from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import logging
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import geopandas as gpd
+import numpy as np
+import yaml
+from PIL import Image, ImageDraw
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from pipeline.datasets.kitti360_io import (
+    load_kitti360_calib,
+    load_kitti360_cam_to_pose_key,
+    load_kitti360_pose,
+    load_kitti360_pose_full,
+)
+from tools.build_image_sample_index import _extract_frame_id, _find_image_dir, _list_images
+
+
+LOG = logging.getLogger("run_crosswalk_monitor_drive")
+
+
+def _setup_logger() -> logging.Logger:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    return logging.getLogger("run_crosswalk_monitor_drive")
+
+
+def _load_yaml(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+
+
+def _load_camera_defaults(path: Path) -> dict:
+    data = _load_yaml(path)
+    defaults = {
+        "default_camera": "image_00",
+        "enforce_camera": True,
+        "allow_override": False,
+    }
+    if not isinstance(data, dict):
+        return defaults
+    defaults.update({k: v for k, v in data.items() if v is not None})
+    return defaults
+
+
+def _assert_camera_consistency(
+    camera: str,
+    image_dir: Path | None,
+    calib: Dict[str, np.ndarray] | None,
+    cam_to_pose_key: str,
+    lidar_world_mode: str,
+    default_camera: str,
+    enforce_camera: bool,
+    allow_override: bool,
+) -> None:
+    if enforce_camera and not allow_override and camera != default_camera:
+        raise SystemExit(f"ERROR: camera={camera} expected={default_camera}")
+    if image_dir is None or not image_dir.exists():
+        raise SystemExit("ERROR: image_dir_missing")
+    image_dir_text = str(image_dir).replace("\\", "/").lower()
+    if enforce_camera and "image_00" not in image_dir_text:
+        raise SystemExit(f"ERROR: image_dir_not_image_00:{image_dir}")
+    if enforce_camera and "data_rect" not in image_dir_text:
+        raise SystemExit(f"ERROR: image_dir_not_data_rect:{image_dir}")
+    if calib is None:
+        raise SystemExit("ERROR: calib_missing")
+    p_key = str(calib.get("p_rect_key", ""))
+    r_key = str(calib.get("r_rect_key", ""))
+    if enforce_camera and (p_key != "P_rect_00" or r_key != "R_rect_00"):
+        raise SystemExit(f"ERROR: calib_rect_key_mismatch:p={p_key} r={r_key}")
+    if enforce_camera and cam_to_pose_key != "image_00":
+        raise SystemExit(f"ERROR: cam_to_pose_key_mismatch:{cam_to_pose_key}")
+    if enforce_camera and lidar_world_mode != "fullpose":
+        raise SystemExit(f"ERROR: lidar_world_mode={lidar_world_mode} expected=fullpose")
+
+
+def _merge_config(base: dict, overrides: dict) -> dict:
+    out = dict(base)
+    for key, val in overrides.items():
+        if val is None:
+            continue
+        out[key] = val
+    return out
+
+
+def _normalize_frame_id(frame_id: str) -> str:
+    digits = "".join(ch for ch in str(frame_id) if ch.isdigit())
+    if not digits:
+        return str(frame_id)
+    return digits.zfill(10)
+
+
+def _build_index_records(
+    kitti_root: Path,
+    drive_id: str,
+    camera: str,
+    stride: int,
+) -> List[dict]:
+    image_dir = _find_image_dir(kitti_root, drive_id, camera)
+    if not image_dir:
+        return []
+    records: List[dict] = []
+    images = _list_images(image_dir)
+    if stride and stride > 1:
+        images = images[::stride]
+    for path in images:
+        frame_id = _normalize_frame_id(_extract_frame_id(path))
+        records.append(
+            {
+                "drive_id": drive_id,
+                "camera": camera,
+                "frame_id": frame_id,
+                "image_path": str(path),
+                "scene_profile": "car",
+            }
+        )
+    return records
+
+
+def _write_index(records: List[dict], out_path: Path) -> None:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.exists():
+        out_path.unlink()
+    with out_path.open("w", encoding="utf-8") as f:
+        for row in records:
+            f.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+
+def _list_layers(path: Path) -> List[str]:
+    try:
+        import pyogrio
+
+        return [name for name, _ in pyogrio.list_layers(path)]
+    except Exception:
+        pass
+    try:
+        return list(gpd.io.file.fiona.listlayers(str(path)))
+    except Exception:
+        return []
+
+
+def _find_crosswalk_layer(path: Path) -> str:
+    if not path.exists():
+        return ""
+    for name in _list_layers(path):
+        if "crosswalk" in name.lower():
+            return name
+    return ""
+
+
+def _load_crosswalk_raw(
+    feature_store_root: Path,
+    drive_id: str,
+    frame_id: str,
+    cache: Dict[Tuple[str, str], Tuple[gpd.GeoDataFrame, float, str]],
+) -> Tuple[gpd.GeoDataFrame, float, str]:
+    key = (drive_id, frame_id)
+    if key in cache:
+        return cache[key]
+    gpkg_path = feature_store_root / "feature_store" / drive_id / frame_id / "image_features.gpkg"
+    if not gpkg_path.exists():
+        cache[key] = (gpd.GeoDataFrame(), 0.0, "missing_feature_store")
+        return cache[key]
+    layer = _find_crosswalk_layer(gpkg_path)
+    if not layer:
+        cache[key] = (gpd.GeoDataFrame(), 0.0, "missing_layer")
+        return cache[key]
+    try:
+        gdf = gpd.read_file(gpkg_path, layer=layer)
+    except Exception:
+        cache[key] = (gpd.GeoDataFrame(), 0.0, "read_error")
+        return cache[key]
+    score = 0.0
+    if not gdf.empty:
+        for col in ("conf", "score", "confidence"):
+            if col in gdf.columns:
+                vals = []
+                for v in gdf[col].tolist():
+                    if v is None:
+                        continue
+                    try:
+                        fv = float(v)
+                    except Exception:
+                        continue
+                    if np.isnan(fv):
+                        continue
+                    vals.append(fv)
+                if vals:
+                    score = max(vals)
+                    break
+    status = "ok" if not gdf.empty else "no_crosswalk"
+    cache[key] = (gdf, score, status)
+    return cache[key]
+
+
+def _render_text_overlay(
+    image_path: str,
+    out_path: Path,
+    lines: List[str],
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    y = 10
+    for line in lines:
+        draw.text((10, y), line, fill=(255, 128, 0, 220))
+        y += 26
+    base.save(out_path)
+
+
+def _render_raw_overlay(
+    image_path: str,
+    raw_gdf: gpd.GeoDataFrame,
+    out_path: Path,
+    missing_status: str,
+    raw_fallback_text: bool,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    if raw_fallback_text and missing_status and missing_status != "ok":
+        draw.text((10, 10), f"MISSING_FEATURE_STORE:{missing_status}", fill=(255, 128, 0, 220))
+        draw.text((10, 36), "NO_RAW_PRED", fill=(255, 0, 0, 220))
+        base.save(out_path)
+        return
+    if raw_gdf is None or raw_gdf.empty:
+        if missing_status and missing_status != "ok":
+            draw.text((10, 10), f"MISSING_FEATURE_STORE:{missing_status}", fill=(255, 128, 0, 220))
+        draw.text((10, 36), "NO_CROSSWALK_DETECTED", fill=(255, 0, 0, 220))
+        base.save(out_path)
+        return
+    for _, row in raw_gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        if geom.geom_type == "Polygon":
+            coords = [(float(x), float(y)) for x, y in geom.exterior.coords]
+            if len(coords) >= 2:
+                draw.line(coords, fill=(255, 0, 0, 220), width=3)
+        elif geom.geom_type == "MultiPolygon":
+            for poly in geom.geoms:
+                coords = [(float(x), float(y)) for x, y in poly.exterior.coords]
+                if len(coords) >= 2:
+                    draw.line(coords, fill=(255, 0, 0, 220), width=3)
+        elif geom.geom_type == "LineString":
+            coords = [(float(x), float(y)) for x, y in geom.coords]
+            if len(coords) >= 2:
+                draw.line(coords, fill=(255, 0, 0, 220), width=3)
+        elif geom.geom_type == "MultiLineString":
+            for line in geom.geoms:
+                coords = [(float(x), float(y)) for x, y in line.coords]
+                if len(coords) >= 2:
+                    draw.line(coords, fill=(255, 0, 0, 220), width=3)
+    base.save(out_path)
+
+
+def _ensure_raw_overlays(
+    qa_index_path: Path,
+    outputs_dir: Path,
+    image_run: Path,
+    provider_id: str,
+    index_lookup: Dict[Tuple[str, str], str],
+    raw_fallback_text: bool,
+    raw_mode: str,
+    on_demand_infer: bool,
+    on_demand_root: Path,
+    drive_id: str,
+    camera: str,
+) -> Tuple[Dict[Tuple[str, str], Dict[str, float]], Dict[Tuple[str, str], Path]]:
+    if not qa_index_path.exists():
+        return {}
+    qa_gdf = gpd.read_file(qa_index_path)
+    if qa_gdf.empty:
+        return {}
+    feature_store_root = image_run / f"feature_store_{provider_id}"
+    qa_dir = outputs_dir / "qa_images"
+    qa_dir.mkdir(parents=True, exist_ok=True)
+    raw_cache: Dict[Tuple[str, str], Tuple[gpd.GeoDataFrame, float, str]] = {}
+    raw_stats: Dict[Tuple[str, str], Dict[str, float]] = {}
+    on_demand_maps: Dict[Tuple[str, str], Path] = {}
+    missing_rows = []
+    infer_enabled = bool(on_demand_infer)
+    infer_attempts = 0
+    max_attempts = 1
+    for idx, row in qa_gdf.iterrows():
+        drive_id = str(row.get("drive_id") or "")
+        frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
+        if not drive_id or not frame_id:
+            continue
+        image_path = index_lookup.get((drive_id, frame_id), "")
+        out_path = qa_dir / drive_id / f"{frame_id}_overlay_raw.png"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_gdf = gpd.GeoDataFrame()
+        raw_score = 0.0
+        raw_status = "unknown"
+        if raw_mode != "text_only":
+            raw_gdf, raw_score, raw_status = _load_crosswalk_raw(feature_store_root, drive_id, frame_id, raw_cache)
+        if raw_status in {"missing_feature_store", "read_error"} and raw_mode == "auto":
+            if not infer_enabled or infer_attempts >= max_attempts:
+                raw_status = "on_demand_infer_fail"
+                infer_enabled = False
+            else:
+                infer_attempts += 1
+                infer_status, infer_gdf, infer_score, infer_map_root = _run_on_demand_infer(
+                    on_demand_root,
+                    drive_id,
+                    frame_id,
+                    image_path,
+                    camera,
+                    provider_id,
+                )
+                if infer_status == "ok":
+                    raw_gdf = infer_gdf
+                    raw_score = infer_score
+                    raw_status = "on_demand_infer_ok"
+                    if infer_map_root:
+                        on_demand_maps[(drive_id, frame_id)] = infer_map_root
+                else:
+                    raw_status = "on_demand_infer_fail"
+                    infer_enabled = False
+        if raw_mode == "text_only":
+            raw_status = "text_only"
+        raw_stats[(drive_id, frame_id)] = {
+            "raw_has_crosswalk": 0.0 if raw_gdf.empty else 1.0,
+            "raw_top_score": float(raw_score),
+            "raw_status": raw_status,
+        }
+        qa_gdf.at[idx, "raw_has_crosswalk"] = int(0 if raw_gdf.empty else 1)
+        qa_gdf.at[idx, "raw_top_score"] = float(raw_score)
+        qa_gdf.at[idx, "raw_status"] = raw_status
+        if raw_status in {"missing_feature_store", "read_error", "on_demand_infer_fail"}:
+            missing_rows.append(
+                {
+                    "drive_id": drive_id,
+                    "frame_id": frame_id,
+                    "raw_status": raw_status,
+                    "image_path": image_path,
+                }
+            )
+        _render_raw_overlay(image_path, raw_gdf, out_path, raw_status, raw_fallback_text)
+        qa_gdf.at[idx, "overlay_raw_path"] = str(out_path)
+    qa_index_path.write_text(qa_gdf.to_json(), encoding="utf-8")
+    missing_path = outputs_dir / "missing_feature_store_list.csv"
+    import pandas as pd
+
+    pd.DataFrame(
+        missing_rows,
+        columns=["drive_id", "frame_id", "raw_status", "image_path"],
+    ).to_csv(missing_path, index=False)
+    return raw_stats, on_demand_maps
+
+
+def _run_on_demand_infer(
+    root: Path,
+    drive_id: str,
+    frame_id: str,
+    image_path: str,
+    camera: str,
+    provider_id: str,
+) -> Tuple[str, gpd.GeoDataFrame, float, Path | None]:
+    if not image_path or not Path(image_path).exists():
+        return "fail", gpd.GeoDataFrame(), 0.0, None
+    root.mkdir(parents=True, exist_ok=True)
+    out_dir = root / f"run_{drive_id}_{frame_id}"
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    index_path = root / f"index_{drive_id}_{frame_id}.jsonl"
+    index_path.write_text(
+        json.dumps(
+            {
+                "drive_id": drive_id,
+                "camera": camera,
+                "frame_id": frame_id,
+                "image_path": image_path,
+                "scene_profile": "car",
+            },
+            ensure_ascii=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    cmd = [
+        sys.executable,
+        "tools/run_image_providers.py",
+        "--index",
+        str(index_path),
+        "--providers",
+        str(provider_id),
+        "--out-run",
+        str(out_dir),
+        "--max-frames",
+        "1",
+        "--build-feature-store",
+        "1",
+        "--build-feature-store-map",
+        "1",
+    ]
+    proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+    if proc.returncode != 0:
+        return "fail", gpd.GeoDataFrame(), 0.0, None
+    feature_store_root = out_dir / f"feature_store_{provider_id}"
+    raw_gdf, raw_score, raw_status = _load_crosswalk_raw(feature_store_root, drive_id, frame_id, {})
+    map_root = out_dir / f"feature_store_map_{provider_id}"
+    map_root = map_root if map_root.exists() else None
+    if raw_status in {"ok", "no_crosswalk", "missing_layer"}:
+        return "ok", raw_gdf, raw_score, map_root
+    return "fail", gpd.GeoDataFrame(), 0.0, map_root
+
+
+def _read_candidates(path: Path) -> gpd.GeoDataFrame:
+    if not path.exists():
+        return gpd.GeoDataFrame()
+    try:
+        return gpd.read_file(path, layer="crosswalk_candidate_poly")
+    except Exception:
+        return gpd.GeoDataFrame()
+
+
+def _read_final(path: Path) -> gpd.GeoDataFrame:
+    if not path.exists():
+        return gpd.GeoDataFrame()
+    try:
+        return gpd.read_file(path, layer="crosswalk_poly")
+    except Exception:
+        return gpd.GeoDataFrame()
+
+
+def _ensure_wgs84_range(gdf: gpd.GeoDataFrame) -> bool:
+    if gdf.empty:
+        return True
+    try:
+        bounds = gdf.total_bounds
+    except Exception:
+        return False
+    minx, miny, maxx, maxy = bounds
+    return -180.0 <= minx <= 180.0 and -180.0 <= maxx <= 180.0 and -90.0 <= miny <= 90.0 and -90.0 <= maxy <= 90.0
+
+
+def _write_crosswalk_gpkg(
+    out_gpkg: Path,
+    candidates: gpd.GeoDataFrame,
+    finals: gpd.GeoDataFrame,
+) -> None:
+    if out_gpkg.exists():
+        out_gpkg.unlink()
+    cand = candidates if candidates is not None else gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:32632")
+    final = finals if finals is not None else gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:32632")
+    if cand.crs is None:
+        cand = cand.set_crs("EPSG:32632")
+    if final.crs is None:
+        final = final.set_crs("EPSG:32632")
+    cand.to_file(out_gpkg, layer="crosswalk_candidate_poly", driver="GPKG")
+    final.to_file(out_gpkg, layer="crosswalk_poly", driver="GPKG")
+
+
+def _build_final_support(final_gdf: gpd.GeoDataFrame) -> Dict[Tuple[str, str], List[str]]:
+    support_map: Dict[Tuple[str, str], List[str]] = {}
+    if final_gdf.empty:
+        return support_map
+    for _, row in final_gdf.iterrows():
+        drive_id = str(row.get("drive_id") or "")
+        frames_raw = row.get("support_frames", "")
+        frames = []
+        if isinstance(frames_raw, str) and frames_raw:
+            try:
+                frames = json.loads(frames_raw)
+            except Exception:
+                frames = []
+        for frame_id in frames:
+            support_map.setdefault((drive_id, str(frame_id)), []).append(row.get("entity_id"))
+    return support_map
+
+
+def _is_gore_like(row: gpd.GeoSeries) -> bool:
+    rect_w = float(row.get("rect_w_m") or 0.0)
+    rect_l = float(row.get("rect_l_m") or 0.0)
+    rectangularity = float(row.get("rectangularity") or 0.0)
+    if rect_l > 10.0 and rect_w > 0.0 and rect_w < 2.0:
+        return True
+    if rectangularity > 0 and rectangularity < 0.2 and rect_l > rect_w * 3.0:
+        return True
+    return False
+
+
+def _project_world_to_image(
+    points: np.ndarray,
+    pose: Tuple[float, ...],
+    calib: Dict[str, np.ndarray],
+) -> np.ndarray:
+    if len(pose) == 6:
+        x0, y0, z0, roll, pitch, yaw = pose
+        c1 = float(np.cos(yaw))
+        s1 = float(np.sin(yaw))
+        c2 = float(np.cos(pitch))
+        s2 = float(np.sin(pitch))
+        c3 = float(np.cos(roll))
+        s3 = float(np.sin(roll))
+        r_z = np.array([[c1, -s1, 0.0], [s1, c1, 0.0], [0.0, 0.0, 1.0]], dtype=float)
+        r_y = np.array([[c2, 0.0, s2], [0.0, 1.0, 0.0], [-s2, 0.0, c2]], dtype=float)
+        r_x = np.array([[1.0, 0.0, 0.0], [0.0, c3, -s3], [0.0, s3, c3]], dtype=float)
+        r_world_pose = r_z @ r_y @ r_x
+        delta = points - np.array([x0, y0, z0], dtype=float)
+        pose_xyz = (r_world_pose.T @ delta.T).T
+        x_ego = pose_xyz[:, 0]
+        y_ego = pose_xyz[:, 1]
+        z_ego = pose_xyz[:, 2]
+    else:
+        x0, y0, yaw = pose
+        c = float(np.cos(yaw))
+        s = float(np.sin(yaw))
+        dx = points[:, 0] - x0
+        dy = points[:, 1] - y0
+        x_ego = c * dx + s * dy
+        y_ego = -s * dx + c * dy
+        z_ego = points[:, 2]
+    ones = np.ones_like(x_ego)
+    pts_h = np.stack([x_ego, y_ego, z_ego, ones], axis=0)
+    cam = calib["t_velo_to_cam"] @ pts_h
+    xyz = cam[:3, :].T
+    xyz = (calib["r_rect"] @ xyz.T).T
+    zs = xyz[:, 2]
+    valid = zs > 1e-3
+    us = np.zeros_like(zs)
+    vs = np.zeros_like(zs)
+    k = calib["k"]
+    us[valid] = (k[0, 0] * xyz[valid, 0] / zs[valid]) + k[0, 2]
+    vs[valid] = (k[1, 1] * xyz[valid, 1] / zs[valid]) + k[1, 2]
+    return np.stack([us, vs, valid], axis=1)
+
+
+def _geom_to_image_points(
+    geom: object,
+    pose: Tuple[float, ...],
+    calib: Dict[str, np.ndarray],
+) -> List[Tuple[float, float]]:
+    if geom is None or geom.is_empty:
+        return []
+    if geom.geom_type == "Polygon":
+        coords = np.array(list(geom.exterior.coords), dtype=float)
+    elif geom.geom_type == "LineString":
+        coords = np.array(list(geom.coords), dtype=float)
+    else:
+        return []
+    if coords.shape[0] == 0:
+        return []
+    points = np.column_stack([coords[:, 0], coords[:, 1], np.zeros(coords.shape[0], dtype=float)])
+    proj = _project_world_to_image(points, pose, calib)
+    out: List[Tuple[float, float]] = []
+    for u, v, valid in proj:
+        if not valid:
+            continue
+        out.append((float(u), float(v)))
+    return out
+
+
+def _project_point_to_image(
+    x: float,
+    y: float,
+    pose_xy_yaw: Tuple[float, ...],
+    calib: Dict[str, np.ndarray],
+) -> Tuple[float, float, bool]:
+    pts = np.array([[x, y, 0.0]], dtype=float)
+    proj = _project_world_to_image(pts, pose_xy_yaw, calib)
+    if proj.size == 0:
+        return 0.0, 0.0, False
+    u, v, valid = proj[0]
+    return float(u), float(v), bool(valid)
+
+
+def _render_gated_overlay(
+    out_path: Path,
+    image_path: str,
+    frame_id: str,
+    candidates: gpd.GeoDataFrame,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+    draw_rejected: bool,
+) -> Tuple[int, List[str]]:
+    if out_path.exists():
+        out_path.unlink()
+    if image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    if pose is None or calib is None:
+        _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+        return 0, []
+
+    kept = 0
+    reject_reasons: List[str] = []
+    for _, row in candidates.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+        reasons = str(row.get("reject_reasons_aug") or row.get("reject_reasons") or "")
+        is_rejected = bool(reasons)
+        if is_rejected and not draw_rejected:
+            continue
+        pts = _geom_to_image_points(geom, pose, calib)
+        if len(pts) < 2:
+            continue
+        color = (0, 255, 255, 200) if not is_rejected else (160, 160, 160, 200)
+        draw.polygon(pts, outline=color)
+        if is_rejected:
+            reject_reasons.extend([r for r in reasons.split(",") if r])
+            cx, cy = geom.centroid.x, geom.centroid.y
+            u, v, ok = _project_point_to_image(cx, cy, pose, calib)
+            if ok:
+                draw.text((u, v), reasons.replace(",", "|"), fill=(180, 180, 180, 220))
+        else:
+            kept += 1
+
+    if len(candidates) == 0:
+        draw.text((10, 10), "NO_GATED_CANDIDATE", fill=(255, 128, 0, 220))
+    elif kept == 0:
+        top_reject = sorted(set(reject_reasons))
+        draw.text((10, 10), "NO_GATED_CANDIDATE", fill=(255, 128, 0, 220))
+        if top_reject:
+            draw.text((10, 36), "REJECT_REASONS:" + "|".join(top_reject[:5]), fill=(200, 200, 200, 220))
+    base.save(out_path)
+    return kept, sorted(set(reject_reasons))
+
+
+def _render_entities_overlay(
+    out_path: Path,
+    image_path: str,
+    drive_id: str,
+    frame_id: str,
+    final_gdf: gpd.GeoDataFrame,
+    final_support: Dict[Tuple[str, str], List[str]],
+    raw_has_crosswalk: int,
+    pose: Tuple[float, float, float] | None,
+    calib: Dict[str, np.ndarray] | None,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    if image_path and Path(image_path).exists():
+        try:
+            base = Image.open(image_path).convert("RGBA")
+        except Exception:
+            base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    else:
+        base = Image.new("RGBA", (1280, 720), (0, 0, 0, 255))
+    draw = ImageDraw.Draw(base, "RGBA")
+    if pose is None or calib is None:
+        _render_text_overlay(image_path, out_path, ["NO_CALIB_OR_POSE"])
+        return
+
+    support_ids = final_support.get((drive_id, frame_id), [])
+    if not support_ids:
+        tag = "RAW_HAS_CROSSWALK=1" if raw_has_crosswalk == 1 else "RAW_HAS_CROSSWALK=0"
+        draw.text((10, 10), "NO_FINAL_ENTITY", fill=(255, 128, 0, 220))
+        draw.text((10, 36), tag, fill=(255, 200, 0, 220))
+        base.save(out_path)
+        return
+
+    for _, row in final_gdf.iterrows():
+        if str(row.get("drive_id") or "") != drive_id:
+            continue
+        frames_raw = row.get("support_frames", "")
+        frames = []
+        if isinstance(frames_raw, str) and frames_raw:
+            try:
+                frames = json.loads(frames_raw)
+            except Exception:
+                frames = []
+        if frame_id not in {str(f) for f in frames}:
+            continue
+        geom = row.geometry
+        pts = _geom_to_image_points(geom, pose, calib)
+        if len(pts) < 2:
+            continue
+        draw.polygon(pts, outline=(0, 128, 255, 220), fill=(0, 128, 255, 80))
+    base.save(out_path)
+
+
+def _update_qa_index(
+    qa_index_path: Path,
+    index_lookup: Dict[Tuple[str, str], str],
+    final_support: Dict[Tuple[str, str], List[str]],
+    candidate_ids: Dict[Tuple[str, str], List[str]],
+) -> None:
+    if not qa_index_path.exists():
+        return
+    qa = gpd.read_file(qa_index_path)
+    overlay_raw = []
+    overlay_gated = []
+    overlay_entities = []
+    cand_ids = []
+    final_ids = []
+    for idx, row in qa.iterrows():
+        drive_id = str(row.get("drive_id") or "")
+        frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
+        overlay_raw.append(str(row.get("overlay_raw_path") or ""))
+        overlay_gated.append(str(row.get("overlay_gated_path") or ""))
+        overlay_entities.append(str(row.get("overlay_entities_path") or ""))
+        cand_ids.append(json.dumps(sorted(set(candidate_ids.get((drive_id, frame_id), []))), ensure_ascii=True))
+        final_ids.append(json.dumps(sorted(set(final_support.get((drive_id, frame_id), []))), ensure_ascii=True))
+    qa["overlay_raw_path"] = overlay_raw
+    qa["overlay_gated_path"] = overlay_gated
+    qa["overlay_entities_path"] = overlay_entities
+    qa["candidate_ids_nearby"] = cand_ids
+    qa["crosswalk_final_ids_nearby"] = final_ids
+    qa["final_entity_ids_nearby"] = final_ids
+    qa.to_file(qa_index_path, driver="GeoJSON")
+
+
+def _compress_ranges(frames: List[str]) -> str:
+    if not frames:
+        return ""
+    ints = sorted({int(f) for f in frames if str(f).isdigit()})
+    ranges = []
+    start = prev = ints[0]
+    for val in ints[1:]:
+        if val == prev + 1:
+            prev = val
+            continue
+        ranges.append((start, prev))
+        start = prev = val
+    ranges.append((start, prev))
+    out = []
+    for s, e in ranges:
+        if s == e:
+            out.append(f"{s:010d}")
+        else:
+            out.append(f"{s:010d}-{e:010d}")
+    return ", ".join(out)
+
+
+def _build_trace(
+    records: List[dict],
+    out_path: Path,
+) -> None:
+    if out_path.exists():
+        out_path.unlink()
+    import pandas as pd
+
+    pd.DataFrame(records).to_csv(out_path, index=False)
+
+
+def _build_report(
+    out_path: Path,
+    drive_id: str,
+    total_frames: int,
+    raw_frames: List[str],
+    candidate_zero: int,
+    reject_counts: Dict[str, int],
+    final_gdf: gpd.GeoDataFrame,
+    final_support: Dict[Tuple[str, str], List[str]],
+    outputs_dir: Path,
+    runtime_snapshot: Dict[str, str],
+) -> None:
+    lines = []
+    lines.append("# Crosswalk Monitor Report\n")
+    lines.append(f"- report_time: {dt.datetime.now():%Y-%m-%d %H:%M:%S}")
+    lines.append("")
+    lines.append("## Runtime Config Snapshot")
+    if runtime_snapshot:
+        for key in sorted(runtime_snapshot.keys()):
+            lines.append(f"- {key}: {runtime_snapshot[key]}")
+    else:
+        lines.append("- none")
+    lines.append(f"- drive_id: {drive_id}")
+    lines.append(f"- total_frames: {total_frames}")
+    lines.append("")
+    lines.append(f"- raw_has_crosswalk_count: {len(raw_frames)}")
+    lines.append(f"- raw_has_crosswalk_ranges: {_compress_ranges(raw_frames)}")
+    lines.append("")
+    lines.append(f"- candidate_written_zero: {candidate_zero}")
+    lines.append("")
+    lines.append("## Reject Reason Top10")
+    if reject_counts:
+        for reason, count in sorted(reject_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+            lines.append(f"- {reason}: {count}")
+    else:
+        lines.append("- none")
+    lines.append("")
+    lines.append("## Final Summary")
+    lines.append(f"- final_count: {len(final_gdf)}")
+    if not final_gdf.empty and "frames_hit" in final_gdf.columns:
+        frames_hit = [int(v) for v in final_gdf["frames_hit"].tolist() if v]
+        if frames_hit:
+            lines.append(f"- frames_hit_p50: {np.percentile(frames_hit, 50):.1f}")
+            lines.append(f"- frames_hit_p90: {np.percentile(frames_hit, 90):.1f}")
+    if final_gdf.empty:
+        lines.append("- final_entity_ids: none")
+    else:
+        lines.append(f"- final_entity_ids: {', '.join(final_gdf['entity_id'].astype(str).tolist())}")
+    if final_support:
+        ranges = {}
+        for (drv, frame_id), entity_ids in final_support.items():
+            if drv != drive_id:
+                continue
+            for ent in entity_ids:
+                ranges.setdefault(ent, []).append(frame_id)
+        for ent, frames in ranges.items():
+            lines.append(f"- {ent}: support_frames={_compress_ranges(frames)}")
+    lines.append("")
+    lines.append(f"- outputs_dir: {outputs_dir}")
+    out_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="configs/crosswalk_monitor_drive.yaml")
+    ap.add_argument("--drive", default=None)
+    ap.add_argument("--kitti-root", default=None)
+    ap.add_argument("--camera", default=None)
+    ap.add_argument("--stride", type=int, default=None)
+    ap.add_argument("--raw-mode", default=None)
+    ap.add_argument("--on-demand-infer", type=int, default=None)
+    ap.add_argument("--export-all-frames", type=int, default=None)
+    ap.add_argument("--out-run", default="")
+    args = ap.parse_args()
+
+    log = _setup_logger()
+    cfg = _load_yaml(Path(args.config))
+    merged = _merge_config(
+        cfg,
+        {
+            "drive_id": args.drive,
+            "kitti_root": args.kitti_root,
+            "camera": args.camera,
+            "stride": args.stride,
+            "raw_mode": args.raw_mode,
+            "on_demand_infer": args.on_demand_infer,
+            "export_all_frames": args.export_all_frames,
+        },
+    )
+
+    drive_id = str(merged.get("drive_id") or "")
+    kitti_root = Path(str(merged.get("kitti_root") or ""))
+    defaults = _load_camera_defaults(Path("configs/camera_defaults.yaml"))
+    default_camera = str(defaults.get("default_camera") or "image_00")
+    enforce_camera = bool(defaults.get("enforce_camera", True))
+    allow_override = bool(defaults.get("allow_override", False))
+    if str(os.environ.get("ALLOW_CAMERA_OVERRIDE", "0")).strip() == "1":
+        allow_override = True
+    camera = str(merged.get("camera") or default_camera)
+    stage1_stride = int(merged.get("stride", 1))
+    export_all_frames = bool(merged.get("export_all_frames", True))
+    min_frames_hit_final = int(merged.get("min_frames_hit_final", 3))
+    raw_fallback_text = bool(merged.get("raw_fallback_text", True))
+    draw_rejected = bool(merged.get("draw_rejected_candidates", True))
+    write_wgs84 = bool(merged.get("write_wgs84", True))
+    raw_mode = str(merged.get("raw_mode") or "auto")
+    on_demand_infer = bool(merged.get("on_demand_infer", True))
+    image_run = Path(str(merged.get("image_run") or ""))
+    image_provider = str(merged.get("image_provider") or "grounded_sam2_v1")
+    image_evidence_gpkg = str(merged.get("image_evidence_gpkg") or "")
+    road_root = Path(str(merged.get("road_root") or ""))
+    base_config = Path(str(merged.get("config") or "configs/road_entities.yaml"))
+
+    if not drive_id:
+        log.error("drive_id required")
+        return 2
+    if not kitti_root.exists():
+        log.error("kitti_root missing: %s", kitti_root)
+        return 2
+    if not image_run.exists():
+        log.error("image_run missing: %s", image_run)
+        return 2
+    if not road_root.exists():
+        log.error("road_root missing: %s", road_root)
+        return 2
+
+    os.environ["POC_DATA_ROOT"] = str(kitti_root)
+    if stage1_stride < 1:
+        stage1_stride = 1
+    if not export_all_frames:
+        log.warning("export_all_frames=false ignored; monitor exports all frames.")
+
+    run_dir = Path(args.out_run) if args.out_run else Path("runs") / f"crosswalk_monitor_{drive_id}_{dt.datetime.now():%Y%m%d_%H%M%S}"
+    if run_dir.exists():
+        shutil.rmtree(run_dir)
+    outputs_dir = run_dir / "outputs"
+    debug_dir = run_dir / "debug"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    debug_dir.mkdir(parents=True, exist_ok=True)
+
+    lidar_world_mode = str(merged.get("lidar_world_mode") or os.environ.get("LIDAR_WORLD_MODE") or "").strip().lower()
+    if str(os.environ.get("USE_FULLPOSE_LIDAR", "0")).strip() == "1":
+        lidar_world_mode = "fullpose"
+    if not lidar_world_mode:
+        lidar_world_mode = "fullpose"
+    image_dir = _find_image_dir(kitti_root, drive_id, camera)
+    try:
+        calib = load_kitti360_calib(kitti_root, camera)
+    except Exception:
+        calib = None
+    cam_to_pose_key = ""
+    try:
+        _cam_to_pose, cam_to_pose_key = load_kitti360_cam_to_pose_key(kitti_root, camera)
+    except Exception:
+        cam_to_pose_key = ""
+    _assert_camera_consistency(
+        camera,
+        image_dir,
+        calib,
+        cam_to_pose_key,
+        lidar_world_mode,
+        default_camera,
+        enforce_camera,
+        allow_override,
+    )
+
+    records = _build_index_records(kitti_root, drive_id, camera, stage1_stride)
+    if not records:
+        log.error("no frames found for drive=%s", drive_id)
+        return 3
+    index_path = debug_dir / "monitor_index.jsonl"
+    _write_index(records, index_path)
+    log.info("index=%s total=%d", index_path, len(records))
+
+    stage_cfg = debug_dir / "crosswalk_monitor.yaml"
+    stage_cfg.write_text(
+        yaml.safe_dump(
+            _merge_config(_load_yaml(base_config), {"crosswalk_final": {"min_frames_hit": min_frames_hit_final}}),
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    stage_dir = run_dir / "stage1"
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
+    cmd = [
+        sys.executable,
+        "tools/build_road_entities.py",
+        "--index",
+        str(index_path),
+        "--image-run",
+        str(image_run),
+        "--image-provider",
+        str(image_provider),
+        "--image-evidence-gpkg",
+        str(image_evidence_gpkg),
+        "--config",
+        str(stage_cfg),
+        "--road-root",
+        str(road_root),
+        "--out-dir",
+        str(stage_dir),
+        "--emit-qa-images",
+        "1",
+    ]
+    log.info("stage1: %s", " ".join(cmd))
+    if subprocess.run(cmd, check=False).returncode != 0:
+        log.error("stage1 failed")
+        return 4
+
+    stage_outputs = stage_dir / "outputs"
+    qa_images_src = stage_outputs / "qa_images"
+    qa_images_dst = outputs_dir / "qa_images"
+    if qa_images_dst.exists():
+        shutil.rmtree(qa_images_dst)
+    if qa_images_src.exists():
+        shutil.copytree(qa_images_src, qa_images_dst)
+
+    qa_index_src = stage_outputs / "qa_index_wgs84.geojson"
+    qa_index_path = outputs_dir / "qa_index_wgs84.geojson"
+    if qa_index_path.exists():
+        qa_index_path.unlink()
+    if qa_index_src.exists():
+        shutil.copy2(qa_index_src, qa_index_path)
+
+    index_lookup = {(r["drive_id"], _normalize_frame_id(r["frame_id"])): r.get("image_path", "") for r in records}
+    raw_stats, on_demand_maps = _ensure_raw_overlays(
+        qa_index_path,
+        outputs_dir,
+        image_run,
+        image_provider,
+        index_lookup,
+        raw_fallback_text,
+        raw_mode,
+        on_demand_infer,
+        (debug_dir / "on_demand_infer").resolve(),
+        drive_id,
+        camera,
+    )
+
+    stage_gpkg = stage_outputs / "road_entities_utm32.gpkg"
+    candidate_gdf = _read_candidates(stage_gpkg)
+    final_gdf = _read_final(stage_gpkg)
+    out_gpkg = outputs_dir / "crosswalk_entities_utm32.gpkg"
+    _write_crosswalk_gpkg(out_gpkg, candidate_gdf, final_gdf)
+    if write_wgs84:
+        out_wgs84 = outputs_dir / "crosswalk_entities_wgs84.gpkg"
+        if out_wgs84.exists():
+            out_wgs84.unlink()
+        cand_wgs84 = candidate_gdf.to_crs("EPSG:4326") if not candidate_gdf.empty else gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:4326")
+        final_wgs84 = final_gdf.to_crs("EPSG:4326") if not final_gdf.empty else gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs="EPSG:4326")
+        if not _ensure_wgs84_range(cand_wgs84) or not _ensure_wgs84_range(final_wgs84):
+            log.error("wgs84 range check failed")
+            return 5
+        cand_wgs84.to_file(out_wgs84, layer="crosswalk_candidate_poly", driver="GPKG")
+        final_wgs84.to_file(out_wgs84, layer="crosswalk_poly", driver="GPKG")
+
+    candidate_ids: Dict[Tuple[str, str], List[str]] = {}
+    candidate_rejects: Dict[Tuple[str, str], List[str]] = {}
+    candidate_by_frame: Dict[str, gpd.GeoDataFrame] = {}
+    if not candidate_gdf.empty:
+        candidate_gdf = candidate_gdf.copy()
+        candidate_gdf["frame_id_norm"] = candidate_gdf["frame_id"].apply(_normalize_frame_id)
+        candidate_gdf["reject_reasons_aug"] = candidate_gdf["reject_reasons"].fillna("").astype(str)
+        gore_flags = []
+        for _, row in candidate_gdf.iterrows():
+            gore_like = _is_gore_like(row)
+            gore_flags.append(gore_like)
+        candidate_gdf["gore_like"] = gore_flags
+        candidate_gdf.loc[candidate_gdf["gore_like"], "reject_reasons_aug"] = (
+            candidate_gdf.loc[candidate_gdf["gore_like"], "reject_reasons_aug"].apply(
+                lambda v: ("gore_like" if not v else f"{v},gore_like")
+            )
+        )
+        for frame_id, group in candidate_gdf.groupby("frame_id_norm"):
+            candidate_by_frame[str(frame_id)] = group
+            for _, row in group.iterrows():
+                d = str(row.get("drive_id") or "")
+                if not d:
+                    continue
+                key = (d, str(frame_id))
+                candidate_ids.setdefault(key, []).append(str(row.get("candidate_id") or ""))
+                reasons = str(row.get("reject_reasons_aug") or "")
+                if reasons:
+                    for token in [r for r in reasons.split(",") if r]:
+                        candidate_rejects.setdefault(key, []).append(token)
+
+    gore_frames = {
+        frame_id
+        for (drv, frame_id), reasons in candidate_rejects.items()
+        if drv == drive_id and "gore_like" in set(reasons)
+    }
+    if not final_gdf.empty and gore_frames:
+        keep_rows = []
+        for _, row in final_gdf.iterrows():
+            frames_raw = row.get("support_frames", "")
+            frames = []
+            if isinstance(frames_raw, str) and frames_raw:
+                try:
+                    frames = json.loads(frames_raw)
+                except Exception:
+                    frames = []
+            if frames and all(str(f) in gore_frames for f in frames):
+                continue
+            keep_rows.append(row)
+        if keep_rows:
+            final_gdf = gpd.GeoDataFrame(keep_rows, geometry="geometry", crs=final_gdf.crs)
+        else:
+            final_gdf = gpd.GeoDataFrame(columns=["entity_id"], geometry=[], crs=final_gdf.crs)
+
+    final_support = _build_final_support(final_gdf)
+
+    pose_map: Dict[str, Tuple[float, float, float] | Tuple[float, float, float, float, float, float]] = {}
+    for record in records:
+        frame_id = _normalize_frame_id(record["frame_id"])
+        try:
+            if lidar_world_mode == "fullpose":
+                x, y, z, roll, pitch, yaw = load_kitti360_pose_full(kitti_root, drive_id, frame_id)
+                pose_map[frame_id] = (x, y, z, roll, pitch, yaw)
+            else:
+                x, y, yaw = load_kitti360_pose(kitti_root, drive_id, frame_id)
+                pose_map[frame_id] = (x, y, yaw)
+        except Exception:
+            continue
+
+    qa = gpd.read_file(qa_index_path)
+    for idx, row in qa.iterrows():
+        drive = str(row.get("drive_id") or "")
+        frame_id = _normalize_frame_id(str(row.get("frame_id") or ""))
+        image_path = index_lookup.get((drive, frame_id), "")
+        qa_dir = outputs_dir / "qa_images" / drive
+        qa_dir.mkdir(parents=True, exist_ok=True)
+        gated_path = qa_dir / f"{frame_id}_overlay_gated.png"
+        entities_path = qa_dir / f"{frame_id}_overlay_entities.png"
+        candidates = candidate_by_frame.get(frame_id, gpd.GeoDataFrame())
+        kept, _ = _render_gated_overlay(
+            gated_path,
+            image_path,
+            frame_id,
+            candidates,
+            pose_map.get(frame_id),
+            calib,
+            draw_rejected,
+        )
+        raw_has = int(row.get("raw_has_crosswalk", 0) or 0)
+        _render_entities_overlay(
+            entities_path,
+            image_path,
+            drive,
+            frame_id,
+            final_gdf,
+            final_support,
+            raw_has,
+            pose_map.get(frame_id),
+            calib,
+        )
+        qa.at[idx, "overlay_gated_path"] = str(gated_path)
+        qa.at[idx, "overlay_entities_path"] = str(entities_path)
+        qa.at[idx, "gated_kept"] = kept
+    qa.to_file(qa_index_path, driver="GeoJSON")
+
+    _update_qa_index(qa_index_path, index_lookup, final_support, candidate_ids)
+
+    map_root_default = image_run / f"feature_store_map_{image_provider}"
+    trace_records = []
+    reject_counts: Dict[str, int] = {}
+    raw_frames = []
+    candidate_zero = 0
+    pose_source_label = "oxts_full" if lidar_world_mode == "fullpose" else "oxts"
+    for record in records:
+        frame_id = _normalize_frame_id(record["frame_id"])
+        key = (drive_id, frame_id)
+        raw_info = raw_stats.get(
+            key,
+            {"raw_has_crosswalk": 0.0, "raw_top_score": 0.0, "raw_status": "unknown"},
+        )
+        cand_ids = sorted(set(candidate_ids.get(key, [])))
+        rejects = sorted(set(candidate_rejects.get(key, [])))
+        candidates = candidate_by_frame.get(frame_id, gpd.GeoDataFrame())
+        candidate_count = int(len(candidates)) if not candidates.empty else 0
+        kept_count = 0
+        if not candidates.empty:
+            for _, row in candidates.iterrows():
+                reasons = str(row.get("reject_reasons_aug") or row.get("reject_reasons") or "")
+                if not reasons:
+                    kept_count += 1
+        gated_kept = 1 if kept_count > 0 else 0
+        for r in rejects:
+            reject_counts[r] = reject_counts.get(r, 0) + 1
+        final_ids = sorted(set(final_support.get(key, [])))
+        map_root = on_demand_maps.get(key) or map_root_default
+        project_ok = 0
+        if map_root and map_root.exists():
+            map_path = map_root / drive_id / frame_id / "map_evidence_utm32.gpkg"
+            project_ok = 1 if map_path.exists() else 0
+        if int(raw_info.get("raw_has_crosswalk", 0)) == 1:
+            raw_frames.append(frame_id)
+        if not cand_ids:
+            candidate_zero += 1
+        note = ""
+        if not cand_ids:
+            if int(raw_info.get("raw_has_crosswalk", 0)) == 0:
+                note = "raw_empty"
+            else:
+                note = "candidate_missing"
+        elif rejects and not gated_kept:
+            note = "rejected"
+        reject_top = ""
+        if rejects:
+            reject_top = "|".join(rejects[:5])
+        trace_records.append(
+            {
+                "drive_id": drive_id,
+                "frame_id": frame_id,
+                "image_path": record.get("image_path", ""),
+                "raw_status": raw_info.get("raw_status", "unknown"),
+                "raw_has_crosswalk": int(raw_info.get("raw_has_crosswalk", 0)),
+                "raw_top_score": raw_info.get("raw_top_score", 0.0),
+                "pose_source": pose_source_label,
+                "lidar_world_mode": lidar_world_mode,
+                "project_ok": project_ok,
+                "candidate_written": 1 if cand_ids else 0,
+                "candidate_count": candidate_count,
+                "reject_reasons": "|".join(rejects),
+                "reject_reasons_top": reject_top,
+                "gated_kept": gated_kept,
+                "final_support": 1 if final_ids else 0,
+                "final_entity_ids": "|".join(final_ids),
+                "note": note,
+            }
+        )
+
+    trace_path = outputs_dir / "crosswalk_trace.csv"
+    _build_trace(trace_records, trace_path)
+
+    report_path = outputs_dir / "crosswalk_monitor_report.md"
+    runtime_snapshot = {
+        "camera": camera,
+        "image_dir": str(image_dir or ""),
+        "pose_source": pose_source_label,
+        "lidar_world_mode": lidar_world_mode,
+        "p_rect_key": str(calib.get("p_rect_key", "") if calib else ""),
+        "r_rect_key": str(calib.get("r_rect_key", "") if calib else ""),
+        "cam_to_pose_key": cam_to_pose_key,
+        "cam_to_velo_path": str(kitti_root / "calibration" / "calib_cam_to_velo.txt"),
+        "roi_used": "false",
+        "roi_strategy": "full_frame",
+    }
+    _build_report(
+        report_path,
+        drive_id,
+        len(records),
+        raw_frames,
+        candidate_zero,
+        reject_counts,
+        final_gdf,
+        final_support,
+        outputs_dir,
+        runtime_snapshot,
+    )
+
+    log.info("done: %s", outputs_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

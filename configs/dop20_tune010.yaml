@@ -1,0 +1,62 @@
+DOP20_ROOT: "E:\\KITTI360\\KITTI-360\\_lglbw_dop20_golden8"
+DRIVE_ID: "2013_05_28_drive_0010_sync"
+ROI_BUFFER_M: 100.0
+TARGET_EPSG: 32632
+MOSAIC_RES_M: 0.25
+OVERWRITE: true
+
+OSM_SOURCE: "E:\\KITTI360\\KITTI-360\\_osm_download\\drivable_roads.geojson"
+OSM_HIGHWAY_ALLOWLIST:
+  - motorway
+  - trunk
+  - primary
+  - secondary
+  - tertiary
+  - residential
+  - unclassified
+  - service
+OSM_WIDTH_SCALE: 0.7
+OSM_WIDTH_TABLE:
+  motorway: 15.0
+  trunk: 13.0
+  primary: 12.0
+  secondary: 11.0
+  tertiary: 10.0
+  residential: 9.0
+  unclassified: 9.0
+  service: 8.0
+  default: 9.0
+FILL_HOLES_ENABLE: true
+HOLE_FILL_MAX_M2: 2000.0
+HOLE_FILL_CORRIDOR_PAD_M: 3.0
+HOLE_FILL_ONLY_INTERSECT_CORRIDOR: true
+CLOSING_ENABLE: true
+CLOSING_ONLY_IN_CORRIDOR: true
+CLOSING_CORRIDOR_PAD_M: 3.0
+CLOSING_RADIUS_M: 1.0
+CLOSING_RADIUS_CANDIDATES_M: [0.75, 1.0, 1.25]
+
+INIT_PARAMS:
+  HSV_S_MAX: 0.25
+  HSV_V_MIN: 0.22
+  HSV_V_MAX: 0.90
+  LAB_AB_DEV_MAX: 14
+  MORPH_OPEN_PIX: 3
+  MORPH_CLOSE_PIX: 9
+  MIN_AREA_M2: 200.0
+  SIMPLIFY_TOL_M: 0.5
+  CORRIDOR_GATE_M: 5.0
+
+GRID_STAGE1:
+  HSV_S_MAX: [0.22, 0.25, 0.28]
+  HSV_V_MIN: [0.18, 0.22, 0.26]
+  HSV_V_MAX: [0.88, 0.90]
+  LAB_AB_DEV_MAX: [12, 14]
+
+GRID_STAGE2:
+  MORPH_OPEN_PIX: [3, 5]
+  MORPH_CLOSE_PIX: [7, 9]
+  MIN_AREA_M2: [120.0, 200.0, 300.0]
+  CORRIDOR_GATE_M: [0.0, 5.0, 10.0, 20.0]
+
+MAX_TRIALS: 40

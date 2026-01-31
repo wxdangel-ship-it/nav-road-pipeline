@@ -1,0 +1,44 @@
+{
+  "parts": [
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000000000_0000000767.laz",
+      "size": 302434569,
+      "size_mb": 288.42408084869385,
+      "frame_start": "0000000000",
+      "frame_end": "0000000767",
+      "sha256_head": "fd9f8c0f83c826f9fb8fd8a2961d2b5a2088335f064bd03c0887a8ef16c6b6c3"
+    },
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000000768_0000001535.laz",
+      "size": 282150334,
+      "size_mb": 269.0795269012451,
+      "frame_start": "0000000768",
+      "frame_end": "0000001535",
+      "sha256_head": "07a5805b9ec1221f3f0e2613ced35bc3f4980b75c44951be4e1e73c18e0b309b"
+    },
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000001536_0000002303.laz",
+      "size": 294323120,
+      "size_mb": 280.6884002685547,
+      "frame_start": "0000001536",
+      "frame_end": "0000002303",
+      "sha256_head": "bf835670f1f4706e2f696eddcf6ad21dd1a83eea4c3787d0ee8d5e7c18021265"
+    },
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000002304_0000003071.laz",
+      "size": 191501044,
+      "size_mb": 182.6296272277832,
+      "frame_start": "0000002304",
+      "frame_end": "0000003071",
+      "sha256_head": "3be44846292a11654a83a65ecc6a2090f2a98de417e0b532ae2c7e7449fb5f35"
+    },
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000003072_0000003835.laz",
+      "size": 181140279,
+      "size_mb": 172.7488317489624,
+      "frame_start": "0000003072",
+      "frame_end": "0000003835",
+      "sha256_head": "a5241f24e6056cffd06cd84627083f3095754d9ff5011895a76833cad70f4be0"
+    }
+  ]
+}

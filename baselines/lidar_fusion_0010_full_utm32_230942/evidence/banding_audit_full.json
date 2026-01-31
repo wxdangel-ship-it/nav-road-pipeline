@@ -1,0 +1,26 @@
+{
+  "parts_checked": [
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000000000_0000000767.laz",
+      "ok": true,
+      "min_nonzero_dy": 0.0009999992325901985,
+      "unique_y_1mm": 479224,
+      "sample_n": 2000000
+    },
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000001536_0000002303.laz",
+      "ok": true,
+      "min_nonzero_dy": 0.0009999992325901985,
+      "unique_y_1mm": 463476,
+      "sample_n": 2000000
+    },
+    {
+      "path": "runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000003072_0000003835.laz",
+      "ok": true,
+      "min_nonzero_dy": 0.0009999992325901985,
+      "unique_y_1mm": 250327,
+      "sample_n": 2000000
+    }
+  ],
+  "pass": true
+}

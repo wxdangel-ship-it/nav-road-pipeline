@@ -1,0 +1,27 @@
+[
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000000000_0000000767.laz",
+    "size": 302434569,
+    "sha256_head2mb": "e6be20b2100552152eb68fe796d9d4bc46fdbfd94491ac15ec783a9c9918ecd1"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000000768_0000001535.laz",
+    "size": 282150334,
+    "sha256_head2mb": "29252afb73eaadd0ead6794163829bcad2363fb5149c5127d44179f67b651147"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000001536_0000002303.laz",
+    "size": 294323120,
+    "sha256_head2mb": "bd8cd9051c95cf809bfa2a14d687bc8357f67cc191e605bb174186224b2a2acb"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000002304_0000003071.laz",
+    "size": 191501044,
+    "sha256_head2mb": "2dd66db4bc6976c40b411bb27530c77ab49e51ac99ca8c9da9012328c693eb09"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\runs\\lidar_fusion_0010_full_20260131_230942\\outputs\\fused_points_utm32_part_0000003072_0000003835.laz",
+    "size": 181140279,
+    "sha256_head2mb": "76d62069ec514282f303818ca8092fb79eb1285c1db3ec4d26dec03e7cf51f3e"
+  }
+]

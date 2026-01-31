@@ -1,0 +1,892 @@
+﻿rel_path,ext,copied,py_entrypoint,size_bytes,mtime,sha1_head2mb,summary,tags
+1/core/debug_layers.py,.py,False,False,1335,2026-01-31T08:35:48,b9b526462ce97093d25435579dad74d03b1b6a6d,写一个最小可视化 gpkg，用于验证：GeoPandas + 写入驱动是否正常。,debug
+1/core/reporting.py,.py,False,False,496,2026-01-31T08:35:48,df4a17feffcba069eed312ee4eb5ba8dec279c61,from __future__ import annotations,qa
+1/core/runmeta.py,.py,False,False,1813,2026-01-31T08:35:48,bb12e2f7095e43e262aff1390f80556d2863d9a6,import json,
+1/core/__init__.py,.py,False,False,14,2026-01-31T08:35:48,7f04bd0376f196a75dfbebc205980c7d3029594a,placeholder,
+1/core/crs/__init__.py,.py,False,False,14,2026-01-31T08:35:48,7f04bd0376f196a75dfbebc205980c7d3029594a,placeholder,projection
+1/core/debug/__init__.py,.py,False,False,14,2026-01-31T08:35:48,7f04bd0376f196a75dfbebc205980c7d3029594a,placeholder,debug
+1/core/io/__init__.py,.py,False,False,14,2026-01-31T08:35:48,7f04bd0376f196a75dfbebc205980c7d3029594a,placeholder,
+1/core/metrics/__init__.py,.py,False,False,14,2026-01-31T08:35:48,7f04bd0376f196a75dfbebc205980c7d3029594a,placeholder,
+1/core/report/__init__.py,.py,False,False,14,2026-01-31T08:35:48,7f04bd0376f196a75dfbebc205980c7d3029594a,placeholder,qa
+1/scripts/regression_mini.cmd,.cmd,True,,175,2026-01-31T08:35:48,028ce03d9d4611c7b71a7548d42ea0f6919df348,TODO: 在你实现 regression-mini runner 后，把这里替换为实际入口,script
+1/scripts/run_matrix.cmd,.cmd,True,,157,2026-01-31T08:35:48,05be92ebefec0c2b107f765b6124addaa138e64f,TODO: 在你实现 matrix runner 后，把这里替换为实际入口,run|script
+1/scripts/run_smoke.py,.py,True,True,1867,2026-01-31T08:35:48,e62148f472b3f7c1d199996331d846468ce5469b,按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。,qa|run|script
+1/scripts/smoke.cmd,.cmd,True,,480,2026-01-31T08:35:48,b71966921275356217fe0d0f7dd2b4c5e2769306,一键 smoke（分钟级）,qa|script
+1/skills/__init__.py,.py,False,False,10,2026-01-31T08:35:48,108845ab4b084cf07fcce1055a36618da6de17a5,package,
+1/skills/S0_env_doctor/run.py,.py,False,False,3124,2026-01-31T08:35:48,a057312006021993c983699923667aab0f4beab1,环境自检 Skill：生成最小闭环四件套（除 RunMeta 由上层 runner 写入）。,
+1/skills/S0_env_doctor/__init__.py,.py,False,False,16,2026-01-31T08:35:48,f0f0f2ec8c08a1b05d3d9e6bf5d6de4534fbb0b6,skill package,
+cache/env_open3dis/Lib/site-packages/certifi/core.py,.py,False,False,3394,2026-01-22T16:27:45,b7076f1997872af585dc68bec247e81884fba82b,certifi.py,
+cache/env_open3dis/Lib/site-packages/certifi/__init__.py,.py,False,False,94,2026-01-22T16:27:45,f01e53b71e3df500bcdb549509633d62242d53df,"from .core import contents, where",
+cache/env_open3dis/Lib/site-packages/certifi/__main__.py,.py,True,True,243,2026-01-22T16:27:45,f09c4ba5e7ee37ddebe914def9d97152cb5eb856,import argparse,
+cache/env_open3dis/Lib/site-packages/numpy/conftest.py,.py,False,False,8900,2026-01-22T16:27:43,fdbec8b7c718e9acecc5e1d513b9b8f9e4e24d6e,Pytest configuration and fixtures for the Numpy test suite.,
+cache/env_open3dis/Lib/site-packages/numpy/dtypes.py,.py,False,False,1353,2026-01-22T16:27:43,e1aa81d7f901556c3a2e2425aa102fa581180319,This module is home to specific dtypes related functionality and their classes.,
+cache/env_open3dis/Lib/site-packages/numpy/exceptions.py,.py,False,False,7955,2026-01-22T16:27:43,46c0dd5bd3bc915933680993f55e090699b0f476,Exceptions and Warnings,
+cache/env_open3dis/Lib/site-packages/numpy/matlib.py,.py,False,False,11018,2026-01-22T16:27:43,0e27e13d837e1f0bf6e6911f4b7c9ee65d0c9916,"2018-05-29, PendingDeprecationWarning added to matrix.__new__",
+cache/env_open3dis/Lib/site-packages/numpy/version.py,.py,False,False,304,2026-01-22T16:27:43,2ff1e16ddb94c29c961d92c4d928979866c97d67,Module to expose more detailed version info for the installed `numpy`,
+cache/env_open3dis/Lib/site-packages/numpy/_array_api_info.py,.py,False,False,10700,2026-01-22T16:27:43,80b356193abbd84341375c89a88c8368c8f5c587,Array API Inspection namespace,
+cache/env_open3dis/Lib/site-packages/numpy/_configtool.py,.py,True,True,1046,2026-01-22T16:27:43,d14013c931dc3b1b009164d973ec53e041ab6f90,import argparse,
+cache/env_open3dis/Lib/site-packages/numpy/_distributor_init.py,.py,False,False,436,2026-01-22T16:27:43,8f50061119861ef98a917f2885c3ae429e41785c,Distributor init file,
+cache/env_open3dis/Lib/site-packages/numpy/_expired_attrs_2_0.py,.py,False,False,3849,2026-01-22T16:27:43,a2f0c10fc2927582339740bf3ed990f2cbcb1ad5,Dict of expired attributes that are discontinued since 2.0 release.,
+cache/env_open3dis/Lib/site-packages/numpy/_globals.py,.py,False,False,4276,2026-01-22T16:27:43,817396d331d99e12f2760ebecb2a4b6320b4791d,Module defining global singleton classes.,
+cache/env_open3dis/Lib/site-packages/numpy/_pytesttester.py,.py,False,False,6529,2026-01-22T16:27:43,7cf5c7bb4fb658ab3d21dd9104fbd1e9b6bb8e96,Pytest test running.,
+cache/env_open3dis/Lib/site-packages/numpy/__config__.py,.py,False,False,5725,2026-01-22T16:27:43,1b8a101ddeea1d0aaa4b8814355a6da8791a742a,Removes empty values in a `dict` recursively,
+cache/env_open3dis/Lib/site-packages/numpy/__init__.py,.py,False,False,27212,2026-01-22T16:27:43,7603e5d41590fed23228d5522714ee93579627c2,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/char/__init__.py,.py,False,False,95,2026-01-22T16:27:43,e2708ac575ad1655c471f93a1cf4006563e22486,from numpy._core.defchararray import *,
+cache/env_open3dis/Lib/site-packages/numpy/core/arrayprint.py,.py,False,False,349,2026-01-22T16:27:43,c412ae5044e706f1dedac987fcecd2acd6e3b189,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/defchararray.py,.py,False,False,357,2026-01-22T16:27:43,57e03775705dad579744904c91908d80bd0da65b,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/einsumfunc.py,.py,False,False,349,2026-01-22T16:27:43,58f48761a08cbca7840a69764de915031bcc6c84,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/fromnumeric.py,.py,False,False,353,2026-01-22T16:27:43,122320808b38c8755769d7ae47aba54ad0b4fb00,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/function_base.py,.py,False,False,361,2026-01-22T16:27:43,2bc1bbf80b425b26145553d1695e4402ca7287bf,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/getlimits.py,.py,False,False,345,2026-01-22T16:27:43,d42de287559c524f08e7b6de9d554f223e1b4eb4,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/multiarray.py,.py,False,False,818,2026-01-22T16:27:43,cf51ade25bfe261840f9b0db14d342fd0b90aef1,these must import without warning or error from numpy.core.multiarray to,
+cache/env_open3dis/Lib/site-packages/numpy/core/numeric.py,.py,False,False,372,2026-01-22T16:27:43,91990e20045841426d17d268355dc8156c9ece76,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/numerictypes.py,.py,False,False,357,2026-01-22T16:27:43,357580ff29e92ff8b9fb6507d0ab9a5a44daf2ff,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/overrides.py,.py,False,False,345,2026-01-22T16:27:43,3600c3faa04a66cbe5630e9dae847c0addb0442c,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/records.py,.py,False,False,337,2026-01-22T16:27:43,fce156d39ba5b4d68483aa33cc5d5c405e0741ea,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/shape_base.py,.py,False,False,349,2026-01-22T16:27:43,e2cc33a0e865f4e64a44cee439c0caac717e31b7,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/umath.py,.py,False,False,329,2026-01-22T16:27:43,e6f1cf51b1c96693a7ffd3695092042c19f2d95b,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/_dtype.py,.py,False,False,333,2026-01-22T16:27:43,687e3fdf53af681e317399ef15af7f1463e497bf,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/_dtype_ctypes.py,.py,False,False,361,2026-01-22T16:27:43,6e17f0347d2c25fe63226969a070e813096d4d9b,def __getattr__(attr_name):,
+cache/env_open3dis/Lib/site-packages/numpy/core/_internal.py,.py,False,False,976,2026-01-22T16:27:43,93d216c452683e2bbbd2869f9f776fa0ecf1870c,Build a new array from the information in a pickle.,
+cache/env_open3dis/Lib/site-packages/numpy/core/_multiarray_umath.py,.py,False,False,2155,2026-01-22T16:27:43,0a4b938646355fba48646fede4b03a4303dbaf45,A module that was compiled using NumPy 1.x cannot be run in,
+cache/env_open3dis/Lib/site-packages/numpy/core/_utils.py,.py,False,False,944,2026-01-22T16:27:43,f35fa73f84d9e641267362b02a83029174bfa635,import warnings,
+cache/env_open3dis/Lib/site-packages/numpy/core/__init__.py,.py,False,False,1323,2026-01-22T16:27:43,77adea71033918b6e6827921e99fd2786947ccc7,The `numpy.core` submodule exists solely for backward compatibility,
+cache/env_open3dis/Lib/site-packages/numpy/ctypeslib/_ctypeslib.py,.py,False,False,19682,2026-01-22T16:27:43,a3280fd9216b056a1754184c2e4ec1479061934b,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/ctypeslib/__init__.py,.py,False,False,206,2026-01-22T16:27:43,d922078654cc4da7cb5363c6f0f142b01ac76d59,from ._ctypeslib import (,
+cache/env_open3dis/Lib/site-packages/numpy/doc/ufuncs.py,.py,False,False,5552,2026-01-22T16:27:43,9ade972513c94c048cd49b620745ba63869b69d9,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/auxfuncs.py,.py,False,False,27924,2026-01-22T16:27:43,4371143e56a1ca2d604b21139f816d9f24ea4b55,Auxiliary functions for f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/capi_maps.py,.py,False,False,30890,2026-01-22T16:27:43,4d2fda0dd59028d422c2299907ba3cc0e6074779,Copyright 1999 -- 2011 Pearu Peterson all rights reserved.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/cb_rules.py,.py,False,False,25716,2026-01-22T16:27:43,451f702accf90fbae4934aaa7ae7877362a1e5e1,Build call-back mechanism for f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/cfuncs.py,.py,False,False,54223,2026-01-22T16:27:43,ed79a4d0f760053506c9941c9f19f533773d0284,"C declarations, CPP macros, and C functions for f2py2e.",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/common_rules.py,.py,False,False,5173,2026-01-22T16:27:43,8372386305dfa85a7986a744762910f3987678ca,Build common block mechanism for f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/crackfortran.py,.py,False,False,150604,2026-01-22T16:27:43,6dbecb3436140f08dfcc1a51cab9e1faa67664e4,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/diagnose.py,.py,True,True,5224,2026-01-22T16:27:43,c7e0aa0493904e262cd7303cba6cc9ba0a45658e,!/usr/bin/env python3,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/f2py2e.py,.py,True,True,29615,2026-01-22T16:27:43,93dc50323c00b9d986c4ecf328e2730e0d9da0b6,f2py2e - Fortran to Python C/API generator. 2nd Edition.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/f90mod_rules.py,.py,False,False,10079,2026-01-22T16:27:43,179f3932ad23eb4517117195e04cdd49a58faec2,Build F90 module support for f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/func2subr.py,.py,False,False,10374,2026-01-22T16:27:43,ac26267d59280700a5697d41501344b9b519a334,Rules for building C/API module with f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/rules.py,.py,False,False,64723,2026-01-22T16:27:43,38196277ddc116fbc88aaafbab6cde7326a856f6,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/symbolic.py,.py,False,False,54828,2026-01-22T16:27:43,63dce52eb7678655e3f5b301c0eae78c55e25264,Fortran/C symbolic expressions,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/use_rules.py,.py,False,False,3475,2026-01-22T16:27:43,e6fdf0e7d5be5512ad06202c0893f776c1e74da8,Build 'use others module data' mechanism for f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/_isocbind.py,.py,False,False,2422,2026-01-22T16:27:43,e99c24fce58d9146e445ed0fb6412811fa60adcf,ISO_C_BINDING maps for f2py2e.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/_src_pyf.py,.py,True,True,7942,2026-01-22T16:27:43,73d17859cf9b05ad3c306cfcb15e2b169394d84b,START OF CODE VENDORED FROM `numpy.distutils.from_template`,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/__init__.py,.py,False,False,2534,2026-01-22T16:27:43,2af6c30e93a5df8d4e5b2c9eff42ccbfc8b3fbb3,Fortran to Python Interface Generator.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/__main__.py,.py,False,False,135,2026-01-22T16:27:43,b82edda116cd7bd331b11454f32394d91e298ebf,See:,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/__version__.py,.py,False,False,49,2026-01-22T16:27:43,19bd249bb0570cd5e444382e906ea3e508862920,from numpy.version import version  # noqa: F401,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_abstract_interface.py,.py,False,False,837,2026-01-22T16:27:43,f370ddc868aad992f7ff75c931be98d9a591bdf2,Test gh18403,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_array_from_pyobj.py,.py,False,False,24395,2026-01-22T16:27:43,cb118f6c7fca9db9cdef1d973701352b0bd01be4,Build the required testing extension module,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_assumed_shape.py,.py,False,False,1517,2026-01-22T16:27:43,7688bbebbadbd93860082b11f4c5bf74b1c1e4e5,import os,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_block_docstring.py,.py,False,False,604,2026-01-22T16:27:43,6ad4ac351605280e55456858ec7b4f3bcc71bc32,import sys,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_callback.py,.py,False,False,7362,2026-01-22T16:27:43,a92a5cc345330908f676200a52aaccdb0d0dac30,import math,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_character.py,.py,False,False,22572,2026-01-22T16:27:43,bcf3abb302221e0b8bf2697194b060c26a894aa1,"options = ['--debug-capi', '--build-dir', '/tmp/test-build-f2py']",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_common.py,.py,False,False,667,2026-01-22T16:27:43,100efdcf1735d26ecba7c5c941fa518fb469b749,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_crackfortran.py,.py,False,False,16834,2026-01-22T16:27:43,323b5825c1a2f7a0c2c5bb9b8b0fae98d092f2dc,"issue gh-15035: add handling for endsubroutine, endfunction with no space",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_data.py,.py,False,False,2966,2026-01-22T16:27:43,c8af289067be111681b50e0a9dbbb84b95560c9e,For gh-23276,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_docs.py,.py,False,False,1996,2026-01-22T16:27:43,44beb29319bc1fcef2bd401aeb0ccce8043f82d6,Assumes that spin is used to run tests,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_f2cmap.py,.py,False,False,404,2026-01-22T16:27:43,c7aa437567f3e26b10ebad092ac89522026e706b,gh-15095,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_f2py2e.py,.py,False,False,29552,2026-01-22T16:27:43,f0183388bf82999ae6ecb246deebef5052d63cc5,F2PY Test utilities #,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_isoc.py,.py,False,False,1490,2026-01-22T16:27:43,8a1d959712bb50733934b1d38ab04f5461b1cc84,gh-24553,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_kind.py,.py,False,False,1897,2026-01-22T16:27:43,b9afc5a8b53e18f4ea11d1ec88fc042b2f43ffc8,Test `int` kind_func for integers up to 10**40.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_mixed.py,.py,False,False,897,2026-01-22T16:27:43,96f8fd2b436ab7320d1fd5c6bad676d1c1af7d4c,\,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_modules.py,.py,False,False,2384,2026-01-22T16:27:43,d8c6990afaa64bd109c6162e62c2c384564caab0,we filter the only public function mod2,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_parameter.py,.py,False,False,4763,2026-01-22T16:27:43,aacf7820873c8bcf8dceffe1163d028d4324a0a4,Check that intent(in out) translates as intent(inout),
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_pyf_src.py,.py,False,False,1177,2026-01-22T16:27:43,47f5d0b75b8f47b1118d1009b134ca710a72347a,python module foo,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_quoted_character.py,.py,False,False,495,2026-01-22T16:27:43,7729bfc6628855f0381d1030eccfff044e03ed07,See https://github.com/numpy/numpy/pull/10676.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_regression.py,.py,False,False,6369,2026-01-22T16:27:43,cd3c489af047149a7ac0d62d40d598bd89e8c7f4,Check that intent(in out) translates as intent(inout),
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_return_character.py,.py,False,False,1582,2026-01-22T16:27:43,58d6c0a0754e995f7c57d415798c80adf4b52a22,import platform,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_return_complex.py,.py,False,False,2507,2026-01-22T16:27:43,956c1b9e169954a8fd2df8c3efaafaa46f83547d,assert abs(t('234')-234.)<=err,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_return_integer.py,.py,False,False,1868,2026-01-22T16:27:43,8b7235fba48eecf4c5f77ee1bdb171910bb7a076,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_return_logical.py,.py,False,False,2113,2026-01-22T16:27:43,90c3bdd9024f54ce202a6040797416bc86946da0,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_return_real.py,.py,False,False,3382,2026-01-22T16:27:43,1062df7a8d507ee7f1787d2e1f0ee2f2d0b32c98,import platform,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_routines.py,.py,False,False,824,2026-01-22T16:27:43,56a072e2fdf3887478fab93b1fca454e164bf356,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_semicolon_split.py,.py,False,False,1702,2026-01-22T16:27:43,a5561958a3af6fe183de637dc4c2ad96ddc02fe9,void foo(int* x) {{,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_size.py,.py,False,False,1200,2026-01-22T16:27:43,9b479efb3b8d973e9b4ff91a613d073fb6bea1fa,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_string.py,.py,False,False,3038,2026-01-22T16:27:43,10b6520be245ea4526042401735cdcfb659cf5da,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_symbolic.py,.py,False,False,19061,2026-01-22T16:27:43,64a3c20769aa3a060d1611b9877ce131beeec8ce,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/test_value_attrspec.py,.py,False,False,345,2026-01-22T16:27:43,5536c9de2fefbac19d91df3b68c246d211297ce5,gh-21665,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/util.py,.py,False,False,12554,2026-01-22T16:27:43,31b9a965565986576dab1c7d0a2a5f83ac914446,Utility functions for,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/tests/__init__.py,.py,False,False,345,2026-01-22T16:27:43,194f8882fda14f157f71caec49551ac727f1df05,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/_backends/_backend.py,.py,False,False,1195,2026-01-22T16:27:43,e63dc4609f540667a646f36d0e0ead05ffeff2fd,"from abc import ABC, abstractmethod",
+cache/env_open3dis/Lib/site-packages/numpy/f2py/_backends/_distutils.py,.py,False,False,2461,2026-01-22T16:27:43,7c2a79e50f2e0c994af5e920d48a45757743546e,import os,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/_backends/_meson.py,.py,False,False,8870,2026-01-22T16:27:43,91ab0e0a6f69464be7a2018a4ca0502976bb0ed4,Template meson build file generation class.,
+cache/env_open3dis/Lib/site-packages/numpy/f2py/_backends/__init__.py,.py,False,False,308,2026-01-22T16:27:43,16881a7c78224f71941b4e0a070949162c8c95a3,def f2py_build_generator(name):,
+cache/env_open3dis/Lib/site-packages/numpy/fft/_helper.py,.py,False,False,7022,2026-01-22T16:27:43,3628b8c6d30d961a5eb81c5082729cd428cf8e49,Discrete Fourier Transforms - _helper.py,
+cache/env_open3dis/Lib/site-packages/numpy/fft/_pocketfft.py,.py,False,False,64292,2026-01-22T16:27:43,a77d879a8c0bca8267e872502852f09a5d8effd9,Discrete Fourier Transforms,
+cache/env_open3dis/Lib/site-packages/numpy/fft/__init__.py,.py,False,False,8369,2026-01-22T16:27:43,540a9f3ce1a82f93c991e580e5a6a93db86e61b0,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/fft/tests/test_helper.py,.py,False,False,6321,2026-01-22T16:27:43,429cca75a075cecdde06bbe33cb778b837503346,Test functions for fftpack.helper module,
+cache/env_open3dis/Lib/site-packages/numpy/fft/tests/test_pocketfft.py,.py,False,False,25035,2026-01-22T16:27:43,8abeb28439643724c5f94544346eda5514e6fd51,import queue,
+cache/env_open3dis/Lib/site-packages/numpy/fft/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/lib/array_utils.py,.py,False,False,151,2026-01-22T16:27:43,85c9e7c4c7f7590162785a37840516a08d0223c2,from ._array_utils_impl import (  # noqa: F401,
+cache/env_open3dis/Lib/site-packages/numpy/lib/format.py,.py,False,False,501,2026-01-22T16:27:43,6dc538ade3075f84ed50439840bc111d0915d800,from ._format_impl import (  # noqa: F401,
+cache/env_open3dis/Lib/site-packages/numpy/lib/introspect.py,.py,False,False,2843,2026-01-22T16:27:43,b53c614ff8684432ea4529c82e940e5158f35014,Introspection helper functions.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/mixins.py,.py,False,False,7375,2026-01-22T16:27:43,ea229f1c107999f7025bf0412245e06abcf37b97,Mixin classes for custom array types that don't inherit from ndarray.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/npyio.py,.py,False,False,69,2026-01-22T16:27:43,d44e8db9acff57338f57a36cf059e0063f68ae58,"from ._npyio_impl import DataSource, NpzFile, __doc__  # noqa: F401",
+cache/env_open3dis/Lib/site-packages/numpy/lib/recfunctions.py,.py,False,False,61220,2026-01-22T16:27:43,837bb893b511ce5dd9c2d6317ca0b5919b150a9a,Collection of utilities to manipulate structured arrays.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/scimath.py,.py,False,False,182,2026-01-22T16:27:43,8e21a5e88f9db12eca75bf7f120639c864fb68e5,from ._scimath_impl import (  # noqa: F401,
+cache/env_open3dis/Lib/site-packages/numpy/lib/stride_tricks.py,.py,False,False,89,2026-01-22T16:27:43,63865550c06635d6695cfec3d81d0bbd2763ea15,"from ._stride_tricks_impl import __doc__, as_strided, sliding_window_view  # noqa: F401",
+cache/env_open3dis/Lib/site-packages/numpy/lib/user_array.py,.py,False,False,64,2026-01-22T16:27:43,78d5a131e10b59df3a90e2be18592aa84ded4a7e,"from ._user_array_impl import __doc__, container  # noqa: F401",
+cache/env_open3dis/Lib/site-packages/numpy/lib/_arraypad_impl.py,.py,False,False,34445,2026-01-22T16:27:43,b98789ea6878ad894c8afe3dde3abdf9f4c2be0a,The arraypad module contains a group of functions to pad values onto the edges,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_arraysetops_impl.py,.py,False,False,38499,2026-01-22T16:27:43,5ded8018c30eb52dd43bf7cf09dd924ad31274b2,Set operations for arrays based on sorting.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_arrayterator_impl.py,.py,False,False,7442,2026-01-22T16:27:43,dd282fbaf1439f4a506066ab8e362351a899fcfc,A buffered iterator for big arrays.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_array_utils_impl.py,.py,False,False,1759,2026-01-22T16:27:43,3dbedf2d264c5ddc2b91edf2c7ff53af257d6b3b,Miscellaneous utils.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_datasource.py,.py,False,False,23431,2026-01-22T16:27:43,fc8ab77f0c18e29c38576a7e2564cd8050ea8549,A file interface for handling local and remote data files.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_format_impl.py,.py,False,False,37920,2026-01-22T16:27:43,5d5f79b131cf796c57b1c96c9a52bdb05eb4cd50,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/lib/_function_base_impl.py,.py,False,False,199469,2026-01-22T16:27:43,8d93f5fbe4d7bdeccf63dfaa48c7d7db357504c6,import builtins,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_histograms_impl.py,.py,False,False,39517,2026-01-22T16:27:43,de3306d8bb3e4d7487bab9aae9c7f37565aba2ca,Histogram-related functions,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_index_tricks_impl.py,.py,False,False,32567,2026-01-22T16:27:43,a408c520ee64189eff6b0c05c4874b8dcbae4e02,import functools,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_iotools.py,.py,False,False,31776,2026-01-22T16:27:43,6b79c74b6c07e96fa8a81e1b63afc2241220820f,A collection of functions designed to help I/O with ascii files.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_nanfunctions_impl.py,.py,False,False,73405,2026-01-22T16:27:43,eb1f4c9b17f2126a53c38a50361ad60eb9641be3,Functions that ignore NaN.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_npyio_impl.py,.py,False,False,101219,2026-01-22T16:27:43,79a17166f71e52c1ffbcdbf462bc84c805b670d9,IO related functions.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_polynomial_impl.py,.py,False,False,45590,2026-01-22T16:27:43,755ab45a3ea48188e297d0608e17b13d3c3cf55f,Functions to operate on polynomials.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_scimath_impl.py,.py,False,False,16326,2026-01-22T16:27:43,a8031b9c5b026f5c568f92df985ecd338e912daa,Wrapper functions to more user-friendly calling of certain math functions,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_shape_base_impl.py,.py,False,False,40302,2026-01-22T16:27:43,698cb53ea7495a8dbd74a599f7f346345b589f1f,import functools,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_stride_tricks_impl.py,.py,False,False,19697,2026-01-22T16:27:43,54da1e72ac2c2fb1bae11b90e62b3050e8b2d1a8,Utilities that manipulate strides to achieve desirable effects.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_twodim_base_impl.py,.py,False,False,35124,2026-01-22T16:27:43,85b518ac67c9375edd7892aa4b7cd0894758b54a,Basic functions for manipulating 2d arrays,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_type_check_impl.py,.py,False,False,20624,2026-01-22T16:27:43,f2992d87f6bc36a7a1c3ad6e96850e0b0be88118,"Automatically adapted for numpy Sep 19, 2005 by convertcode.py",qa
+cache/env_open3dis/Lib/site-packages/numpy/lib/_ufunclike_impl.py,.py,False,False,6213,2026-01-22T16:27:43,aa0a0d3a1f2930d821765462a4b3f076b21529a4,Module of functions that are like ufuncs in acting on arrays and optionally,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_user_array_impl.py,.py,True,True,8336,2026-01-22T16:27:43,e8f1b507dba4daa4193fd658204ae88c8356f93a,Container class for backward compatibility with NumArray.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_utils_impl.py,.py,False,False,24283,2026-01-22T16:27:43,ff62573a4d0a68be38de3b7f2c2f501ba97d0f09,Print information about various resources in the system,
+cache/env_open3dis/Lib/site-packages/numpy/lib/_version.py,.py,False,False,4936,2026-01-22T16:27:43,fcb2615e3d17a537fd0d974a01b6b2db235ab0a4,Utility to compare (NumPy) version strings.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/__init__.py,.py,False,False,3101,2026-01-22T16:27:43,4c1890833f2e06a39bbf94fe1d1c66d3df0e5ef2,``numpy.lib`` is mostly a space for implementing functions that don't,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_arraypad.py,.py,False,False,58043,2026-01-22T16:27:43,6ec3e6ab1ddbba8571ac5e0db5742b5e3420769c,Tests for the array padding functions.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_arraysetops.py,.py,False,False,49048,2026-01-22T16:27:43,dffd6cc85db47d95cd3c1dc01a087c71a0c2eac5,Test functions for 1D array set operations.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_arrayterator.py,.py,False,False,1341,2026-01-22T16:27:43,0c7ecec5392f1914e9a506d2f550627132c552d2,Create a random array,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_array_utils.py,.py,False,False,1150,2026-01-22T16:27:43,e3694cf896943774551df36830cac41cab22c30a,pointer difference matches size * itemsize,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_format.py,.py,False,False,43012,2026-01-22T16:27:43,d7767cfcbbf07d2f6ba0792495a9305132820759,doctest,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_function_base.py,.py,False,False,182634,2026-01-22T16:27:43,9d626e3496b255cc99c242ac3524a49a39c1fc76,import decimal,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_histograms.py,.py,False,False,34806,2026-01-22T16:27:43,b77aec322bafc6b5dd99a11bc0ea87076349012b,import warnings,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_index_tricks.py,.py,False,False,25100,2026-01-22T16:27:43,6da041260d87b3a646d1f45d5804cd94e77cb00f,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_io.py,.py,False,False,114257,2026-01-22T16:27:43,cd71fea68fffd5d1c8229c532190cec2f16f3951,import gc,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_loadtxt.py,.py,False,False,41590,2026-01-22T16:27:43,675d3a1f367b2335cf187f09ae0d8debe11eb699,Tests specific to `np.loadtxt` added during the move of loadtxt to be backed,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_mixins.py,.py,False,False,7224,2026-01-22T16:27:43,b7b215e542c843f6da98071ee8e59b70f12e9ad6,NOTE: This class should be kept as an exact copy of the example from the,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_nanfunctions.py,.py,False,False,55735,2026-01-22T16:27:43,8d5496799f5f654dcd8bb0d888e11243eab1b39e,import inspect,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_packbits.py,.py,False,False,17919,2026-01-22T16:27:43,fa1533576211a2cf44df06d5a507851d49ced54e,Copied from the docstring.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_polynomial.py,.py,False,False,12730,2026-01-22T16:27:43,ef0cbeb5031cc6c41dc5555d82547745f6f893e9,"`poly1d` has some support for `np.bool` and `np.timedelta64`,",
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_recfunctions.py,.py,False,False,45015,2026-01-22T16:27:43,7695df1d3c66412053591d683f086294ad821f61,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_regression.py,.py,False,False,7947,2026-01-22T16:27:43,ac55753d3d7d84b13a5e39f82cdeefae712e2dbf,Ticket #28,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_shape_base.py,.py,False,False,28219,2026-01-22T16:27:43,91ad670ebc9965c00d9563aea3ca792b826ce6fa,hack in keepdims behavior into a function taking an axis,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_stride_tricks.py,.py,False,False,23667,2026-01-22T16:27:43,d07552cb77b403fe1543ca53ec5176964207ac02,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_twodim_base.py,.py,False,False,19484,2026-01-22T16:27:43,0551b1814de73da900ae1e8792f5e1b9b53c3552,Test functions for matrix module,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_type_check.py,.py,False,False,15269,2026-01-22T16:27:43,c7d00b7b09cc4ec2068df2337bad0d10393b0831,import numpy as np,qa
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_ufunclike.py,.py,False,False,3112,2026-01-22T16:27:43,95739364c7dee59cf6545981fd221f30da7fb441,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_utils.py,.py,False,False,2454,2026-01-22T16:27:43,8d62169b3e3d3387b28b6369ebdbfffeb2150824,"info(class) should only print ""Methods:"" heading if methods exist",
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test__datasource.py,.py,False,False,10892,2026-01-22T16:27:43,d3a6042d4c71ad172e8901aaea21e55ba04844da,Stub to replace urlopen for testing.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test__iotools.py,.py,False,False,14188,2026-01-22T16:27:43,a285ea0efdd21c5824dd4f1668ec275fd53c0c06,import time,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test__version.py,.py,False,False,2063,2026-01-22T16:27:43,71d8f8c4a2af030aa230d2504ce05e66342a557e,Tests for the NumpyVersion class.,
+cache/env_open3dis/Lib/site-packages/numpy/lib/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/linalg/_linalg.py,.py,False,False,118474,2026-01-22T16:27:43,7a5707eddfde558b683c3eca5c219c7d1dc870d8,Lite version of scipy.linalg.,
+cache/env_open3dis/Lib/site-packages/numpy/linalg/__init__.py,.py,False,False,2171,2026-01-22T16:27:43,65dc24d46b5ca64024950afbcbf93b2cf4e36a97,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/linalg/tests/test_deprecations.py,.py,False,False,637,2026-01-22T16:27:43,47f094fbf8c363395f8d40dee5a1bcd5a7dbf7ef,Test deprecation and future warnings.,
+cache/env_open3dis/Lib/site-packages/numpy/linalg/tests/test_linalg.py,.py,False,False,87492,2026-01-22T16:27:43,7d9ef0cf9e1e0ad10ef6c117cace2f47cc85ea8e,Test functions for linalg module,
+cache/env_open3dis/Lib/site-packages/numpy/linalg/tests/test_regression.py,.py,False,False,6978,2026-01-22T16:27:43,efd893cc6c269d9923105c5b85a2c74a480516e1,Test functions for linalg module,
+cache/env_open3dis/Lib/site-packages/numpy/linalg/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/ma/core.py,.py,False,False,298146,2026-01-22T16:27:43,cb5a2dd70e08f379010354475898078f7be841f5,numpy.ma : a package to handle missing or invalid values.,
+cache/env_open3dis/Lib/site-packages/numpy/ma/extras.py,.py,False,False,70056,2026-01-22T16:27:43,85a8547657b4c0df28fc8e9b87a5611caf8e875e,Masked arrays add-ons.,
+cache/env_open3dis/Lib/site-packages/numpy/ma/mrecords.py,.py,False,False,27248,2026-01-22T16:27:43,9c39b72753960d96491369e0589a5e3ec90f777f,:mod:`numpy.ma..mrecords`,
+cache/env_open3dis/Lib/site-packages/numpy/ma/testutils.py,.py,False,False,10507,2026-01-22T16:27:43,3b41d0da502c0c8ffb995b39873bf0b58f72f628,Miscellaneous functions for testing masked arrays and subclasses,
+cache/env_open3dis/Lib/site-packages/numpy/ma/__init__.py,.py,False,False,1459,2026-01-22T16:27:43,99b617167e7be6c3865291b2b7828128802624ca,=============,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_arrayobject.py,.py,False,False,1139,2026-01-22T16:27:43,e6af8c1d8ab9609148fe1b311e99bd924f6be4ae,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_core.py,.py,False,False,230489,2026-01-22T16:27:43,4cd4aba6bc7dd5f14789cd1f71cbc6630f433cc0,Tests suite for MaskedArray & subclassing.,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_deprecations.py,.py,False,False,2089,2026-01-22T16:27:43,fe0c2529242d76ddc8e430db28c59d4c2094f690,Test deprecation and future warnings.,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_extras.py,.py,False,False,77205,2026-01-22T16:27:43,cdbce7e12e8de01700818da1a398e3a93cfce696,Tests suite for MaskedArray.,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_mrecords.py,.py,False,False,20332,2026-01-22T16:27:43,0ae7593704e5b4e321eb1cf8d91e2b8758b2f759,Tests suite for mrecords.,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_old_ma.py,.py,False,False,34014,2026-01-22T16:27:43,9cade48567731d282c7851dd1bddf6de8812f709,import pickle,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_regression.py,.py,False,False,2802,2026-01-22T16:27:43,6be278a9188df1507492fc311a2e477419c33de3,Ticket #17,
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_subclassing.py,.py,False,False,17439,2026-01-22T16:27:43,4ba87959f58420d8f8803cd898a1c026c6661246,Tests suite for MaskedArray & subclassing.,lidar
+cache/env_open3dis/Lib/site-packages/numpy/ma/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/defmatrix.py,.py,False,False,31994,2026-01-22T16:27:43,ff3395a9a96635cb087b76b9b41c052fc23f0518,"While not in __all__, matrix_power used to be defined here, so we import",
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/__init__.py,.py,False,False,255,2026-01-22T16:27:43,19d2fea1dbd1d29359a737cb5fb84a65a110f7e1,Sub-package containing the matrix class and related functions.,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_defmatrix.py,.py,False,False,15405,2026-01-22T16:27:43,bd824a80e5b83fabb23be256f5eb9b8ee5ddc566,import collections.abc,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_interaction.py,.py,False,False,12234,2026-01-22T16:27:43,860df550436afa486612ecc32d769675b691742e,Tests of interaction of matrix with other parts of numpy.,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_masked_matrix.py,.py,False,False,9062,2026-01-22T16:27:43,41455c382a1520695eceba3153261bef020bcdc3,import pickle,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_matrix_linalg.py,.py,False,False,2341,2026-01-22T16:27:43,55011b064c1d36337892a88049d7eaf538afb1b6,Test functions for linalg module using the matrix class.,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_multiarray.py,.py,False,False,572,2026-01-22T16:27:43,51e2d6c4e8647b3c9ee7510c60bfadd70c1837c8,We must be specific about the endianness here:,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_numeric.py,.py,False,False,465,2026-01-22T16:27:43,fadc2863e784b5cc5db56a5558c4f00761a01631,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/test_regression.py,.py,False,False,965,2026-01-22T16:27:43,517df2bae6fb6afcb51bbcbc8fb15613c758e902,Ticket #71,
+cache/env_open3dis/Lib/site-packages/numpy/matrixlib/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/chebyshev.py,.py,False,False,64287,2026-01-22T16:27:43,196fbb25785c9f3fbb3cf114737e61ecf39db4fc,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/hermite.py,.py,False,False,56309,2026-01-22T16:27:43,fde1a4093ddf954ba55e2490416f42705c244962,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/hermite_e.py,.py,False,False,53913,2026-01-22T16:27:43,da1d2a2cb20af31970179ec1f9bbb12969d768ea,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/laguerre.py,.py,False,False,54120,2026-01-22T16:27:43,92e63c12a9ec9dc2021625f88179c882017eb4f8,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/legendre.py,.py,False,False,52705,2026-01-22T16:27:43,8e17d1498273f0e91f3bca5099a54a1acbee850f,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/polynomial.py,.py,False,False,54294,2026-01-22T16:27:43,505893e50fa736b362fe44b47d960f887cc992fc,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/polyutils.py,.py,False,False,23394,2026-01-22T16:27:43,e4b99b52b9c5621a197d297543bb7229c17cd4b6,Utility classes and functions for the polynomial modules.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/_polybase.py,.py,False,False,40549,2026-01-22T16:27:43,267d374d03441fd76f057c3c8ba1198e8d0cf6f0,Abstract base class for the various polynomial Classes.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/__init__.py,.py,False,False,6913,2026-01-22T16:27:43,8f34e142695c2c14635e98491e8193f24fe42188,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_chebyshev.py,.py,False,False,21247,2026-01-22T16:27:43,53eb2ef0eed3e63c28f30dd0f2e1d1f81ae065c7,Tests for chebyshev module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_classes.py,.py,False,False,19144,2026-01-22T16:27:43,4fe57e750668e45d08de156be4c77dccf9308362,Test inter-conversion of different polynomial classes.,lidar
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_hermite.py,.py,False,False,19219,2026-01-22T16:27:43,c1df40e439c1a98ad5b00d3e78bbc5862e516263,Tests for hermite module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_hermite_e.py,.py,False,False,19559,2026-01-22T16:27:43,5397d75be40f68a18fc22b2f3f44d2f4947e7ad4,Tests for hermite_e module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_laguerre.py,.py,False,False,18151,2026-01-22T16:27:43,0c7e1cac6daf3bd6049af5788935c946d544aa79,Tests for laguerre module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_legendre.py,.py,False,False,19350,2026-01-22T16:27:43,969d4b5db570aff1f16576592a95fc4297b10360,Tests for legendre module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_polynomial.py,.py,False,False,24255,2026-01-22T16:27:43,1095bff16999b1e47c39c6af5b1409cd1b989ef5,Tests for polynomial module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_polyutils.py,.py,False,False,3882,2026-01-22T16:27:43,97ef203d88debf1da4d7cd7452aab8f935fcd4a6,Tests for polyutils module.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_printing.py,.py,False,False,22116,2026-01-22T16:27:43,c9e31132390dbfb326771f9fbbcd2398f7fbacca,For testing polynomial printing with object arrays,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_symbol.py,.py,False,False,5592,2026-01-22T16:27:43,14db14630ba4ba8ba45ed20e0b1e293b7ca0ce55,Tests related to the ``symbol`` attribute of the ABCPolyBase class.,
+cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/random/_pickle.py,.py,False,False,2830,2026-01-22T16:27:43,db2987e065dc2a3dc8add72071bca35b0ea9056f,Pickling helper function that returns a bit generator object,
+cache/env_open3dis/Lib/site-packages/numpy/random/__init__.py,.py,False,False,7693,2026-01-22T16:27:43,eac7cdebeceb6078f07367c31761c99b1bfd2eb2,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_direct.py,.py,False,False,20618,2026-01-22T16:27:43,8aaabd25d442b2644a534b24caec605b5b203895,import os,projection
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_extending.py,.py,False,False,4820,2026-01-22T16:27:43,ee8121989429d47f60cd5508eca271a3b24377dd,import os,
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_generator_mt19937.py,.py,False,False,121685,2026-01-22T16:27:43,0da5135000f39505bc834b485967bb5a53014eda,import hashlib,
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_generator_mt19937_regressions.py,.py,False,False,8859,2026-01-22T16:27:43,d5e20a7f45d8dac60622008dcc13269d1c6dc3cf,"ake sure generated random variables are in [-pi, pi].",
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_random.py,.py,False,False,73002,2026-01-22T16:27:43,a301ee1fa6bcbb6ad57dc8bf6a1b9308679c339e,import sys,
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_randomstate.py,.py,True,True,89848,2026-01-22T16:27:43,4549a559ff9730f8d2e0aabada5aa6f2dcebd01c,import hashlib,
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_randomstate_regression.py,.py,False,False,8260,2026-01-22T16:27:43,182f581d0833eeae9eb074fb630c7dd27d8320aa,"ake sure generated random variables are in [-pi, pi].",
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_regression.py,.py,False,False,6499,2026-01-22T16:27:43,54d3ac84840b24a16871fdc1d5268c8a335b8e7d,"ake sure generated random variables are in [-pi, pi].",
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_seed_sequence.py,.py,False,False,3389,2026-01-22T16:27:43,2aa10035898828d8edc1ccbec77785da18478306,Check that SeedSequence generates data the same as the C++ reference.,
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_smoke.py,.py,False,False,30817,2026-01-22T16:27:43,36a2e2f1e56d661c2f0d1474311a3f0f1db7221a,import pickle,qa
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/random/tests/data/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/random/_examples/cffi/extending.py,.py,False,False,928,2026-01-22T16:27:43,d32f6dc14aecc805f0c2023d7a93c8efe1379b4c,Use cffi to access any of the underlying C functions from distributions.h,
+cache/env_open3dis/Lib/site-packages/numpy/random/_examples/cffi/parse.py,.py,False,False,1803,2026-01-22T16:27:43,548f11861e17836409faa2ce9dd475731a6a29e1,"Parse distributions.h located in inc_dir for CFFI, filling in the ffi.cdef",
+cache/env_open3dis/Lib/site-packages/numpy/random/_examples/numba/extending.py,.py,False,False,2045,2026-01-22T16:27:43,6c31c74b59e8355024cf8b0b94e94f41db9ee532,from timeit import timeit,
+cache/env_open3dis/Lib/site-packages/numpy/random/_examples/numba/extending_distributions.py,.py,False,False,2103,2026-01-22T16:27:43,3df1803046fef87957bd058ac0507c68a25b75e9,Building the required library in this example requires a source distribution,
+cache/env_open3dis/Lib/site-packages/numpy/rec/__init__.py,.py,False,False,85,2026-01-22T16:27:43,dacf9b3cbbe4ae730ab31cebfa0fa4702cc68434,from numpy._core.records import *,
+cache/env_open3dis/Lib/site-packages/numpy/strings/__init__.py,.py,False,False,85,2026-01-22T16:27:43,908a15d20b227227be691d6b6b054bfd55360d0b,from numpy._core.strings import *,
+cache/env_open3dis/Lib/site-packages/numpy/testing/overrides.py,.py,False,False,2218,2026-01-22T16:27:43,12cee98dc552128bf4bfbd9ccd573c5e9b151634,Tools for testing implementations of __array_function__ and ufunc overrides,
+cache/env_open3dis/Lib/site-packages/numpy/testing/print_coercion_tables.py,.py,True,True,6493,2026-01-22T16:27:43,519f163ef46326848cf599b9782f358f1e378fd0,Prints type-coercion tables for the built-in NumPy types,
+cache/env_open3dis/Lib/site-packages/numpy/testing/__init__.py,.py,False,False,603,2026-01-22T16:27:43,300deae18ef1fad55fbd9f83b7ae383b4b7650bd,Common test support for all numpy test scripts.,
+cache/env_open3dis/Lib/site-packages/numpy/testing/tests/test_utils.py,.py,False,False,81824,2026-01-22T16:27:43,f1b3e8ff9a589169441bce851cb11afe467bd3eb,import itertools,
+cache/env_open3dis/Lib/site-packages/numpy/testing/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/testing/_private/extbuild.py,.py,False,False,7966,2026-01-22T16:27:43,48621d6de3d831409eb5aced95cabb7cade29140,Build a c-extension module on-the-fly in tests.,
+cache/env_open3dis/Lib/site-packages/numpy/testing/_private/utils.py,.py,False,False,101563,2026-01-22T16:27:43,836c9fdacc09f6873dc54dc248c61514fcc339d2,Utility function to facilitate testing.,
+cache/env_open3dis/Lib/site-packages/numpy/testing/_private/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_configtool.py,.py,False,False,1863,2026-01-22T16:27:43,d77885ae18e40220162ffb8db397ea9a7b73f36c,import importlib.metadata,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_ctypeslib.py,.py,False,False,13215,2026-01-22T16:27:43,a9c89c4f57468073d172093a8df3b381cada7037,import sys,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_lazyloading.py,.py,False,False,1304,2026-01-22T16:27:43,4693a805b02503b9e76dc69504f41193f9ad5f42,import sys,lidar
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_matlib.py,.py,False,False,1913,2026-01-22T16:27:43,af9ee90a04b41d8b5bcf7ac27c4ea3fc4eecc212,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_numpy_config.py,.py,False,False,1364,2026-01-22T16:27:43,8ed52fc1ed3723cb2f7128d568bf722c4c3806d1,Check the numpy config is valid.,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_numpy_version.py,.py,False,False,1798,2026-01-22T16:27:43,6b1f0f280f06993ea51674e1d47c3fc64f0ba8d1,Check the numpy version is valid.,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_public_api.py,.py,False,False,28813,2026-01-22T16:27:43,4abe2559a23697801b4d3f9679c8f85fa49f56a5,Returns a mapping of all objects with the wrong __module__ attribute.,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_reloading.py,.py,False,False,2762,2026-01-22T16:27:43,d1e7bf071bb7f50e258243289c712a7eaf84c95f,gh-7844. Also check that relevant globals retain their identity.,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_scripts.py,.py,False,False,1694,2026-01-22T16:27:43,2b318f00eb40175ad0e57ef83efa17454b29ab09,Test scripts,
+cache/env_open3dis/Lib/site-packages/numpy/tests/test_warnings.py,.py,False,False,2499,2026-01-22T16:27:43,519f4aec210937ab9f07bd2a5da52c3b25743549,"Tests which scan for certain occurrences in the code, they may not find",
+cache/env_open3dis/Lib/site-packages/numpy/tests/test__all__.py,.py,False,False,232,2026-01-22T16:27:43,39844b2c2c690491e574db76bf62b0a63e064808,egression test for gh-10198.,
+cache/env_open3dis/Lib/site-packages/numpy/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/typing/mypy_plugin.py,.py,False,False,7046,2026-01-22T16:27:43,b86cde66abf61ba36639bedd14b5ca51b26db774,"""""""A mypy_ plugin for managing a number of platform-specific annotations.",
+cache/env_open3dis/Lib/site-packages/numpy/typing/__init__.py,.py,False,False,7217,2026-01-22T16:27:43,47da1b53eded8afe5eabd68fb60be200dd41a3ea,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/test_isfile.py,.py,False,False,1085,2026-01-22T16:27:43,38d3eb1e51496efb703b2dabd1ad4226c4041fd5,import os,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/test_runtime.py,.py,False,False,3186,2026-01-22T16:27:43,f373ab6c436119c37a8799166db0a8bd4d6d294e,Test the runtime usage of `numpy.typing`.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/test_typing.py,.py,False,False,6494,2026-01-22T16:27:43,d982a930457729483c3e14e8c54aacb3c4b24473,Only trigger a full `mypy` run if this environment variable is set,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/arithmetic.py,.py,False,False,8380,2026-01-22T16:27:43,ba65c1a2c0658db3ddeaf80247f6daca12182dee,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/arrayprint.py,.py,False,False,803,2026-01-22T16:27:43,dcfcb35c16ae3b008c757bc2638e98ce33bdd2fd,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/arrayterator.py,.py,False,False,422,2026-01-22T16:27:43,8e411f0073263b0437e16eddc95dad1a74037382,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/array_constructors.py,.py,False,False,2586,2026-01-22T16:27:43,fd450a8c673dc22d0855b3ba6cbc2a962feddb89,from typing import Any,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/array_like.py,.py,False,False,1075,2026-01-22T16:27:43,2a5ab9897a4752315cfc556fefb5e8f6c752ffc2,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/bitwise_ops.py,.py,False,False,1090,2026-01-22T16:27:43,e0eaf74fdcfd9311c0045aa814e38fa5ebf81483,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/comparisons.py,.py,False,False,3606,2026-01-22T16:27:43,4f27bf71e01ecf1462a17f79f11654f6e1287457,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/dtype.py,.py,False,False,1127,2026-01-22T16:27:43,b7503c0475e027cb8d94c459c00b0cfc640bdf92,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/einsumfunc.py,.py,False,False,1406,2026-01-22T16:27:43,a4cb8778e543ce28c65ead375623b82bdbb99e4e,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/flatiter.py,.py,False,False,288,2026-01-22T16:27:43,d4d1db97cf603b837d1fa6c253c3ad3e5a86535f,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/fromnumeric.py,.py,False,False,4263,2026-01-22T16:27:43,cd580ca1dfee1b9968c0eef2f2c1c00517616c5b,Tests for :mod:`numpy._core.fromnumeric`.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/index_tricks.py,.py,False,False,1466,2026-01-22T16:27:43,e52301fbcadef98085a9010af4ce82285eb5a628,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/lib_user_array.py,.py,True,True,640,2026-01-22T16:27:43,403fceef6730d7295324405f334851e6c5637d6d,"Based on the `if __name__ == ""__main__""` test code in `lib/_user_array_impl.py`.",
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/lib_utils.py,.py,False,False,336,2026-01-22T16:27:43,64f8fb7a5160130fb2b132fc3cc3de9f628e5d56,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/lib_version.py,.py,False,False,317,2026-01-22T16:27:43,c031524ffdb0573aae24cc2532abd54c43fb24b4,from numpy.lib import NumpyVersion,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/literal.py,.py,False,False,1561,2026-01-22T16:27:43,2f6e390f213df4239db235d2568103e3a7d9ff94,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ma.py,.py,False,False,4121,2026-01-22T16:27:43,ac7b076685a69dd32836eb6d371f03ed6574cd58,mypy: disable-error-code=no-untyped-call,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/mod.py,.py,False,False,1720,2026-01-22T16:27:43,ce1e989c7b53ae69b6a655a9e4dc881ae87eb387,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/modules.py,.py,False,False,670,2026-01-22T16:27:43,2ca34fcbb3315e6835f4e1c08319433703f669ee,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/multiarray.py,.py,False,False,1456,2026-01-22T16:27:43,54befc0d76b37b6371dec2684f564ab1da429124,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ndarray_conversion.py,.py,False,False,1530,2026-01-22T16:27:43,4ab759a8965ce4d21f063db131bd0dbebea672c9,item,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ndarray_misc.py,.py,False,False,3555,2026-01-22T16:27:43,0721aaeed598b2d63d35a08b18ff9c79780a5afa,Tests for miscellaneous (non-magic) ``np.ndarray``/``np.generic`` methods.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ndarray_shape_manipulation.py,.py,False,False,687,2026-01-22T16:27:43,54ff597561fa182a661b4e349680896cdd61921e,reshape,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/nditer.py,.py,False,False,67,2026-01-22T16:27:43,5ffdd33e5eebc780a9945ef83e848baa1271c859,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/numeric.py,.py,False,False,1582,2026-01-22T16:27:43,c15f0d872d4d8ae1d85759837ce33fe726cbff37,Tests for :mod:`numpy._core.numeric`.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/numerictypes.py,.py,False,False,348,2026-01-22T16:27:43,eab6ebfbf9551a262a32533173f6451bf41bc3c2,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/random.py,.py,False,False,63323,2026-01-22T16:27:43,e85ffc149d0563a4a0e0ff6f3716fb828131f73b,default rng,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/recfunctions.py,.py,False,False,5138,2026-01-22T16:27:43,c69e318851c73306dd9c7dc87aa0f658fb916406,These tests are based on the doctests from `numpy/lib/recfunctions.py`.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/scalars.py,.py,False,False,3974,2026-01-22T16:27:43,49fd2821ab8433aef775f94ca3596d5e2b80b686,Construction,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/shape.py,.py,False,False,458,2026-01-22T16:27:43,62124d5b840c66f8a3165ecd5061fe774ce0b136,"Subtype of tuple[int, int]",
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/simple.py,.py,False,False,2925,2026-01-22T16:27:43,07b953dbf30f45c1eb875d3d102da435553962f1,Simple expression that should pass with mypy.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ufunclike.py,.py,False,False,1403,2026-01-22T16:27:43,73ea3de25626ba3cd87ff0fee26c7f0438b82eb0,from __future__ import annotations,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ufuncs.py,.py,False,False,438,2026-01-22T16:27:43,0df7d291bd107314156799adb5005f3df4eb6f35,NOTE: `np.generic` subclasses are not guaranteed to support addition;,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/ufunc_config.py,.py,False,False,1269,2026-01-22T16:27:43,41bed2f5c9f9f0026cbe772448c6207b4e16d1df,Typing tests for `numpy._core._ufunc_config`.,
+cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/warnings_and_errors.py,.py,False,False,167,2026-01-22T16:27:43,dec4c65b8c5effc1b62e2d484339b27b5c5d278e,import numpy.exceptions as ex,
+cache/env_open3dis/Lib/site-packages/numpy/_core/arrayprint.py,.py,False,False,67050,2026-01-22T16:27:43,eef0fc8145672fe6d0104c5beaa0f44b6ea1be88,Array printing function,
+cache/env_open3dis/Lib/site-packages/numpy/_core/cversions.py,.py,True,True,360,2026-01-22T16:27:43,28691678f3571b690738194c2486501cef97f946,Simple script to compute the api hash of the current API.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/defchararray.py,.py,False,False,39231,2026-01-22T16:27:43,5df900d8a416fa282f99eace7520e3913070ba37,This module contains a set of functions for vectorized string,
+cache/env_open3dis/Lib/site-packages/numpy/_core/einsumfunc.py,.py,False,False,59578,2026-01-22T16:27:43,ece646acd988bf7a8def421ee528f42779a96b4d,Implementation of optimized einsum.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/fromnumeric.py,.py,False,False,146891,2026-01-22T16:27:43,3f4d38d66c3ec20766b27192d36fa8dce3d7665b,Module containing non-deprecated functions borrowed from Numeric.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/function_base.py,.py,False,False,20224,2026-01-22T16:27:43,d1c07e193e81fb72022f00c54e36502f107e60f6,import functools,
+cache/env_open3dis/Lib/site-packages/numpy/_core/getlimits.py,.py,False,False,15465,2026-01-22T16:27:43,08291e0e367e698904bab4fea9021e85afd9b503,Machine limits for Float32 and Float64 and (long double) if available...,
+cache/env_open3dis/Lib/site-packages/numpy/_core/memmap.py,.py,False,False,13014,2026-01-22T16:27:43,03d65cf548ce3b23f189242a5716674af60b387f,import operator,
+cache/env_open3dis/Lib/site-packages/numpy/_core/multiarray.py,.py,False,False,58526,2026-01-22T16:27:43,2445e9c845073fbf6b401317e401445ee10f7878,Create the numpy._core.multiarray namespace for backward compatibility.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/numeric.py,.py,False,False,85081,2026-01-22T16:27:43,93d18c10419d9af5a6e08ca102e9e9c5fd6512d8,import builtins,
+cache/env_open3dis/Lib/site-packages/numpy/_core/numerictypes.py,.py,False,False,16600,2026-01-22T16:27:43,c4ba27b476adc53108d7ca8f6da31f3cfc33c8c7,"""""""",
+cache/env_open3dis/Lib/site-packages/numpy/_core/overrides.py,.py,False,False,7668,2026-01-22T16:27:43,205bf84cedcddeafa2533c6150abeb24f0605e0d,Implementation of __array_function__ overrides from NEP-18.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/printoptions.py,.py,False,False,1088,2026-01-22T16:27:43,c89cf27bb293178a72b31bc043d4089a18988969,Stores and defines the low-level format_options context variable.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/records.py,.py,False,False,37842,2026-01-22T16:27:43,b852ae1a164c01e43e65cad543c25c263d68df06,This module contains a set of functions for record arrays.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/shape_base.py,.py,False,False,33708,2026-01-22T16:27:43,c0518c9788158569fef35a258c67eff0a1416c43,"__all__ = ['atleast_1d', 'atleast_2d', 'atleast_3d', 'block', 'hstack',",
+cache/env_open3dis/Lib/site-packages/numpy/_core/strings.py,.py,False,False,52391,2026-01-22T16:27:43,a32111887ada70fac2d4db7a34391102080a1533,This module contains a set of functions for vectorized string,
+cache/env_open3dis/Lib/site-packages/numpy/_core/umath.py,.py,False,False,2200,2026-01-22T16:27:43,baaa22ac9602bc63f435babd7cd327bd14a5409b,Create the numpy._core.umath namespace for backward compatibility. In v1.16,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_add_newdocs.py,.py,False,False,222742,2026-01-22T16:27:43,f5f040e251a18b35cb64190e8f9b21f7e90f263a,This is only meant to add docs to objects defined in C-extension modules.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_add_newdocs_scalars.py,.py,False,False,13314,2026-01-22T16:27:43,bf6f4818bcdb0a61a6dd1c76cff514310828103e,This file is separate from ``_add_newdocs.py`` so that it can be mocked out by,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_asarray.py,.py,False,False,4024,2026-01-22T16:27:43,2c0503bddbf5c686244b8b8f4930e221b285bf09,Functions in the ``as*array`` family that promote array-likes into arrays.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_dtype.py,.py,False,False,10913,2026-01-22T16:27:43,eb38903617bb1e164f9c4aa4f7e258e5b1696bf7,A place for code to be called from the implementation of np.dtype,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_dtype_ctypes.py,.py,False,False,3846,2026-01-22T16:27:43,25eab0485d94b87880ce1762f42f59c7d458e663,Conversion from ctypes to dtype.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_exceptions.py,.py,False,False,5321,2026-01-22T16:27:43,ddcfdf066be2628540a0fdc4e3775ebdcfa11c6b,"Various richly-typed exceptions, that also help us deal with string formatting",
+cache/env_open3dis/Lib/site-packages/numpy/_core/_internal.py,.py,False,False,30405,2026-01-22T16:27:43,66dd5bac1273156f76b91acec1f55f52a36d6178,A place for internal code,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_methods.py,.py,False,False,9645,2026-01-22T16:27:43,1994d531a07d8adc393b4d6f2c3e6f35c67f40d0,Array methods which are called by both the C-code for the method,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_string_helpers.py,.py,False,False,2945,2026-01-22T16:27:43,bb11c1cac0c83b2175dad523e63da7c085098b4f,String-handling utilities to avoid locale-dependence.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/_type_aliases.py,.py,False,False,3886,2026-01-22T16:27:43,42c2651ac420d9bb97cd78b1f1377d31bc7a1a27,"Due to compatibility, numpy has a very large number of different naming",
+cache/env_open3dis/Lib/site-packages/numpy/_core/_ufunc_config.py,.py,False,False,16126,2026-01-22T16:27:43,29a5c988267830fce8f449b3806bbe089581ac87,Functions for changing global ufunc configuration,
+cache/env_open3dis/Lib/site-packages/numpy/_core/__init__.py,.py,False,False,6734,2026-01-22T16:27:43,11f9ff80ff6b4bb02c7b909f9f14864ced7ca6e6,"Contains the core of NumPy: ndarray, ufuncs, dtypes, etc.",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_abc.py,.py,False,False,2275,2026-01-22T16:27:43,3c1eecb94f3299f40e366f89f3c6277ddd0f642c,import numbers,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_api.py,.py,False,False,24915,2026-01-22T16:27:43,974bc81ebb4b0d765f6d88695a2756d9c87ff28a,import sys,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_argparse.py,.py,True,True,2914,2026-01-22T16:27:43,88a891c0918f7596362a3594da8a1a89b5ec68e8,Tests for the private NumPy argument parsing functionality.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_arraymethod.py,.py,False,False,3307,2026-01-22T16:27:43,a4b14724b72763e35ba37499cd117250f8860fe2,This file tests the generic aspects of ArrayMethod.  At the time of writing,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_arrayobject.py,.py,False,False,2671,2026-01-22T16:27:43,8058379cc13568d1afd5b47058ed633c598fc2b4,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_arrayprint.py,.py,False,False,51898,2026-01-22T16:27:43,b0ebc87860383e37bb5d4f7f4f3b820284989252,import gc,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_array_api_info.py,.py,False,False,3176,2026-01-22T16:27:43,0defa1814c443616ea5e7da75c69fc108b579b73,This will be added in the 2024.12 release of the array API standard.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_array_coercion.py,.py,False,False,36319,2026-01-22T16:27:43,a5f8205eb92343fc14da381f3ae5c76c7c717312,"Tests for array coercion, mainly through testing `np.array` results directly.",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_array_interface.py,.py,False,False,8065,2026-01-22T16:27:43,ce48436761c7df29b0f9faf8fadfb82426008db3,Some codes to generate data and manage temporary buffers use when,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_casting_floatingpoint_errors.py,.py,False,False,5230,2026-01-22T16:27:43,6f8d66187424cc2a0e580d2a0cdb817b849ba111,Generate value+dtype pairs that generate floating point errors during,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_casting_unittests.py,.py,False,False,41899,2026-01-22T16:27:43,2352ede8a3ec4caa6fc110e9ccf011945c168a56,The tests exercise the casting machinery in a more low-level manner.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_conversion_utils.py,.py,False,False,6715,2026-01-22T16:27:43,fbbb7b39565ea38fdaad8a201f9650531414cc7b,Tests for numpy/_core/src/multiarray/conversion_utils.c,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_cpu_dispatcher.py,.py,False,False,1619,2026-01-22T16:27:43,79fefe08a3b25261c1d5b0a842b1d9eaa3a67b13,Testing the utilities of the CPU dispatcher,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_cpu_features.py,.py,True,True,16252,2026-01-22T16:27:43,3d8bb2fe7b3f3a7f94f49318d0263e82e4c8f57c,import os,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_custom_dtypes.py,.py,False,False,14889,2026-01-22T16:27:43,90e3c8184fee36a183ffc79f7416fada6431602f,from tempfile import NamedTemporaryFile,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_cython.py,.py,False,False,10570,2026-01-22T16:27:43,76f9d24a6544bc4a85b9ccaea6dec9d86e52c4f9,This import is copied from random.tests.test_extending,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_datetime.py,.py,False,False,127545,2026-01-22T16:27:43,f7780121f5e326b58a6b5ef395b8aecd92377e08,import datetime,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_defchararray.py,.py,False,False,31541,2026-01-22T16:27:43,44a868aa542bd6ce8e39e765da315030b00458c0,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_deprecations.py,.py,False,False,17940,2026-01-22T16:27:43,64b7b28bf39bdf96a40a8b3af34822a2afe6b33a,Tests related to deprecation warnings. Also a convenient place,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_dlpack.py,.py,False,False,6021,2026-01-22T16:27:43,0bc221dd6780a6b53af4b4b2ceeba5310bd6326e,"Support only the ""old"" version",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_dtype.py,.py,False,False,85332,2026-01-22T16:27:43,d24c460dd7ae1c5879e4efb07b0887fa03ef32ac,import contextlib,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_einsum.py,.py,False,False,59244,2026-01-22T16:27:43,b0e8ad2f607d7d8b64cfef4285b664b31dba4672,Setup for optimize einsum,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_errstate.py,.py,False,False,4759,2026-01-22T16:27:43,d9177a3170315197b25029479e42ed997590325f,The floating point emulation on ARM EABI systems lacking a hardware FPU is,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_extint128.py,.py,False,False,5842,2026-01-22T16:27:43,989cba6eb18451eeb2d812af2cbf2e99d5923570,"int128 is not two's complement, the sign bit is separate",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_finfo.py,.py,False,False,2574,2026-01-22T16:27:43,8f254b76795c0f5b61d86773337c12addb4e10d6,Minimal class to simulate machine arithmetic parameters.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_function_base.py,.py,False,False,18187,2026-01-22T16:27:43,e22665e2930b415b42ecfcdb35d7e10b3907db61,import platform,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_getlimits.py,.py,False,False,5624,2026-01-22T16:27:43,11f9e35fa71ffeaf430f5ddea4676c4e37783f3b,Test functions for limits module.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_half.py,.py,False,False,25853,2026-01-22T16:27:43,17dc1874cbf75ac71b1c1137839adf5bb0f25606,import platform,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_hashtable.py,.py,False,False,1184,2026-01-22T16:27:43,b8a69a064c9431e296240789f324b2e55396f521,use a 30 object pool for everything (duplicates will happen),
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_indexerrors.py,.py,False,False,4835,2026-01-22T16:27:43,e4ad67a41619f2190598ec50423c8112adf3fc1a,Tests to exercise indexerrors not covered by other tests.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_indexing.py,.py,False,False,66315,2026-01-22T16:27:43,742f9f52a77f56d74484a540edd34aa6bb41158e,import functools,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_item_selection.py,.py,False,False,6798,2026-01-22T16:27:43,240dcb556dbdefdd031f3b8a265b28623ad2a70b,import sys,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_limited_api.py,.py,False,False,3565,2026-01-22T16:27:43,8971486231c3737dcb35c972614f57cf1a3bcf84,This import is copied from random.tests.test_extending,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_longdouble.py,.py,False,False,12824,2026-01-22T16:27:43,4ef82f16ae0b43ee8dd76b3f7fd72450bfa88f5f,Confirm that extracting a value doesn't convert to python float,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_memmap.py,.py,False,False,8546,2026-01-22T16:27:43,f0f5d0a9411e01df6fe51daa21e008a5cd444dfe,import mmap,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_mem_overlap.py,.py,False,False,30250,2026-01-22T16:27:43,1109a7b50f389ee2464bc0acc6769a86d7295e99,"Returns slices of length nelems, from start onwards, in direction sign.",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_mem_policy.py,.py,False,False,17301,2026-01-22T16:27:43,f4053349aeb18b8bd2e295a8620337f486054fec,Add a memory policy that returns a false pointer 64 bytes into the,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_multiarray.py,.py,False,False,431040,2026-01-22T16:27:43,4058fa2741451dadc275956e0eb560d21567284f,import builtins,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_multiprocessing.py,.py,False,False,2089,2026-01-22T16:27:43,e08ea356ae8bfcddd17b45ef74e8a3785e85c20d,writer routine for test_read_write_bool_array,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_multithreading.py,.py,False,False,11511,2026-01-22T16:27:43,d470b30134d1ce3cf0fde43381815d7840761c56,"if the coercion cache is enabled and not thread-safe, creating",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_nditer.py,.py,False,False,141372,2026-01-22T16:27:43,837e23e196d78af9470059ae2a1ccc91758977b4,import inspect,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_nep50_promotions.py,.py,False,False,10355,2026-01-22T16:27:43,76b9373f67ff8f1cb1a7a24e8d59c76ae4e91d2e,This file adds basic tests to test the NEP 50 style promotion compatibility,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_numeric.py,.py,False,False,164699,2026-01-22T16:27:43,73dfa99f4fdc4b3256c4f2e9a395b85ec1cbfa04,import inspect,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_numerictypes.py,.py,False,False,24824,2026-01-22T16:27:43,2cd9d6926b3c5177ded7ae0ce0be92cb5dadd157,This is the structure of the table used for plain objects:,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_overrides.py,.py,False,False,28577,2026-01-22T16:27:43,77bbca54eb8ac2f0f8077a2c73e836f62252586d,Docstring.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_print.py,.py,False,False,7117,2026-01-22T16:27:43,17df14f70d25e7cc308a4a3d2ee9333442ec1d36,Check formatting.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_protocols.py,.py,False,False,1219,2026-01-22T16:27:43,b27e8e8b9ff23d5375cfef3174c41f95b0e708e4,"issue gh-14735: make sure we clear only getattr errors, and let warnings",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_records.py,.py,False,False,21156,2026-01-22T16:27:43,1d1ad0f244e4cab7ac3fc0e58c296bfcd98eface,Verify fromrecords works with a 0-length input,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_regression.py,.py,False,False,98849,2026-01-22T16:27:43,f2fb0c2a06a2b5d63578b92cfce886bb0b70ca8d,import copy,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_scalarbuffer.py,.py,False,False,5787,2026-01-22T16:27:43,a86c5b4a618482f55b37d2f8164862a5adfc5a3b,Test scalar buffer interface adheres to PEP 3118,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_scalarinherit.py,.py,False,False,2692,2026-01-22T16:27:43,4c0954faa45ad99eda7a76c3072a0a7f2e9c2817,Test printing of scalar types.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_scalarmath.py,.py,False,False,47385,2026-01-22T16:27:43,0d6737bc9d1b720d13fba444e417d091d20af907,import contextlib,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_scalarprint.py,.py,False,False,20108,2026-01-22T16:27:43,f322e8295c7b606191193cbd5b350e4ccb6f2761,Test printing of scalar types.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_scalar_ctors.py,.py,False,False,6896,2026-01-22T16:27:43,7b55024437bd0e974b286f4f80f26f7ea1b73c26,"Test the scalar constructors, which also do type-coercion",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_scalar_methods.py,.py,False,False,12839,2026-01-22T16:27:43,3f62817b41783b551cbd24f0be95e330cd1ec1c0,"Test the scalar constructors, which also do type-coercion",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_shape_base.py,.py,False,False,32771,2026-01-22T16:27:43,7bfdd45de5b81b39da3ae8ec9a371af9c0dbd69c,import sys,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_simd.py,.py,False,False,50239,2026-01-22T16:27:43,263c285fb34f81c0618c81b4afd1000a16817642,NOTE: Please avoid the use of numpy.testing since NPYV intrinsics,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_simd_module.py,.py,False,False,4055,2026-01-22T16:27:43,1b1c73bd9b7f7252b6d9265f5f335d5118e48cac,"This testing unit only for checking the sanity of common functionality,",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_stringdtype.py,.py,False,False,60358,2026-01-22T16:27:43,5c9bf86ed943878102d23b8de0c64eb20e05114d,Returns an array of 10 100-character strings containing random text,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_strings.py,.py,False,False,61679,2026-01-22T16:27:43,6816e5109b0012a4ad04165bf2bbc0a03c64c0ab,import operator,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_ufunc.py,.py,False,False,143118,2026-01-22T16:27:43,a41ff30949f73aaf2a8b457a95f42f91b8100d24,import ctypes as ct,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_umath.py,.py,False,False,200811,2026-01-22T16:27:43,38bd0ce2df80244e2d2cb98be05aabdf09952f3e,import fnmatch,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_umath_accuracy.py,.py,False,False,5953,2026-01-22T16:27:43,a6fd5e555d7a1a8f76259d180ec95220ad77b5d5,emove functions that do not support `floats`,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_umath_complex.py,.py,False,False,24242,2026-01-22T16:27:43,bb143db16285fc59a0ba0d0f6628bd309c933f03,import the c-extension module directly since _arg is not exported via umath,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_unicode.py,.py,False,False,13356,2026-01-22T16:27:43,8d5a6835a9c3ae6e24a1b1d98426e8bc4a9fcfe3,import numpy as np,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test__exceptions.py,.py,False,False,3012,2026-01-22T16:27:43,221f697384b60f39cf1200c8c2b489dbc31f6b1e,Tests of the ._exceptions module. Primarily for exercising the __str__ methods.,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/_locales.py,.py,False,False,2248,2026-01-22T16:27:43,155d43d9c3893b9f7c9a638588d97fdbaff2f2c2,Provide class for testing in French locale,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/_natype.py,.py,False,False,4531,2026-01-22T16:27:43,beb8cb0829bac9b282c50f6954f3fa0137855598,"Vendored implementation of pandas.NA, adapted from pandas/_libs/missing.pyx",
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/examples/cython/setup.py,.py,False,False,898,2026-01-22T16:27:43,9ad636b47db14eb4a35acccdfaa7f37d693c64c9,Provide python-space access to the functions exposed in numpy/__init__.pxd,
+cache/env_open3dis/Lib/site-packages/numpy/_core/tests/examples/limited_api/setup.py,.py,False,False,461,2026-01-22T16:27:43,953b281c2ca4dddeff9b493598320fd14dc07732,Build an example package using the limited Python C API.,
+cache/env_open3dis/Lib/site-packages/numpy/_pyinstaller/hook-numpy.py,.py,False,False,1398,2026-01-22T16:27:43,0f333af769c728994758b39e663579e39e7309a7,This hook should collect all binary files and any hidden modules that numpy,
+cache/env_open3dis/Lib/site-packages/numpy/_pyinstaller/__init__.py,.py,False,False,0,2026-01-22T16:27:43,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/numpy/_pyinstaller/tests/pyinstaller-smoke.py,.py,False,False,1175,2026-01-22T16:27:43,63c2ca3c5acbc28ad3e4897e67005e7f58e79499,A crude *bit of everything* smoke test to verify PyInstaller compatibility.,qa
+cache/env_open3dis/Lib/site-packages/numpy/_pyinstaller/tests/test_pyinstaller.py,.py,False,False,1170,2026-01-22T16:27:43,95c215ff185239e9b9ffff72f565959098d126a0,Compile and run pyinstaller-smoke.py using PyInstaller.,
+cache/env_open3dis/Lib/site-packages/numpy/_pyinstaller/tests/__init__.py,.py,False,False,345,2026-01-22T16:27:43,194f8882fda14f157f71caec49551ac727f1df05,import pytest,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_add_docstring.py,.py,False,False,4152,2026-01-22T16:27:43,24bdf2fadf59f9d32f40a145322de201a949f1cc,A module for creating docstrings for sphinx ``data`` domains.,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_array_like.py,.py,False,False,4294,2026-01-22T16:27:43,72b643392c36e00da2a9e83dfcf4a78cd033e79e,A protocol class representing `~class.__array_function__`.,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_char_codes.py,.py,False,False,8977,2026-01-22T16:27:43,8f49a31e346817efada5e0a09ea97ac2f087f7a8,from typing import Literal,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_dtype_like.py,.py,False,False,3978,2026-01-22T16:27:43,e575776f7856ea460ff98edb3116fe760c5a21d5,from collections.abc import Sequence  # noqa: F811,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_extended_precision.py,.py,False,False,449,2026-01-22T16:27:43,c114538d3be1d42b9a938d3a029115a10ed2f41d,A module with platform-specific extended precision,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_nbit.py,.py,False,False,651,2026-01-22T16:27:43,0dd70e49571bee1405e167fe0c6efcf8ea9de9e1,A module with the precisions of platform-specific `~numpy.number`s.,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_nbit_base.py,.py,False,False,3152,2026-01-22T16:27:43,031f85f1c11bb00b795e300cfdeee1200c82a903,A module with the precisions of generic `~numpy.number` types.,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_nested_sequence.py,.py,False,False,2584,2026-01-22T16:27:43,f740561644899bf77233f8b1a34c9c19afce1e19,A module containing the `_NestedSequence` protocol.,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_scalars.py,.py,False,False,964,2026-01-22T16:27:43,f82bc147427f2b3e25c149575070258b9902a1df,"NOTE: `_StrLike_co` and `_BytesLike_co` are pointless, as `np.str_` and",
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_shape.py,.py,False,False,283,2026-01-22T16:27:43,6a546c4709298454f3ebf4f337574521ef0e9aeb,Anything that can be coerced to a shape tuple,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/_ufunc.py,.py,False,False,163,2026-01-22T16:27:43,a7511f00fe27a62b2b95ba5cbdd8625ca17ce7d7,from numpy import ufunc,
+cache/env_open3dis/Lib/site-packages/numpy/_typing/__init__.py,.py,False,False,5639,2026-01-22T16:27:43,2350ae106d0411d70fc39171d84702efbbcedd83,Private counterpart of ``numpy.typing``.,
+cache/env_open3dis/Lib/site-packages/numpy/_utils/_convertions.py,.py,False,False,347,2026-01-22T16:27:43,2c510cecbc6aef88841e9b3ccc5f4dab4470bb45,A set of methods retained from np.compat module that,
+cache/env_open3dis/Lib/site-packages/numpy/_utils/_inspect.py,.py,False,False,7628,2026-01-22T16:27:43,eebe62878a18a72a42648ee69786760e6c58352a,Subset of inspect module from upstream python,
+cache/env_open3dis/Lib/site-packages/numpy/_utils/_pep440.py,.py,False,False,14474,2026-01-22T16:27:43,f4b66c42d6e8c21d59fe2b50d93afd628b9ecdb7,Utility to compare pep440 compatible version strings.,
+cache/env_open3dis/Lib/site-packages/numpy/_utils/__init__.py,.py,False,False,3572,2026-01-22T16:27:43,64b596af144d6e93b747d90df3e44ac6f7c67347,This is a module for defining private helpers which do not depend on the,
+cache/env_open3dis/Lib/site-packages/pyproj/aoi.py,.py,False,False,3563,2026-01-22T16:27:45,a62a5c776660b88366bcda932f173d85ccdde53a,This module contains the structures related to areas of interest.,projection
+cache/env_open3dis/Lib/site-packages/pyproj/datadir.py,.py,False,False,3934,2026-01-22T16:27:45,210e20d677492b5f7c6deb0cbe78cc2ff2205126,Module for managing the PROJ data directory.,projection
+cache/env_open3dis/Lib/site-packages/pyproj/enums.py,.py,False,False,4265,2026-01-22T16:27:45,d6bcee720d44229e5b72f9fe861aa6728c97b460,This module contains enumerations used in pyproj.,projection
+cache/env_open3dis/Lib/site-packages/pyproj/exceptions.py,.py,False,False,722,2026-01-22T16:27:45,8145247bd2bed7d6c6135027c64abcaf295c799d,Exceptions for pyproj,projection
+cache/env_open3dis/Lib/site-packages/pyproj/geod.py,.py,False,False,45050,2026-01-22T16:27:45,f482f28d9179bc7c37d17b3e645df5ad83a95f1f,"The Geod class can perform forward and inverse geodetic, or",projection
+cache/env_open3dis/Lib/site-packages/pyproj/network.py,.py,False,False,1981,2026-01-22T16:27:45,867e0074bf30c9bbd8e82ae48bc114c3a20d7e64,Module for managing the PROJ network settings.,projection
+cache/env_open3dis/Lib/site-packages/pyproj/proj.py,.py,False,False,11539,2026-01-22T16:27:45,2f8ac534fd30ca404156505bb381ec25edf9b36a,Performs cartographic transformations (converts from,projection
+cache/env_open3dis/Lib/site-packages/pyproj/sync.py,.py,False,False,8974,2026-01-22T16:27:45,c907a853140a3e4791206e5bf3ff9a79db71e472,Based on the logic in the PROJ projsync CLI program,projection
+cache/env_open3dis/Lib/site-packages/pyproj/transformer.py,.py,False,False,46148,2026-01-22T16:27:45,a1323083bd6260437aeb2b16879b598e76ad0ceb,The transformer module is for performing cartographic transformations.,projection
+cache/env_open3dis/Lib/site-packages/pyproj/utils.py,.py,False,False,4628,2026-01-22T16:27:45,a19e933e515d161f3efaed25434736828e0cc164,Utility functions used within pyproj,projection
+cache/env_open3dis/Lib/site-packages/pyproj/_show_versions.py,.py,False,False,3148,2026-01-22T16:27:45,028bb8e3cd027301f8ace53b957d271fe24e26a3,Utility methods to print system info for debugging,projection
+cache/env_open3dis/Lib/site-packages/pyproj/__init__.py,.py,False,False,3535,2026-01-22T16:27:45,0d26e69fdeadcd3a25033a4a28a6e18fc2e3b837,"Python interface to PROJ (https://proj.org),",projection
+cache/env_open3dis/Lib/site-packages/pyproj/__main__.py,.py,True,True,6560,2026-01-22T16:27:45,2e6624e66b414c72d9bbc9478a9876b42f54a3cc,This is the main entry point for pyproj CLI,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/coordinate_operation.py,.py,False,False,61933,2026-01-22T16:27:45,ffacfd1ec93c0a44003f5203a1340228728f5ec8,This module is for building operations to be used when,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/coordinate_system.py,.py,False,False,10400,2026-01-22T16:27:45,2fb91bb063fbeff96c5496bc9c3f3e512c576e15,This module is for building coordinate systems to be used when,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/crs.py,.py,False,False,66581,2026-01-22T16:27:45,a33beb8510164b6d8668e63a641128ed977b66b3,This module interfaces with PROJ to produce a pythonic interface,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/datum.py,.py,False,False,3799,2026-01-22T16:27:45,ddfcac01ce0136e8dd0b877e574563b33e341917,This module is for building datums to be used when,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/enums.py,.py,False,False,3819,2026-01-22T16:27:45,b1d30cef510b4d284f061dca54f82f244ace2abc,This module contains enumerations used in pyproj.crs.,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/_cf1x8.py,.py,False,False,28158,2026-01-22T16:27:45,e8dc12c2fb902922031e234cd0371219f7d77fc7,This module contains mappings necessary to convert from,projection
+cache/env_open3dis/Lib/site-packages/pyproj/crs/__init__.py,.py,False,False,888,2026-01-22T16:27:45,7b5894c7df250d5647bcf4efaa0665bbbc32372e,This module interfaces with PROJ to produce a pythonic interface,projection
+cache/env_open3dis/Lib/site-packages/shapely/affinity.py,.py,False,False,8521,2026-01-22T16:27:45,bc44eb51a790b00fdf555121f172e36a03843117,"Affine transforms, both in general and specific, named transforms.",
+cache/env_open3dis/Lib/site-packages/shapely/conftest.py,.py,False,False,2017,2026-01-22T16:27:45,02c36355d2865f9498346d3f44192ec973dc4b4e,Pytest and scipy-doctest configuration for Shapely.,
+cache/env_open3dis/Lib/site-packages/shapely/constructive.py,.py,False,False,57741,2026-01-22T16:27:45,0656c44e412ff1b91d0b5527972f9c682894e68c,Methods that yield new objects not derived from set-theoretic analysis.,
+cache/env_open3dis/Lib/site-packages/shapely/coordinates.py,.py,False,False,12910,2026-01-22T16:27:45,92b2247400d06b99524deae7a08a9f3478e62928,Methods that operate on the coordinates of geometries.,
+cache/env_open3dis/Lib/site-packages/shapely/coords.py,.py,False,False,3151,2026-01-22T16:27:45,9a694cbd0de9b2b8eb7d88437b7f461792824784,Coordinate sequence utilities.,
+cache/env_open3dis/Lib/site-packages/shapely/creation.py,.py,False,False,31818,2026-01-22T16:27:45,2f50155b3919545515c8484b6822333b6e907127,Methods to create geometries.,
+cache/env_open3dis/Lib/site-packages/shapely/decorators.py,.py,False,False,5877,2026-01-22T16:27:45,f821e65d4fedc4903e99c36455e5dd90c74318bd,Decorators for Shapely functions.,
+cache/env_open3dis/Lib/site-packages/shapely/errors.py,.py,False,False,2477,2026-01-22T16:27:45,f6fedb0fa7191dcdcedfeaa31183de25fc453f36,Shapely errors.,
+cache/env_open3dis/Lib/site-packages/shapely/geos.py,.py,False,False,537,2026-01-22T16:27:45,65610b8ed0f3fcfb6ad213a1674de68175e9552d,"Proxies for libgeos, GEOS-specific exceptions, and utilities.",
+cache/env_open3dis/Lib/site-packages/shapely/io.py,.py,False,False,15516,2026-01-22T16:27:45,4dc0de41b42d55335cb10c8d2bca12f9b761b594,Input/output functions for Shapely geometries.,
+cache/env_open3dis/Lib/site-packages/shapely/linear.py,.py,False,False,8911,2026-01-22T16:27:45,0cbe4a6d6129f7ab3e514368f743cebd9c00c9b4,Linear geometry functions.,
+cache/env_open3dis/Lib/site-packages/shapely/measurement.py,.py,False,False,10977,2026-01-22T16:27:45,f57e9f9212cd97fd45afbe22de421a8bb9da7d24,Methods for measuring (between) geometries.,
+cache/env_open3dis/Lib/site-packages/shapely/ops.py,.py,False,False,26399,2026-01-22T16:27:45,d370e0d018ab9af368aa3c15dd6307d5352daa7d,Support for various GEOS geometry operations.,
+cache/env_open3dis/Lib/site-packages/shapely/plotting.py,.py,False,False,6544,2026-01-22T16:27:45,bbe6343c161217517727f27bcf0a4883908c19d2,Plot single geometries using Matplotlib.,
+cache/env_open3dis/Lib/site-packages/shapely/predicates.py,.py,False,False,41023,2026-01-22T16:27:45,787883d6cc4b3990bbccdbdf9d1fd0dc57de3987,Predicates for spatial analysis.,
+cache/env_open3dis/Lib/site-packages/shapely/prepared.py,.py,False,False,2425,2026-01-22T16:27:45,c641c2c9fcf38bdc33cc86132acbc24d15540a3f,Support for GEOS prepared geometry operations.,
+cache/env_open3dis/Lib/site-packages/shapely/set_operations.py,.py,False,False,28224,2026-01-22T16:27:45,4c75f55abec850c3a2ef00a807a321951ff2103a,Set-theoretic operations on geometry objects.,
+cache/env_open3dis/Lib/site-packages/shapely/speedups.py,.py,False,False,1077,2026-01-22T16:27:45,4c8a533ca0a1424bc49da1bbb562adfcbc2ccd05,Speedups for Shapely geometry operations.,
+cache/env_open3dis/Lib/site-packages/shapely/strtree.py,.py,False,False,21199,2026-01-22T16:27:45,50ae55820b2ed0ce244ec55eb02a25c32b91749d,STRtree spatial index for efficient spatial queries.,
+cache/env_open3dis/Lib/site-packages/shapely/testing.py,.py,False,False,6680,2026-01-22T16:27:45,4e5d722fd35ef2b7614bd722ffb555281ea71e8a,Utilities for testing with shapely geometries.,
+cache/env_open3dis/Lib/site-packages/shapely/validation.py,.py,False,False,1526,2026-01-22T16:27:45,87f6cb77056a342d65a624c868db3fb382077148,Validate geometries and make them valid.,
+cache/env_open3dis/Lib/site-packages/shapely/wkb.py,.py,False,False,2007,2026-01-22T16:27:45,ba131d1087bf8d00bd20da6e5b634186e0a9eec3,Load/dump geometries using the well-known binary (WKB) format.,
+cache/env_open3dis/Lib/site-packages/shapely/wkt.py,.py,False,False,1815,2026-01-22T16:27:45,453680c6164635e8fa223f570b668c8ce50a65ae,Load/dump geometries using the well-known text (WKT) format.,
+cache/env_open3dis/Lib/site-packages/shapely/_coverage.py,.py,False,False,5900,2026-01-22T16:27:45,f1ee2f7b247016912bd6fce78ac23e892c587daf,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/_enum.py,.py,False,False,727,2026-01-22T16:27:45,bef5fb463619194a03317b1e8d07036e6982eda8,Wraps IntEnum to provide validation of a requested item.,
+cache/env_open3dis/Lib/site-packages/shapely/_geometry.py,.py,False,False,30182,2026-01-22T16:27:45,0782049e56ad53f0c6560471b12a461b1820d562,import warnings,geom
+cache/env_open3dis/Lib/site-packages/shapely/_ragged_array.py,.py,False,False,17920,2026-01-22T16:27:45,483ac1d7f4993201c99e926bcde8ea08adaedab3,Provides a conversion to / from a ragged array representation of geometries.,
+cache/env_open3dis/Lib/site-packages/shapely/_version.py,.py,False,False,518,2026-01-22T16:27:45,c79c8400a26e8628510b520df1e88eb4c1e70fe9,{,
+cache/env_open3dis/Lib/site-packages/shapely/__init__.py,.py,False,False,1391,2026-01-22T16:27:45,d428bbd9e03afcefe51c823b2a47c042140b0fd0,Manipulation and analysis of geometric objects in the Cartesian plane.,
+cache/env_open3dis/Lib/site-packages/shapely/algorithms/cga.py,.py,False,False,1807,2026-01-22T16:27:45,8dcd66cd25c26954a5c7acdb85fd0c07cad8f474,Shapely CGA algorithms.,
+cache/env_open3dis/Lib/site-packages/shapely/algorithms/polylabel.py,.py,False,False,1387,2026-01-22T16:27:45,c16285d7bf21cca872522e92ccfde9531e7cab6b,Provides functions for finding the pole of inaccessibility for a given polygon.,
+cache/env_open3dis/Lib/site-packages/shapely/algorithms/_oriented_envelope.py,.py,False,False,1989,2026-01-22T16:27:45,17ce87ef9c18deb616d571afe15884eb33dfb57e,Compute the oriented envelope (minimum rotated rectangle).,lidar
+cache/env_open3dis/Lib/site-packages/shapely/algorithms/__init__.py,.py,False,False,42,2026-01-22T16:27:45,3881682892e2e4c7968bf89f1f2143daf80c5892,Algorithms implemented in Shapely.,
+cache/env_open3dis/Lib/site-packages/shapely/geometry/base.py,.py,False,False,41513,2026-01-22T16:27:45,0ce8fe0e6c2c45070cc6ed920375664be2a274e9,Base geometry class and utilities.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/collection.py,.py,False,False,1794,2026-01-22T16:27:45,f7e4b97217ab665f103d3794c0fc37fc7152ff6b,Multi-part collections of geometries.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/geo.py,.py,False,False,4509,2026-01-22T16:27:45,bbcbc8a6800599072b07d4a7be182a214cf417c0,Geometry factories based on the geo interface.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/linestring.py,.py,False,False,7810,2026-01-22T16:27:45,6ea7a574dc81dd4ca60ec8b5be01449f897e393a,Line strings and related utilities.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/multilinestring.py,.py,False,False,3037,2026-01-22T16:27:45,6077d2c1c650f7025b57a2ae80f5eb42eba60461,Collections of linestrings and related utilities.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/multipoint.py,.py,False,False,3326,2026-01-22T16:27:45,4c9d73f3781d0d30512ad905e2a6d4ce734ff485,Collections of points and related utilities.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/multipolygon.py,.py,False,False,4080,2026-01-22T16:27:45,8010b8b7e2f2d2bbba34f691361459a07ec2e478,Collections of polygons and related utilities.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/point.py,.py,False,False,4897,2026-01-22T16:27:45,7776c4a43e75cba37acd900128db482975820915,Points and related utilities.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/polygon.py,.py,False,False,11427,2026-01-22T16:27:45,e30b9ac4d101a32e0bef2d0496baaaae7228d0ae,Polygons and their linear ring components.,geom
+cache/env_open3dis/Lib/site-packages/shapely/geometry/__init__.py,.py,False,False,790,2026-01-22T16:27:45,14e92fb1a81d28d4f139d8d289d5680dacb02273,Geometry classes and factories.,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/common.py,.py,False,False,10436,2026-01-22T16:27:45,b178bfbb664b25a2779fc55323673f75146b618e,XY,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_constructive.py,.py,False,False,47469,2026-01-22T16:27:45,6114dafc8e91ee1825a2832663150a8dcf083699,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_coordinates.py,.py,False,False,13716,2026-01-22T16:27:45,ba36e404fafc68c6e5161315bdda2cbfa5f2e310,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_coverage.py,.py,False,False,9827,2026-01-22T16:27:45,ec9ab143140cbad69a32dd3d9ea87e081099556c,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_creation.py,.py,False,False,23087,2026-01-22T16:27:45,ac66d2953d660c99dce023ae65564c21749b7b94,See test_creation_indices.py for tests with 'indices' parameter.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_creation_indices.py,.py,False,False,19182,2026-01-22T16:27:45,3fc18c1e6a8896d2e6d15341631aa2ee638512c2,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_decorators.py,.py,False,False,3837,2026-01-22T16:27:45,4e670a4b65c37ecd0d1aac1193b5f8092800f88e,import pytest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_geometry.py,.py,False,False,24560,2026-01-22T16:27:45,65c9fa108a0359648e9645c84f5f4e782c0723a9,import warnings,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_io.py,.py,False,False,51413,2026-01-22T16:27:45,fbe3463775fe5ee5615a752e6608b303c973f98f,import json,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_linear.py,.py,False,False,7950,2026-01-22T16:27:45,165ecc5bcf364a04641aa6487f4e9a2c5c55e9f4,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_measurement.py,.py,False,False,10292,2026-01-22T16:27:45,39cdb948b2099346573ddd0579e4bee4b88848ec,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_misc.py,.py,False,False,5583,2026-01-22T16:27:45,99cdc5ec79fd8d9a0c875bb04a2bcddac356b845,import os,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_plotting.py,.py,False,False,4164,2026-01-22T16:27:45,6281ff845723472bd3c85fa8d373d596e097ab40,import pytest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_predicates.py,.py,False,False,14128,2026-01-22T16:27:45,acb50d550d44f97100b84594f2fba6dca3cc9862,from functools import partial,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_ragged_array.py,.py,False,False,21732,2026-01-22T16:27:45,298c5e10008d4cd102eaae27d87d7660d1f919c2,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_set_operations.py,.py,False,False,18183,2026-01-22T16:27:45,85d17151954eecd3b623e2612b156a9f0cbce031,fixed-precision operations raise GEOS exceptions on mixed dimension geometry,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_strtree.py,.py,False,False,75475,2026-01-22T16:27:45,db1f0ad544cfd979efe318ceb26a8533c60513c8,import itertools,
+cache/env_open3dis/Lib/site-packages/shapely/tests/test_testing.py,.py,False,False,2943,2026-01-22T16:27:45,2621e8dc16b91aabc2663caddb2f2c2538cddf16,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/__init__.py,.py,False,False,0,2026-01-22T16:27:45,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_collection.py,.py,False,False,2764,2026-01-22T16:27:45,3b15f16ffd80c241cb51c7b1407a228961b51df3,import numpy as np,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_coords.py,.py,False,False,4117,2026-01-22T16:27:45,0fa3eb3bb0ce7fe10bf909db24a556042ee5432c,Shapely assumes contiguous C-order float64 data for internal ops.,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_decimal.py,.py,False,False,2963,2026-01-22T16:27:45,adb69b785d44ce8dd0864db63ee419be18b36137,from decimal import Decimal,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_emptiness.py,.py,False,False,2460,2026-01-22T16:27:45,34adade9d79c0cd801109b4e69cca8e4bbb54353,import math,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_equality.py,.py,False,False,9720,2026-01-22T16:27:45,12667f594ba30ca070f8adef2fdb9ec150c857b0,TODO add all_types_m and all_types_zm once tranform supports M coordinates,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_format.py,.py,False,False,4636,2026-01-22T16:27:45,205beb0e3ca7aca31d2f6a25e894bceb76843da6,check invalid spec formats,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_geometry_base.py,.py,False,False,11095,2026-01-22T16:27:45,946e2415ce3c128822d62aaa3b67356bbb1aa337,import platform,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_hash.py,.py,False,False,701,2026-01-22T16:27:45,998f0671ab38e473ae7698497b11c528b2df40e0,import pytest,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_linestring.py,.py,False,False,7275,2026-01-22T16:27:45,0bbbb07794e1133e7b066b12bd8036f0ae13b199,From coordinate tuples,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multi.py,.py,False,False,308,2026-01-22T16:27:45,079379856dd94bd5b9d862430fdd3746355eb009,import numpy as np,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multilinestring.py,.py,False,False,2911,2026-01-22T16:27:45,487a2d0a06a52027d69a7052fdab53bcaf479524,From coordinate tuples,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multipoint.py,.py,False,False,3140,2026-01-22T16:27:45,bbc5c0e59b0c79388970ee9728e9679a0592f43c,From coordinate tuples,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multipolygon.py,.py,False,False,5063,2026-01-22T16:27:45,c98c19b4fb0c5edc794e7b750007fc5682f6a9e8,mpty,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_point.py,.py,False,False,5533,2026-01-22T16:27:45,f8b3ec990c305e9e7b526d1f53116c65ad4d74f7,Point,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_polygon.py,.py,False,False,15763,2026-01-22T16:27:45,85a695ad7058e228d6cc3cffc0036f5cbf8af2bb,Polygons and Linear Rings,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/__init__.py,.py,False,False,0,2026-01-22T16:27:45,da39a3ee5e6b4b0d3255bfef95601890afd80709,,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/conftest.py,.py,False,False,346,2026-01-22T16:27:45,a6a4450c378d2fa2ad4300063c0bd607b563328e,Header for pytest.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_affinity.py,.py,False,False,12791,2026-01-22T16:27:45,194fcd95a95cac3d075d1bbc0f17439ccbb6317c,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_box.py,.py,False,False,619,2026-01-22T16:27:45,c9e30ae8f9806703bb55f71227829acf9ea3d43f,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_buffer.py,.py,False,False,6769,2026-01-22T16:27:45,be023c2137e756e655691858579d10a1124137e6,Test Buffer Point/Line/Polygon with and without single_sided params,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_cga.py,.py,False,False,1560,2026-01-22T16:27:45,867afa3f59324d5b27d74350450dc81e5745c962,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_clip_by_rect.py,.py,False,False,4156,2026-01-22T16:27:45,a4330f89ba488a9f693e007bdcf89aeea508ed8b,Tests for GEOSClipByRect based on unit tests from libgeos.,projection
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_create_inconsistent_dimensionality.py,.py,False,False,10889,2026-01-22T16:27:45,9bf1ee456792ca6ae3ea8f0e4fd04de532bb420b,"When a ""context"" passed to shape/asShape has a coordinate",
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_delaunay.py,.py,False,False,870,2026-01-22T16:27:45,4919e82e3ac49ad33bef76a4f6b73285ddf9ad5b,Only testing the number of triangles and their type here.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_empty_polygons.py,.py,False,False,705,2026-01-22T16:27:45,413bd0db84129c90feb7a803df4e01a1b8e20a7e,No constructor arg makes an empty polygon geometry.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_equality.py,.py,False,False,771,2026-01-22T16:27:45,5ca3e6e2fc9b2ccbbaf4c81fc1e4c969be368924,test polygons,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_geointerface.py,.py,False,False,3766,2026-01-22T16:27:45,d6767654c6c48e3e0e89c8ed198c4d9ac4a3c345,Convert a dictionary,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_invalid_geometries.py,.py,False,False,917,2026-01-22T16:27:45,e682944f293fdaa5097317c51e25d8c1f729ea0e,Test recovery from operation on invalid geometries,geom
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_linear_referencing.py,.py,False,False,2986,2026-01-22T16:27:45,9bca68fff5f17948b9c4d6eeb2fa4d98bbc70bab,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_linemerge.py,.py,False,False,1372,2026-01-22T16:27:45,1cf7a1d91b657b7431184b370c65e22905a3d717,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_locale.py,.py,False,False,1488,2026-01-22T16:27:45,ef0a6a1945764567dbd51e718a45c801a679ee5a,Test locale independence of WKT,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_make_valid.py,.py,False,False,494,2026-01-22T16:27:45,2171961f25bb96de2f57d1151b2841b670ab0dd2,from shapely.geometry import Polygon,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_mapping.py,.py,False,False,409,2026-01-22T16:27:45,f167f38bbdc3d1c49d06168e4653b1f9ab7c3425,Empty polygons will round trip without error,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_minimum_clearance.py,.py,False,False,724,2026-01-22T16:27:45,cad8dd9f190cb27d6a36aa2ec08f3fc7f53ef146,Tests for the minimum clearance property.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_ndarrays.py,.py,False,False,1286,2026-01-22T16:27:45,be257b3598cc7a34b26441743b3d8f52e5669aeb,Tests of support for Numpy ndarrays. See,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_nearest.py,.py,False,False,494,2026-01-22T16:27:45,d10e4d7d37c90601ff48fde2594f63cb0363c1a3,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_operations.py,.py,False,False,4431,2026-01-22T16:27:45,b01701f2696cc7cbaffa591128b082f4c2d6874a,General geometry,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_operators.py,.py,False,False,2008,2026-01-22T16:27:45,79653b7bd54b7c06ecb3383447cf1acef0a76b55,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_orient.py,.py,False,False,3607,2026-01-22T16:27:45,e16941b6f3ed65f953752f4f324f337fe3abdf8a,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_parallel_offset.py,.py,False,False,2392,2026-01-22T16:27:45,4c064ec4a633eb91c729224084141a58f659eacf,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_persist.py,.py,False,False,1758,2026-01-22T16:27:45,1e4ec861158d0a1bccf48839fcffc89cb6f710c7,Persistence tests,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_pickle.py,.py,True,True,2449,2026-01-22T16:27:45,7d931ce3177fa48614b7e6627e0716c1c1d59c11,import pathlib,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_polygonize.py,.py,False,False,1431,2026-01-22T16:27:45,9936c2813e987bb8dc3f6241aeb7a18758103651,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_polylabel.py,.py,False,False,3228,2026-01-22T16:27:45,f3a4cdf013af3bb9b4c72635d390f35927eddf7f,Finds pole of inaccessibility for a polygon with a tolerance of 10,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_predicates.py,.py,False,False,3053,2026-01-22T16:27:45,167988f76f4a4cad07028654c10ad8633a8a3a54,Test GEOS predicates,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_prepared.py,.py,False,False,2541,2026-01-22T16:27:45,0e81fa847933c9d87247d8020fb1ab2fb2747e9b,import numpy as np,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_products_z.py,.py,False,False,401,2026-01-22T16:27:45,bd65380b08726966091cd3bc5e74aed0f96f8a1e,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_shape.py,.py,False,False,1872,2026-01-22T16:27:45,67ca03728e8db5cf7538a5afb5f60406f34decd6,import pytest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_shared_paths.py,.py,False,False,1479,2026-01-22T16:27:45,2bff92dc391eaac219a42227eba67594ab1cefa9,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_singularity.py,.py,False,False,396,2026-01-22T16:27:45,a7cd6a6ab5a53f2c913dff5dec36325e4ccf988f,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_snap.py,.py,False,False,787,2026-01-22T16:27:45,6442eab3e39e5ecede4904ac66882102f42a02de,input geometries,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_split.py,.py,False,False,11616,2026-01-22T16:27:45,937847fec64fd0053bdbfd5d68b87177e2650ef6,helper class for testing below,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_substring.py,.py,False,False,21382,2026-01-22T16:27:45,56a57864bfaeae46207c6dbc1aa512b02f43290c,import json,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_svg.py,.py,False,False,8466,2026-01-22T16:27:45,fde3725ed3645ea87357758ddaccdce0567dab8a,Helper function to check XML and debug SVG,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_transform.py,.py,False,False,2785,2026-01-22T16:27:45,0e5b5e3a61ffab704f34ecd772a97ab6b9e93293,New geometry/coordseq method 'xy' makes numpy interop easier,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_union.py,.py,False,False,2160,2026-01-22T16:27:45,e1d22165f9307f6e474dd79f2f20d93214c01973,Returns an iterator over an infinite Halton sequence,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_validation.py,.py,False,False,247,2026-01-22T16:27:45,825eb6a769c70e06cd51d5777e74a5558aa8e70e,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_vectorized.py,.py,False,False,3831,2026-01-22T16:27:45,7dbc56591df50c68d76006fe8cff077a41e0126c,import unittest,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_voronoi_diagram.py,.py,False,False,4209,2026-01-22T16:27:45,c262cb7a53bf9992cbad84bcce8b37bcaa713fc5,Test cases for Voronoi Diagram creation.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_wkb.py,.py,False,False,5734,2026-01-22T16:27:45,b73560a909deb7e10fe3531077b7760f7ea56658,Re-pack a hex WKB value to native endianness if needed,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_wkt.py,.py,False,False,1661,2026-01-22T16:27:45,d26827d33a2cd8b8ea2abeffd5cb9769bf325d84,.wkt and wkt.dumps() both do not trim by default.,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/threading_test.py,.py,True,True,1048,2026-01-22T16:27:45,d2bda1b281911c0cd021726ee87bfd002138d59f,un core code,
+cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/__init__.py,.py,False,False,0,2026-01-22T16:27:45,da39a3ee5e6b4b0d3255bfef95601890afd80709,,
+cache/env_open3dis/Lib/site-packages/shapely/vectorized/__init__.py,.py,False,False,2903,2026-01-22T16:27:45,b523fa66f19c43d5d78aae9ed7a1dec2a09d4230,Provides multi-point element-wise operations such as ``contains``.,
+cache/env_open3dis/Lib/site-packages/yaml/composer.py,.py,False,False,4883,2026-01-22T16:27:43,903f37f572599211a49eade39ec1345dfae5522a,Drop the STREAM-START event.,
+cache/env_open3dis/Lib/site-packages/yaml/constructor.py,.py,False,False,28639,2026-01-22T16:27:43,d82940e8897931e824e6fd3538247c1ad6c261cc,Block special attributes/methods from being set in a newly created,
+cache/env_open3dis/Lib/site-packages/yaml/cyaml.py,.py,False,False,3851,2026-01-22T16:27:43,2fda912527187aeec8199a9d540c6b93fc7ce5ee,__all__ = [,
+cache/env_open3dis/Lib/site-packages/yaml/dumper.py,.py,False,False,2837,2026-01-22T16:27:43,7f633e553e24d82f91f77e6414788e83c91f9f72,"__all__ = ['BaseDumper', 'SafeDumper', 'Dumper']",
+cache/env_open3dis/Lib/site-packages/yaml/emitter.py,.py,False,False,43006,2026-01-22T16:27:43,af30ab1e2c46ca3b19491c7ec2704c045fa4eab9,mitter expects events obeying the following grammar:,
+cache/env_open3dis/Lib/site-packages/yaml/error.py,.py,False,False,2533,2026-01-22T16:27:43,0736e2d4acddd01aec18e4d07956fe929ca71ade,"__all__ = ['Mark', 'YAMLError', 'MarkedYAMLError']",
+cache/env_open3dis/Lib/site-packages/yaml/events.py,.py,False,False,2445,2026-01-22T16:27:43,b45a3aa7eb8e3428fe18fa5801accb4c42d1137e,Abstract classes.,
+cache/env_open3dis/Lib/site-packages/yaml/loader.py,.py,False,False,2061,2026-01-22T16:27:43,6bbac69d213e2ae72b157d1906c5dbcb4f04c068,"__all__ = ['BaseLoader', 'FullLoader', 'SafeLoader', 'Loader', 'UnsafeLoader']",
+cache/env_open3dis/Lib/site-packages/yaml/nodes.py,.py,False,False,1440,2026-01-22T16:27:43,1cce0c53a0aa1633ccd99cb925efcb0e6716b27a,"if isinstance(value, list):",
+cache/env_open3dis/Lib/site-packages/yaml/parser.py,.py,False,False,25495,2026-01-22T16:27:43,49dbff769e7e1ccbfc8c4ed0eff2f00582b01216,The following YAML grammar is LL(1) and is parsed by a recursive descent,
+cache/env_open3dis/Lib/site-packages/yaml/reader.py,.py,False,False,6794,2026-01-22T16:27:43,9b10065e9a5ea3b0b117716a7e15fbda23a7787f,This module contains abstractions for the input stream. You don't have to,
+cache/env_open3dis/Lib/site-packages/yaml/representer.py,.py,False,False,14190,2026-01-22T16:27:43,0d65a410db824952e1083591d5b56955b4cc7f0c,"__all__ = ['BaseRepresenter', 'SafeRepresenter', 'Representer',",
+cache/env_open3dis/Lib/site-packages/yaml/resolver.py,.py,False,False,9004,2026-01-22T16:27:43,0570a7c52cd987f93f077e3d5ea3a9d70f8064a5,"__all__ = ['BaseResolver', 'Resolver']",
+cache/env_open3dis/Lib/site-packages/yaml/scanner.py,.py,False,False,51279,2026-01-22T16:27:43,bae8d3fc1cdd891f0215d5ee36df0554cfbfa877,Scanner produces tokens of the following types:,
+cache/env_open3dis/Lib/site-packages/yaml/serializer.py,.py,False,False,4165,2026-01-22T16:27:43,44971ea411745967d430ed1d4bb164bea8f12602,"__all__ = ['Serializer', 'SerializerError']",
+cache/env_open3dis/Lib/site-packages/yaml/tokens.py,.py,False,False,2573,2026-01-22T16:27:43,2f49888d399714a6376d3b9df52cc394263ee6d9,class BOMToken(Token):,
+cache/env_open3dis/Lib/site-packages/yaml/__init__.py,.py,False,False,12311,2026-01-22T16:27:43,9e68e57a05239693c5e55f5549c1b0cea41f4681,Scan a YAML stream and produce scanning tokens.,
+cache/env_open3dis/Lib/site-packages/_yaml/__init__.py,.py,False,False,1402,2026-01-22T16:27:43,059550643cf273e833d67730760f2922000c3e5c,This is a stub package designed to roughly emulate the _yaml,
+legacy/snapshot_20260131_171303/orig/1/scripts/regression_mini.cmd,.cmd,True,,175,2026-01-31T08:35:48,028ce03d9d4611c7b71a7548d42ea0f6919df348,TODO: 在你实现 regression-mini runner 后，把这里替换为实际入口,script
+legacy/snapshot_20260131_171303/orig/1/scripts/run_matrix.cmd,.cmd,True,,157,2026-01-31T08:35:48,05be92ebefec0c2b107f765b6124addaa138e64f,TODO: 在你实现 matrix runner 后，把这里替换为实际入口,run|script
+legacy/snapshot_20260131_171303/orig/1/scripts/run_smoke.py,.py,True,True,1867,2026-01-31T08:35:48,e62148f472b3f7c1d199996331d846468ce5469b,按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。,qa|run|script
+legacy/snapshot_20260131_171303/orig/1/scripts/smoke.cmd,.cmd,True,,480,2026-01-31T08:35:48,b71966921275356217fe0d0f7dd2b4c5e2769306,一键 smoke（分钟级）,qa|script
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/certifi/__main__.py,.py,True,True,243,2026-01-22T16:27:45,f09c4ba5e7ee37ddebe914def9d97152cb5eb856,import argparse,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/_configtool.py,.py,True,True,1046,2026-01-22T16:27:43,d14013c931dc3b1b009164d973ec53e041ab6f90,import argparse,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/f2py/diagnose.py,.py,True,True,5224,2026-01-22T16:27:43,c7e0aa0493904e262cd7303cba6cc9ba0a45658e,!/usr/bin/env python3,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/f2py/f2py2e.py,.py,True,True,29615,2026-01-22T16:27:43,93dc50323c00b9d986c4ecf328e2730e0d9da0b6,f2py2e - Fortran to Python C/API generator. 2nd Edition.,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/f2py/_src_pyf.py,.py,True,True,7942,2026-01-22T16:27:43,73d17859cf9b05ad3c306cfcb15e2b169394d84b,START OF CODE VENDORED FROM `numpy.distutils.from_template`,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/lib/_user_array_impl.py,.py,True,True,8336,2026-01-22T16:27:43,e8f1b507dba4daa4193fd658204ae88c8356f93a,Container class for backward compatibility with NumArray.,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_randomstate.py,.py,True,True,89848,2026-01-22T16:27:43,4549a559ff9730f8d2e0aabada5aa6f2dcebd01c,import hashlib,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/testing/print_coercion_tables.py,.py,True,True,6493,2026-01-22T16:27:43,519f163ef46326848cf599b9782f358f1e378fd0,Prints type-coercion tables for the built-in NumPy types,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/typing/tests/data/pass/lib_user_array.py,.py,True,True,640,2026-01-22T16:27:43,403fceef6730d7295324405f334851e6c5637d6d,"Based on the `if __name__ == ""__main__""` test code in `lib/_user_array_impl.py`.",
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/_core/cversions.py,.py,True,True,360,2026-01-22T16:27:43,28691678f3571b690738194c2486501cef97f946,Simple script to compute the api hash of the current API.,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_argparse.py,.py,True,True,2914,2026-01-22T16:27:43,88a891c0918f7596362a3594da8a1a89b5ec68e8,Tests for the private NumPy argument parsing functionality.,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/numpy/_core/tests/test_cpu_features.py,.py,True,True,16252,2026-01-22T16:27:43,3d8bb2fe7b3f3a7f94f49318d0263e82e4c8f57c,import os,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/pyproj/__main__.py,.py,True,True,6560,2026-01-22T16:27:45,2e6624e66b414c72d9bbc9478a9876b42f54a3cc,This is the main entry point for pyproj CLI,projection
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_pickle.py,.py,True,True,2449,2026-01-22T16:27:45,7d931ce3177fa48614b7e6627e0716c1c1d59c11,import pathlib,
+legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/threading_test.py,.py,True,True,1048,2026-01-22T16:27:45,d2bda1b281911c0cd021726ee87bfd002138d59f,un core code,
+pipeline/autotune.py,.py,True,True,22462,2026-01-17T08:57:03,c0008fab2531f49efd0ef0d1cee8ca560ddbcbcc,from __future__ import annotations,run
+pipeline/build_geom.py,.py,True,True,26038,2026-01-21T22:52:43,eadb3cbc120fedb3780fa6ba20d3a0195df30679,from __future__ import annotations,geom|run
+pipeline/build_index.py,.py,True,True,2560,2026-01-16T09:29:41,908a81f2abf93d8aff0a50b16c042d40719e7590,from __future__ import annotations,run
+pipeline/build_topo.py,.py,True,True,34848,2026-01-17T08:57:03,821f03dd25d187318805039113224a89f58cf595,from __future__ import annotations,topo|run
+pipeline/centerlines_v2.py,.py,False,False,12836,2026-01-21T22:52:43,bad8d0213a083be3d59e9d45cb674ba226ce418d,from __future__ import annotations,run
+pipeline/eval_all.py,.py,True,True,21857,2026-01-21T22:52:43,ce20405822c88ed94beea385426a4b9a8a713e57,from __future__ import annotations,run
+pipeline/index_cache.py,.py,False,False,995,2026-01-16T09:29:41,5cd331c889c113317fb014ffea83f001b5f483cd,from __future__ import annotations,run
+pipeline/intersection_shape.py,.py,False,False,11942,2026-01-21T22:52:43,d75a1d259555e82423cf70ba18452f13c2562efc,from __future__ import annotations,run
+pipeline/registry.py,.py,False,False,1820,2026-01-16T09:29:41,19bce02ab365486cc221f896778b0574cafc9a29,from __future__ import annotations,run
+pipeline/sat_intersections.py,.py,False,False,7179,2026-01-21T22:52:43,35c45ce955946b9cf9507afd3901b114479dd952,from __future__ import annotations,sat|run
+pipeline/sim_metrics.py,.py,False,False,2258,2026-01-16T09:29:41,fec12a5569b65ccc0722a139a0de5379fd6ff2f8,from __future__ import annotations,run
+pipeline/smoke.py,.py,True,True,776,2026-01-16T09:29:41,cc6c129a5c8fa7b63fea2c7b71a4da5865a8f880,from __future__ import annotations,qa|run
+pipeline/surrogate_check.py,.py,True,True,4732,2026-01-16T09:29:41,d3c54771442945ebf8c4a4c8721258d61d4ff2b3,from __future__ import annotations,qa|run
+pipeline/_io.py,.py,False,False,631,2026-01-16T09:29:41,d821f16a389a93eeebf7c0bb81c87228691e4ae6,from __future__ import annotations,run
+pipeline/_report.py,.py,False,False,833,2026-01-16T09:29:41,f014a703e38aa418d25a4ae260ee62f56138e0c5,from __future__ import annotations,qa|run
+pipeline/__init__.py,.py,False,False,16,2026-01-16T09:29:41,057db773a8d9c186e758715845c581836c08d00e,__all__ = [],run
+pipeline/adapters/kitti360_adapter.py,.py,False,False,4764,2026-01-16T09:29:41,95340eba2597802017cb6934591d42c4f3483030,优先顺序：extract > oxts > poses,run
+pipeline/adapters/__init__.py,.py,False,False,16,2026-01-16T09:29:41,057db773a8d9c186e758715845c581836c08d00e,__all__ = [],run
+pipeline/calib/io_kitti360_calib.py,.py,False,False,6128,2026-01-29T00:01:09,8a966563dea981f7d9aa5643fc0affa34e44488d,from __future__ import annotations,run
+pipeline/calib/kitti360_backproject.py,.py,False,False,7407,2026-01-30T17:34:19,c242de8fe3170ef4ddcedfc8b62b6d90bc189284,from __future__ import annotations,projection|run
+pipeline/calib/kitti360_projection.py,.py,False,False,5371,2026-01-29T00:10:53,4a89e66c6b7a45bc7d56aea463d7097e0197e18e,from __future__ import annotations,projection|run
+pipeline/calib/kitti360_world.py,.py,False,False,4814,2026-01-30T18:56:11,b9140d688a78ece600d8201fe38649c3efb9aa15,from __future__ import annotations,run
+pipeline/calib/proj_sanity.py,.py,False,False,1768,2026-01-29T00:13:55,d95d6195d360cfa230c36efbdb86505551744f5e,from __future__ import annotations,projection|run
+pipeline/datasets/kitti360_io.py,.py,False,False,10203,2026-01-30T06:07:27,6e3a6337d85c18f6dceda1ced551607274b79584,from __future__ import annotations,run
+pipeline/datasets/__init__.py,.py,False,False,35,2026-01-22T10:42:37,d0798f0c54aaac4c8e1e8cc68186d0e24996d1a1,from __future__ import annotations,run
+pipeline/evidence/image_feature_provider.py,.py,False,False,3902,2026-01-21T22:52:43,d9da76ce2231f902a01a9a18208607668b7220e3,from __future__ import annotations,image|run
+pipeline/evidence/image_providers.py,.py,False,False,35714,2026-01-22T09:27:27,eccbfbb5f494a847e540f6aa3bad115307aa5e9a,from __future__ import annotations,image|run
+pipeline/evidence/image_provider_registry.py,.py,False,False,834,2026-01-21T23:41:02,b98d9e464481779d365edbe38cc045d837aa72e6,from __future__ import annotations,image|run
+pipeline/evidence/lidar_providers.py,.py,False,False,9783,2026-01-22T17:42:50,31a978d0b410b1ed5fb40c29b46cb3cae115c9bb,from __future__ import annotations,lidar|run
+pipeline/evidence/lidar_provider_registry.py,.py,False,False,448,2026-01-22T15:34:06,f2843692ced7f08d39a24d79c6eff62554ee81a1,from __future__ import annotations,lidar|run
+pipeline/evidence/registry.py,.py,False,False,1996,2026-01-26T12:43:08,697bcb5c25eb5dc3b4f9726b8c7bcc725dbd3e91,from __future__ import annotations,run
+pipeline/evidence/schema.py,.py,False,False,5051,2026-01-26T12:42:55,8ddc15307e43cdeceda1c48e8741ed4b19bf473f,from __future__ import annotations,run
+pipeline/evidence/__init__.py,.py,False,False,736,2026-01-26T13:15:55,45295babae82142ab337865e2b67a980572eca93,from __future__ import annotations,run
+pipeline/fusion/track_verify.py,.py,False,False,22721,2026-01-26T12:59:59,0f08bb4669788e1a500646d685b10c4bd0c5dd82,from __future__ import annotations,run
+pipeline/fusion/__init__.py,.py,False,False,13,2026-01-26T12:43:39,5a5bd317876bdc969dda2d39a9a7984b830dfaec,__all__ = [],run
+pipeline/lidar_semantic/accum_points_world.py,.py,False,False,6441,2026-01-30T06:07:55,9c89f4b059ceea9d4cd8d5df15646d156cb13490,from __future__ import annotations,lidar|run
+pipeline/lidar_semantic/build_rasters.py,.py,False,False,4997,2026-01-28T03:29:16,e22f4653f0bfe5966256e0ae892c302315ef5883,from __future__ import annotations,lidar|run
+pipeline/lidar_semantic/build_roi_corridor.py,.py,False,False,1962,2026-01-27T23:43:19,b22f6db897a44324fb3c6b378d07d2eb4e68c06b,from __future__ import annotations,lidar|run
+pipeline/lidar_semantic/classify_road.py,.py,False,False,3453,2026-01-28T03:29:24,6ce4561c0df161a2b20e2fd8dab0a964f0539b03,from __future__ import annotations,lidar|run
+pipeline/lidar_semantic/detect_crosswalk.py,.py,False,False,3021,2026-01-28T01:07:22,835442e9dee4e147ce54b3d07c4e4caebcbaad9e,from __future__ import annotations,crosswalk|lidar|run
+pipeline/lidar_semantic/export_pointcloud.py,.py,False,False,5775,2026-01-28T08:20:45,114fe102ed9859d5e6344ddc2b70d49599c2b0f8,inimal GeoKeyDirectoryTag with EPSG projected CS.,lidar|run
+pipeline/lidar_semantic/extract_markings.py,.py,False,False,4940,2026-01-28T00:02:33,0bb52e1ed25c5d816f7d8d27e8a89c8236cb234b,from __future__ import annotations,lidar|run
+pipeline/lidar_semantic/__init__.py,.py,False,False,50,2026-01-27T23:43:03,8262e29f1799d06b5eaf5ce2b0774c2bef2130ed,from __future__ import annotations,lidar|run
+pipeline/nn/model_registry.py,.py,False,False,4191,2026-01-21T22:13:47,bddfd9a710d0b6d1b3d2b2b6a75d79ef80d774de,from __future__ import annotations,run
+pipeline/nn/__init__.py,.py,False,False,31,2026-01-21T22:13:47,e8b55520f9ad130b3e6680c47ef394112cdafe5b,Neural model utilities.,run
+pipeline/post/fill_holes.py,.py,False,False,2619,2026-01-27T22:38:04,6819b509b0eb88a5da75c0da8b383cefeebc687c,from __future__ import annotations,run
+pipeline/post/morph_close.py,.py,False,False,2524,2026-01-27T22:58:36,539894f8b0d67986e057bd4f9937cf93bacbdb21,使用buffer等价实现closing：buffer(+r)再buffer(-r)。,run
+pipeline/projection/projector.py,.py,False,False,10371,2026-01-29T00:10:38,d6cb21a32b8e624c98ade6ee714cf225924d83f2,from __future__ import annotations,projection|run
+pipeline/projection/__init__.py,.py,False,False,13,2026-01-26T12:43:36,5a5bd317876bdc969dda2d39a9a7984b830dfaec,__all__ = [],projection|run
+pipeline/qa/lidar_semantic_report.py,.py,False,False,2406,2026-01-27T23:47:04,532d40a33a305d41541b9beb4e01d94bb247b50b,from __future__ import annotations,lidar|qa|run
+pipeline/utils/config_resolve.py,.py,False,False,4356,2026-01-28T06:44:22,68c50297ce85937f16797d2570649c7154cc58c2,from __future__ import annotations,run
+pipeline/utils/postcheck.py,.py,False,False,1928,2026-01-28T06:40:43,7da8d3bfbd608a6077811fb5fb1f1d679464d415,from __future__ import annotations,qa|run
+pipeline/utils/__init__.py,.py,False,False,13,2026-01-28T06:40:04,5a5bd317876bdc969dda2d39a9a7984b830dfaec,__all__ = [],run
+scripts/autotune.cmd,.cmd,True,,173,2026-01-16T09:29:41,c8da2d07b94d0f4c386cb51fb4e53d49024b9427,@echo off,script
+scripts/auto_select_basemodel.cmd,.cmd,True,,189,2026-01-21T22:52:43,705f9e5a22a88856a48c3db40a89afc4a79137dc,@echo off,script
+scripts/build_geom.cmd,.cmd,True,,297,2026-01-21T22:52:43,bd14d18fe5deb3f6d044dbbeef616d106d2cf6be,@echo off,geom|script
+scripts/build_topo.cmd,.cmd,True,,175,2026-01-17T08:57:03,6da487c223d3bdce6fe2774b38b0b455500a0464,@echo off,topo|script
+scripts/centerlines_v2.cmd,.cmd,True,,577,2026-01-21T22:52:43,e60a845e92c7d5452e9a55a618b58b408a953b56,@echo off,script
+scripts/download_dop20.cmd,.cmd,True,,875,2026-01-21T22:52:43,da7c9c9b67c36f6fc3c83a98c948550d5e13bbd3,@echo off,sat|download|script
+scripts/download_osm.cmd,.cmd,True,,200,2026-01-21T22:13:47,c8f27bbd8fbda74b50231da88418051cf834c3b4,Download OSM for current experiment area (auto-discover latest WGS84 polygon).,osm|download|script
+scripts/eval.cmd,.cmd,True,,1808,2026-01-17T08:57:03,60919b1bbca4bc64ac70cfe2fcc4500a75a947bb,Defaults,script
+scripts/image_features.cmd,.cmd,True,,206,2026-01-21T22:52:43,027b048184f3803319994620b70aed76e29819aa,@echo off,image|script
+scripts/index.cmd,.cmd,True,,846,2026-01-16T09:29:41,46fd465596c27731aadd53fa8c3614232b8013ff,Usage:,script
+scripts/intersections_hybrid.cmd,.cmd,True,,352,2026-01-21T22:52:43,2d969f771b44a67c4b4802d357e8e506c8eee521,usage:,script
+scripts/intersections_v2.cmd,.cmd,True,,351,2026-01-21T22:52:43,97e3b29165212879e4a2b34b0cb343ec7cd4738d,usage:,script
+scripts/make_aoi.cmd,.cmd,True,,215,2026-01-21T22:13:47,2014db4839065177fd0484ed2b79949203068845,@echo off,script
+scripts/make_baseline_all.cmd,.cmd,True,,996,2026-01-21T22:13:47,7050fbf3a4c6f91ef83dec4a7aac92fbd621555b,@echo off,script
+scripts/make_geom_baseline.cmd,.cmd,True,,801,2026-01-21T22:13:47,b66023da0ff94bc869696d9ba503c9a32d53bb6e,@echo off,geom|script
+scripts/make_topo_baseline.cmd,.cmd,True,,253,2026-01-21T22:13:47,c8188f11b2ea123f8ed340bc6ba3021d896afd50,@echo off,topo|script
+scripts/pipeline_common.py,.py,True,True,4034,2026-01-26T23:12:34,aa7f2ba97b86b16953879f0b6e69e9ce541aa3f3,from __future__ import annotations,run|script
+scripts/precommit_check.cmd,.cmd,True,,3262,2026-01-26T15:42:33,0e9fd60c83b8cd121d0715b5d545579434de1f10,@echo off,qa|script
+scripts/regress_ablation.cmd,.cmd,True,,7667,2026-01-21T22:13:47,3bd9eff972e7bc7633d6e66f3941196e73537c30,@echo off,script
+scripts/regress_evidence_arms.cmd,.cmd,True,,11937,2026-01-21T22:13:47,4c0b00677f51c239f68939d5b288a88227d38017,@echo off,script
+scripts/regress_geom.cmd,.cmd,True,,7833,2026-01-21T22:13:47,ee9154e60289f7160745aabe21d1ffca351e5b37,@echo off,geom|script
+scripts/regress_topo.cmd,.cmd,True,,9668,2026-01-21T22:13:47,a2b70054f80f653604fab9f929f2681d904e5e64,@echo off,topo|script
+scripts/run_ab_eval.cmd,.cmd,True,,283,2026-01-21T23:54:10,28bebd0d2491447910d9b1f0f8d678ab009ec573,@echo off,run|script
+scripts/run_backproject_cycle_gate_0010_frame290.cmd,.cmd,True,,215,2026-01-30T16:22:40,7184f1b3eddc89b5d10f1eeb77cdbbe4326197e2,@echo off,projection|run|script
+scripts/run_backproject_cycle_gate_0010_frame290.py,.py,True,True,12511,2026-01-30T16:29:03,40be6b889e2dd692134a02f8e33a1338eebbdc00,from __future__ import annotations,projection|run|script
+scripts/run_backproject_debug_f290.cmd,.cmd,True,,201,2026-01-30T16:53:32,41491ccc3ab694dff45315df90565dac416984dc,@echo off,projection|run|debug|script
+scripts/run_backproject_debug_f290.py,.py,True,True,19006,2026-01-30T16:53:51,ef960dcbab24ec65f015ba5acce602fe7473e03a,from __future__ import annotations,projection|run|debug|script
+scripts/run_crosswalk_autotune_0010_250_500.cmd,.cmd,True,,215,2026-01-25T14:24:03,96d2f90d3dc3dceb648b033bf4a5884edacec315,@echo off,crosswalk|run|script
+scripts/run_crosswalk_autotune_0010_280_300.cmd,.cmd,True,,736,2026-01-25T19:15:55,a183ee6b110ed232292f7c94691a4fb859708145,@echo off,crosswalk|run|script
+scripts/run_crosswalk_drive_full.cmd,.cmd,True,,1337,2026-01-24T08:18:24,60989e808881dbe6b61c537ad8354f1dcac944b7,@echo off,crosswalk|run|script
+scripts/run_crosswalk_fix_range.cmd,.cmd,True,,1822,2026-01-24T09:22:08,10d4f0d083b40d5bab93136cfcbd1064e34e6bc8,@echo off,crosswalk|run|script
+scripts/run_crosswalk_from_markings_0010.cmd,.cmd,True,,262,2026-01-28T09:24:53,8af03e0772c7a934242b1e35577af5c5cdd4dde9,@echo off,crosswalk|run|script
+scripts/run_crosswalk_from_markings_0010.py,.py,True,True,17946,2026-01-28T09:25:37,6d602f24dff1c75fcb9d6f50e06a4126210f80e6,from __future__ import annotations,crosswalk|run|script
+scripts/run_crosswalk_from_raw_intensity_0010_f280_300.cmd,.cmd,True,,276,2026-01-30T10:49:37,fd5978fbfc4ab73a1582bc92eca1632e51a2c0fe,@echo off,crosswalk|run|script
+scripts/run_crosswalk_from_raw_intensity_0010_f280_300.py,.py,True,True,31659,2026-01-30T10:50:45,723e970c966b4c0eaad73b4c6d91fa9e5d56b49d,﻿,crosswalk|run|script
+scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.cmd,.cmd,True,,280,2026-01-30T11:15:26,00201735ecaca67ab184608dca5ffe1531dd3a89,@echo off,crosswalk|run|script
+scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.py,.py,True,True,36818,2026-01-30T11:15:08,c2e0389e205c01f8940b31b9526d03507d4eb219,﻿,crosswalk|run|script
+scripts/run_crosswalk_full.cmd,.cmd,True,,2066,2026-01-23T17:16:51,10186e0ec23de3d32670be26c0fc26897b19353a,@echo off,crosswalk|run|script
+scripts/run_crosswalk_golden8_full.cmd,.cmd,True,,517,2026-01-26T07:12:00,7d0d6f8f2601b95cd04e557bf8f39da1543991e0,@echo off,crosswalk|run|script
+scripts/run_crosswalk_intensity_ablation_0010_f280_300.cmd,.cmd,True,,276,2026-01-30T10:01:45,da93993d11de5088d65664156d7df5f8e8b870f5,@echo off,crosswalk|run|script
+scripts/run_crosswalk_intensity_ablation_0010_f280_300.py,.py,True,True,35437,2026-01-30T10:22:35,d1298d8ff911efdf98975a0535a9224fd3b4654a,﻿,crosswalk|run|script
+scripts/run_crosswalk_monitor.cmd,.cmd,True,,1783,2026-01-23T20:14:50,7a798c97e0647af81654f3aaaa1643c7177582ca,@echo off,crosswalk|run|script
+scripts/run_crosswalk_monitor_drive.cmd,.cmd,True,,1131,2026-01-23T20:47:06,0d96b757774fbc03c62a170ad28474aa462da81e,﻿@echo off,crosswalk|run|script
+scripts/run_crosswalk_precision_filter_0010_000_300.cmd,.cmd,True,,111,2026-01-31T11:29:36,4a7d9ce3bb5c574c7bc2e581b54c7e1071b5fbdf,@echo off,crosswalk|run|script
+scripts/run_crosswalk_precision_filter_0010_000_300.py,.py,True,True,21254,2026-01-31T11:30:16,e42c8e31be128b12c5a8c522fffcd10be6114982,from __future__ import annotations,crosswalk|run|script
+scripts/run_crosswalk_refine2_range.cmd,.cmd,True,,1959,2026-01-24T13:03:44,944308f89b4f7f6851f1581173183bea3256b82f,@echo off,crosswalk|run|script
+scripts/run_crosswalk_refine_range.cmd,.cmd,True,,1949,2026-01-24T11:52:27,299bebcdfd4889d1679c831bdb7cb5c63104f0dd,@echo off,crosswalk|run|script
+scripts/run_crosswalk_stage2_sam2video.cmd,.cmd,True,,1955,2026-01-24T14:54:01,9460fe71e4a6fb40859a8442b4dbe3c3a0d6ec94,@echo off,crosswalk|run|script
+scripts/run_crosswalk_strict_250_500.cmd,.cmd,True,,1953,2026-01-25T17:07:04,9a52021bf72ac74670425fabd0fbd7de6f15f203,@echo off,crosswalk|run|script
+scripts/run_dop20_merge_golden8.cmd,.cmd,True,,411,2026-01-27T23:42:26,e6fa0544aee2831c00ddc16ca25cea0cd44c085a,@echo off,sat|run|script
+scripts/run_dop20_merge_golden8.py,.py,True,True,5816,2026-01-27T23:42:19,2a4e5af7763fb85c514554b12ab522ad3739eac1,from __future__ import annotations,sat|run|script
+scripts/run_dop20_road_surface.cmd,.cmd,True,,252,2026-01-26T23:33:21,132717c1f09127d3d2fcbed338bd892901e3152e,@echo off,sat|run|script
+scripts/run_dop20_road_surface.py,.py,True,True,43212,2026-01-28T06:22:16,91d22a0248787c4d1c2b6c95e7a7ecd60f9ecb04,from __future__ import annotations,sat|run|script
+scripts/run_dop20_tune010.cmd,.cmd,True,,247,2026-01-27T22:15:03,39f185e060d3c4ff336b4b66a2b9e69d32eaa664,@echo off,sat|run|script
+scripts/run_dop20_tune010.py,.py,True,True,50830,2026-01-27T23:10:03,cebcf11540fbf7c9ad7447c3aaf9bfd031ff9932,﻿from __future__ import annotations,sat|run|script
+scripts/run_failpack_summary.cmd,.cmd,True,,956,2026-01-25T18:24:36,0aa05bdace501978753508de2257c21750a5db61,@echo off,qa|run|script
+scripts/run_ground_pose_audit_0010_f250_500.cmd,.cmd,True,,265,2026-01-30T00:01:19,6e02a93ffdebe6fe7d348419f7a484ce527bb2f5,@echo off,run|script
+scripts/run_ground_pose_audit_0010_f250_500.py,.py,True,True,20985,2026-01-30T06:13:26,a9278bdd1ee223e252ad4a4f512cd4f0f9de0805,from __future__ import annotations,run|script
+scripts/run_image_crosswalk_0010_f250_500.cmd,.cmd,True,,1960,2026-01-30T12:31:03,42e8676cdd2b3593c7883cada37c8a294409cb5f,@echo off,crosswalk|image|run|script
+scripts/run_image_crosswalk_proj_regression_0010_f250_500.cmd,.cmd,True,,280,2026-01-30T12:32:55,2b0bab623bb35eb4ef8cb9a5425e9233bd1ec7db,@echo off,projection|crosswalk|image|run|script
+scripts/run_image_crosswalk_proj_regression_0010_f250_500.py,.py,True,True,12131,2026-01-30T12:35:19,5f27cadc2f8549b7ac1d12631a3afa58f3f91891,from __future__ import annotations,projection|crosswalk|image|run|script
+scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.cmd,.cmd,True,,280,2026-01-30T13:17:10,4a2e40d8319751fc717f8f04f292c963a6315eef,@echo off,projection|crosswalk|image|run|script
+scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.py,.py,True,True,27663,2026-01-30T19:53:55,d2c47b9879cc6e22599ab089bfed60134e970e7b,from __future__ import annotations,projection|crosswalk|image|run|script
+scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.cmd,.cmd,True,,224,2026-01-31T11:53:59,cf443e315a013f9e370916d2d3b7809a19a19fe3,@echo off,crosswalk|image|run|script
+scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.py,.py,True,True,37596,2026-01-31T12:52:41,751fc1c589d1ce24f371336fb79a119f6afeb5cb,﻿from __future__ import annotations,crosswalk|image|run|script
+scripts/run_image_crosswalk_to_world_0010_f000_500.cmd,.cmd,True,,297,2026-01-30T22:19:14,c5f40b53560e117c14d306991a149c7fb3cf7a41,@echo off,crosswalk|image|run|script
+scripts/run_image_crosswalk_to_world_0010_f000_500.py,.py,True,True,13872,2026-01-30T22:51:33,8d6620d19129de6efe23c9eda19579824e1351d9,from __future__ import annotations,crosswalk|image|run|script
+scripts/run_image_crosswalk_to_world_golden8_auto.cmd,.cmd,True,,295,2026-01-31T00:28:35,4c2bb0f314a8a6aa476d5a21fcaee655aedaa35d,@echo off,crosswalk|image|run|script
+scripts/run_image_crosswalk_to_world_golden8_auto.py,.py,True,True,26158,2026-01-31T03:08:03,1bf61a1f9aef881b4dfa53557430d957d2e9d930,﻿from __future__ import annotations,crosswalk|image|run|script
+scripts/run_image_map_pipeline.cmd,.cmd,True,,1639,2026-01-22T11:47:16,fdadc6e296c06e0b93be8ecaee3bb1e0922f88d0,@echo off,image|run|script
+scripts/run_image_providers.cmd,.cmd,True,,611,2026-01-22T00:23:01,122a7467d6fc13900c971497f7b3c576ebfd41d8,@echo off,image|run|script
+scripts/run_image_stage12_crosswalk_0010_f000_500.py,.py,True,True,33943,2026-01-30T22:58:55,f034ae3597c63cbc5e4489a62de83b2fc9429dda,from __future__ import annotations,crosswalk|image|run|script
+scripts/run_image_stage12_crosswalk_0010_f250_500.cmd,.cmd,True,,295,2026-01-30T15:29:18,a0039f4a5d80a7d1f5b9468d1b968349ad5ddc04,@echo off,crosswalk|image|run|script
+scripts/run_image_stage12_crosswalk_0010_f250_500.py,.py,True,True,24397,2026-01-30T15:32:30,638dbbf27177451de54fe453d0d6d1fddc5f21a9,from __future__ import annotations,crosswalk|image|run|script
+scripts/run_image_stage12_ensemble_gdino_yoloworld_0010_f000_300.cmd,.cmd,True,,217,2026-01-31T09:23:32,2fd37fb618d2d34d93dcc4e2d885ecaa5c459a29,@echo off,image|run|script
+scripts/run_image_stage12_ensemble_gdino_yoloworld_0010_f000_300.py,.py,True,True,64969,2026-01-31T10:14:30,99d5dbadc9e8bcacf45c1f2e52a9ff4df473f898,﻿from __future__ import annotations,image|run|script
+scripts/run_image_stage12_sparse_seed_0010_f000_500.cmd,.cmd,True,,300,2026-01-30T23:22:36,ca2d60500c5afbb367aae9039a5c68ec7cc8dda2,@echo off,image|run|script
+scripts/run_image_stage12_sparse_seed_0010_f000_500.py,.py,True,True,42307,2026-01-31T00:24:14,851128ffd09a151458bdfdfadcd370662647d5cb,﻿from __future__ import annotations,image|run|script
+scripts/run_image_stage12_stride5_to_world_0010_f000_500.cmd,.cmd,True,,310,2026-01-30T23:45:04,9a99c4186ea9403208247737ee6a1b1bd66f828b,@echo off,image|run|script
+scripts/run_image_stage12_stride5_to_world_0010_f000_500.py,.py,True,True,17467,2026-01-31T00:11:50,c00a15b9e11b46f052c59d6593ce9d7acdf4aeb1,﻿from __future__ import annotations,image|run|script
+scripts/run_intensity_bev_clean_0010.cmd,.cmd,True,,258,2026-01-30T08:56:34,16522fb1a2ed693fcdc8d523c78bfa7016f02235,@echo off,run|script
+scripts/run_intensity_bev_clean_0010.py,.py,True,True,17440,2026-01-30T09:02:12,e9682e27dbfbbe8580fd8915e7620aad34324aea,from __future__ import annotations,run|script
+scripts/run_intensity_extract_0010_f280_300.py,.py,True,True,25413,2026-01-29T22:49:10,9d6c18bbac9d2075f022a1bfe597a13a298c5dfd,from __future__ import annotations,run|script
+scripts/run_intensity_roi_verify_0010_truth.cmd,.cmd,True,,265,2026-01-30T09:19:57,c73691ad5dad426cc355d2e46919d232b80a5862,@echo off,run|script
+scripts/run_intensity_roi_verify_0010_truth.py,.py,True,True,29160,2026-01-30T09:22:44,6fbaf5e9d41b366e4e74a8ebc70333ab1920f8b2,from __future__ import annotations,run|script
+scripts/run_lidar_clip_truthbuf10_0010_f280_300.cmd,.cmd,True,,269,2026-01-30T09:28:41,218a65a6eaca48bd67b0cfc746d34a95067dd256,@echo off,lidar|run|script
+scripts/run_lidar_clip_truthbuf10_0010_f280_300.py,.py,True,True,17538,2026-01-30T09:29:07,e25910241febd9eab46c9ce7a38b77211f22ca53,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_crosswalk_proof_0010.cmd,.cmd,True,,260,2026-01-28T10:06:07,34fd333f7d5819af7de41b91549b9e33581ed78c,@echo off,crosswalk|lidar|run|script
+scripts/run_lidar_crosswalk_proof_0010.py,.py,True,True,21056,2026-01-28T10:46:16,de682cf8d6e0e10c2dced62a1b3828a46bb34f48,from __future__ import annotations,crosswalk|lidar|run|script
+scripts/run_lidar_crosswalk_proof_v2_align_0010.cmd,.cmd,True,,269,2026-01-28T15:21:37,a23535207733878d9038a702e8fc97241d8bba4d,@echo off,crosswalk|lidar|run|script
+scripts/run_lidar_crosswalk_proof_v2_align_0010.py,.py,True,True,18109,2026-01-28T15:31:50,6998b756534967179722f2d4b88726e598997f5c,from __future__ import annotations,crosswalk|lidar|run|script
+scripts/run_lidar_extract_best_0010_250_500.cmd,.cmd,True,,253,2026-01-29T06:41:45,359d840e166c12659a1559bb95972f7f06503309,@echo off,lidar|run|script
+scripts/run_lidar_extract_best_0010_250_500.py,.py,True,True,57178,2026-01-30T06:13:09,564305b3e387839eec03474d2ab85c1a9c12963a,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_extract_best_0010_full.cmd,.cmd,True,,288,2026-01-29T00:33:28,2984eae5d00f0303c4ea4a3dd7202ff4b80fd1bf,@echo off,lidar|run|script
+scripts/run_lidar_extract_best_0010_full.py,.py,True,True,33721,2026-01-30T06:11:46,5de1ed3c59235ae5473350792db6fd3c46c847af,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_fuse_0010_f280_300.cmd,.cmd,True,,258,2026-01-29T22:33:19,3efaec692caa3bc61db4754f6bcbb8b6b768adca,@echo off,lidar|run|script
+scripts/run_lidar_fuse_0010_f280_300.py,.py,True,True,14864,2026-01-30T06:08:02,a5e9860f0c4d50527a16ba17cc48426f94d1851a,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_ground_0010_f250_500.cmd,.cmd,True,,260,2026-01-29T23:07:07,c7f277449ae657665bc7c1f6a59636422d99a5a1,@echo off,lidar|run|script
+scripts/run_lidar_ground_0010_f250_500.py,.py,True,True,34063,2026-01-30T08:40:39,9fd7eceff9104e71dbb2cf8cc893c38a3c2e03be,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_intensity_debug_0010.cmd,.cmd,True,,260,2026-01-28T08:21:52,c073ea43b30214afd7f79768183e4df1ab6ea48d,@echo off,lidar|run|debug|script
+scripts/run_lidar_intensity_debug_0010.py,.py,True,True,15585,2026-01-28T08:28:45,e911191164181e8fdb0269119fa1670bff666a2f,from __future__ import annotations,lidar|run|debug|script
+scripts/run_lidar_intensity_verify_0010_f280_300.cmd,.cmd,True,,270,2026-01-29T19:30:03,d1dab477964cfd93cce58f6ef536fe84c1604c44,@echo off,lidar|run|script
+scripts/run_lidar_intensity_verify_0010_f280_300.py,.py,True,True,37046,2026-01-29T21:35:46,993781450d9622078e11c4e9d3bb3ee30bb2a43a,﻿from __future__ import annotations,lidar|run|script
+scripts/run_lidar_pipeline.cmd,.cmd,True,,248,2026-01-26T23:10:31,d71cafd38adcec512942a691651a3d42e33147a0,@echo off,lidar|run|script
+scripts/run_lidar_pipeline.py,.py,True,True,18178,2026-01-26T23:10:46,4653315b6e2fd4f67e088cfa2a35785d9bf826d6,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_providers.cmd,.cmd,True,,596,2026-01-22T15:42:25,afda6b5df36fd6518f07b1333b4ebf7ecee2cbbf,@echo off,lidar|run|script
+scripts/run_lidar_road_surface_0010.cmd,.cmd,True,,257,2026-01-28T16:16:56,021dfe400342ce76245ca22f2dc92141ddc72bf8,@echo off,lidar|run|script
+scripts/run_lidar_road_surface_0010.py,.py,True,True,31959,2026-01-28T23:08:51,93d1a735ea55ba8545d3e8d191191b3537a8b1c5,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_semantic_0010.cmd,.cmd,True,,253,2026-01-28T06:43:07,3cc2a3b3bbaddd481bf69d873496234828023b82,@echo off,lidar|run|script
+scripts/run_lidar_semantic_0010.py,.py,True,True,27364,2026-01-28T06:53:08,4c6fcee14b9d30cbc9be18f327d246350f24bca7,from __future__ import annotations,lidar|run|script
+scripts/run_lidar_semantic_golden8.cmd,.cmd,True,,408,2026-01-27T23:50:02,69321e9625724652990c604f1a3e6783c9a39abf,@echo off,lidar|run|script
+scripts/run_lidar_semantic_golden8.py,.py,True,True,30099,2026-01-27T23:49:54,bdf273c90177eb6a714256bdbb40695c731e0229,from __future__ import annotations,lidar|run|script
+scripts/run_map_features_crosswalk_merge.cmd,.cmd,True,,193,2026-01-31T13:18:32,8eedd7ac8166b981b46d358eef7e6be8f6ab1675,@echo off,crosswalk|run|script
+scripts/run_map_features_crosswalk_merge.py,.py,True,True,22561,2026-01-31T13:26:33,8383bab1ac913b43eb065a485258fa2f826b0a0e,from __future__ import annotations,crosswalk|run|script
+scripts/run_near_final_diagnose.cmd,.cmd,True,,601,2026-01-24T23:24:19,06fb23604425f691afc1f92db867855efb17260c,@echo off,run|script
+scripts/run_open3dis_smoke.cmd,.cmd,True,,652,2026-01-22T15:59:41,d1a28dbe2654e4c20b7179448081be490d91e782,@echo off,qa|run|script
+scripts/run_pose_audit_0010_f250_500.cmd,.cmd,True,,257,2026-01-28T17:38:35,82278e7f2e1f9ab7e671e69153128e982db30e01,@echo off,run|script
+scripts/run_pose_audit_0010_f250_500.py,.py,True,True,49764,2026-01-29T00:11:36,b936853ad80f2e7de7703ca983b829b1eec503bc,from __future__ import annotations,run|script
+scripts/run_proj_patch_0010_frames_250_341_500.cmd,.cmd,True,,267,2026-01-28T22:24:33,7fdc1f242575fe5b58fdefdf140018ba5b0ecec9,@echo off,projection|run|script
+scripts/run_proj_patch_0010_frames_250_341_500.py,.py,True,True,41548,2026-01-29T00:06:15,eee9c0c7c218f1e35b270502587c7b1ad9f6821b,from __future__ import annotations,projection|run|script
+scripts/run_proj_regression_0010.cmd,.cmd,True,,280,2026-01-29T00:07:45,66e971c868606b02294da5f56ad92beb8c51fe9e,@echo off,projection|run|script
+scripts/run_proj_regression_0010.py,.py,True,True,16983,2026-01-29T00:09:12,565079b4ef0c3280332fc101060acebd5456c09e,from __future__ import annotations,projection|run|script
+scripts/run_road_entities.cmd,.cmd,True,,2429,2026-01-23T09:52:03,36b0a994c75c191e1ee69328ea1e46b5e6623489,@echo off,run|script
+scripts/run_roundtrip_report_v2.cmd,.cmd,True,,1004,2026-01-25T18:04:15,241114c8c34bab7a5369c1c862d2f9bd1697e6a9,@echo off,projection|qa|run|script
+scripts/run_sat_pipeline.cmd,.cmd,True,,246,2026-01-26T23:10:35,25283946abe68f8aa7a1c30edd277b179b565419,@echo off,sat|run|script
+scripts/run_sat_pipeline.py,.py,True,True,13831,2026-01-26T23:12:12,4bdc5bd796f56bd9de29546e076f927b94861439,from __future__ import annotations,sat|run|script
+scripts/run_single_frame_proj_audit_0010.cmd,.cmd,True,,261,2026-01-28T22:09:05,53c6d1fffc7810e062ef62fd5b8c71dd0bb86a94,@echo off,projection|run|script
+scripts/run_single_frame_proj_audit_0010.py,.py,True,True,28335,2026-01-28T22:28:59,9c670df2948b43e59b7703ee8564d2d5a699eebc,from __future__ import annotations,projection|run|script
+scripts/run_validation_250_500.cmd,.cmd,True,,2125,2026-01-26T13:12:58,e088edc00eed76686f2e831d357bb2c71561f752,@echo off,run|script
+scripts/run_world_crosswalk_candidates_0010_f000_500.cmd,.cmd,True,,301,2026-01-30T20:40:54,bf54a9ebf642319633cd5f93f510a7e51f05e0fd,@echo off,crosswalk|run|script
+scripts/run_world_crosswalk_candidates_0010_f250_500.cmd,.cmd,True,,301,2026-01-30T15:48:21,b388f9eebf7fb6d0895dfef116fa37feff52ecd3,@echo off,crosswalk|run|script
+scripts/run_world_crosswalk_candidates_0010_f250_500.py,.py,True,True,90339,2026-01-31T08:47:46,e352f21f6e3ac9025c76faaa8e43b68f92a50fa7,from __future__ import annotations,crosswalk|run|script
+scripts/run_world_crosswalk_from_stage2_0010_f000_300.cmd,.cmd,True,,196,2026-01-31T10:52:29,ccc30f6bf140b68299e7d97a9bfdbe4dff7a7e17,@echo off,crosswalk|run|script
+scripts/run_world_crosswalk_from_stage2_0010_f000_300.py,.py,True,True,42548,2026-01-31T11:00:40,555498155dbb8dec15bdbaadcef29b1f45d5d0ac,﻿from __future__ import annotations,crosswalk|run|script
+scripts/run_yoloworld_smoke_0010_qa.cmd,.cmd,True,,156,2026-01-31T09:56:59,5ad305fbf9c70619f18e8a9ba050fe6728b6fb36,@echo off,qa|run|script
+scripts/run_yoloworld_smoke_0010_qa.py,.py,True,True,12916,2026-01-31T10:01:22,83769c15fa1da779e31522a90fa71aaa84a6a9ab,from __future__ import annotations,qa|run|script
+scripts/sat_intersections.cmd,.cmd,True,,385,2026-01-21T22:52:43,91a85ae547a62f3fd4baa785132a282288ddbea9,usage:,sat|script
+scripts/setup.cmd,.cmd,True,,242,2026-01-15T20:39:30,97846cd84e2fab6afb727945d4ff02707bee57af,@echo off,script
+scripts/setup_gdino_weights.cmd,.cmd,True,,172,2026-01-22T08:54:36,29bfc70586316d56c5f9cd4584eee6b8b4434661,@echo off,script
+scripts/setup_open3dis_env.cmd,.cmd,True,,1333,2026-01-22T16:55:02,f0cb34157d3cf82728b323f32366c7a659d46b10,@echo off,script
+scripts/setup_sam3_weights.cmd,.cmd,True,,330,2026-01-22T08:32:41,e5fafc42ea6643a30a3c54d5c5145047cf677310,@echo off,script
+scripts/smoke.cmd,.cmd,True,,158,2026-01-15T20:39:30,57fea0a023ef9d07573688ef75edcd932113bfe3,@echo off,qa|script
+scripts/surrogate_check.cmd,.cmd,True,,180,2026-01-16T09:29:41,fa16ba6e43356b1d3a9b96b62159107e886cd448,@echo off,qa|script
+scripts/sweep_geom_postopt.cmd,.cmd,True,,272,2026-01-21T22:13:47,dada87826c261c141ffb137fdbc8c5caef74b76c,@echo off,geom|script
+scripts/sweep_geom_roadseg.cmd,.cmd,True,,220,2026-01-21T22:13:47,0b8294831bc277ecd90bf665fef4b6a08bbd0cb7,@echo off,geom|script
+scripts/sweep_geom_roadseg_full.cmd,.cmd,True,,183,2026-01-21T22:13:47,6bf4e56b81f12a605bde3e8ecc9c9efa044cb585,@echo off,geom|script
+scripts/__init__.py,.py,True,True,47,2026-01-26T23:06:44,4ad7779e65a3370aebc037e44c3e91a5a4d9813a,Helper package for runnable CLI modules.,script
+tools/ab_eval_image_evidence.py,.py,True,True,15155,2026-01-22T08:56:02,e53dd2b84bc007f131c9f7f0b03b5ab50ea4b76f,from __future__ import annotations,image|tool
+tools/ab_eval_lidar_evidence.py,.py,True,True,17056,2026-01-22T17:07:50,b10d1ba04140d3f6b190afb02be0851581470669,from __future__ import annotations,lidar|tool
+tools/ab_eval_map_evidence.py,.py,True,True,17690,2026-01-22T13:47:40,c219e28ad9b233bbe65c8301518a44dda89c08ee,from __future__ import annotations,tool
+tools/analyze_lidar_traj_alignment.py,.py,True,True,12202,2026-01-24T19:40:30,9e9ebefa670cba382e3600eb523bd166f1c47697,import argparse,lidar|tool
+tools/archive_legacy_entrypoints.py,.py,True,True,17322,2026-01-31T17:09:55,6c145c6d46bcbf2b0922ee3cd365b7af84d480aa,功能：,tool
+tools/audit_intersections_v2_missing.py,.py,True,True,18164,2026-01-21T22:52:43,678fa52c385813241a7e57be25e8e66fd216bf7b,from __future__ import annotations,tool
+tools/audit_road_local_empty_0007.py,.py,True,True,6240,2026-01-21T22:52:43,198ec506f12b314444723e5795d639d10545fbaa,import argparse,tool
+tools/autotune_crosswalk_stage2.py,.py,True,True,17183,2026-01-25T18:58:23,223c96693a5a49e5c00f47817d003ee01a6ba87a,from __future__ import annotations,crosswalk|tool
+tools/auto_select_image_basemodel.py,.py,True,True,10216,2026-01-21T22:52:43,be28b8f54d79f00c91dfd65420280ba905241efa,from __future__ import annotations,image|tool
+tools/build_crosswalk_focus_index.py,.py,True,True,1104,2026-01-23T09:23:13,72d9757dac2b27a24f44ab2c9bdc30a161bde258,from __future__ import annotations,crosswalk|tool
+tools/build_failpack_index.py,.py,True,True,4371,2026-01-25T18:25:28,07f689e602792a5ef6ab2a9c6b7357b21d80764d,from __future__ import annotations,tool
+tools/build_focus_index.py,.py,True,True,2753,2026-01-22T23:36:48,c3c593ae654626c619e9d1ab7e31b918b8cb8355,from __future__ import annotations,tool
+tools/build_golden8_aoi.py,.py,True,True,9479,2026-01-21T22:52:43,d23afc10bb4b6f87c25e22077960a8b26383accc,from __future__ import annotations,tool
+tools/build_image_feature_store.py,.py,True,True,17626,2026-01-21T22:52:43,c330752e6560c8689b19eb9070a129b7b8055a98,from __future__ import annotations,image|tool
+tools/build_image_sample_index.py,.py,True,True,4380,2026-01-21T23:50:18,06834b13aba90b5a3f364a9128cb077ba14c3f24,from __future__ import annotations,image|tool
+tools/build_lidar_sample_index.py,.py,True,True,4338,2026-01-22T15:50:35,8f31baeba49299b6f553e5f336ee9ded78ddd53c,from __future__ import annotations,lidar|tool
+tools/build_road_entities.py,.py,True,True,117164,2026-01-25T11:19:22,4d143be47fed5e36b05732458c20aa69c53bd4de,from __future__ import annotations,tool
+tools/check_alignment_diagnostics.py,.py,True,True,18035,2026-01-24T15:27:48,b5ad2c9f310fa318079ebc4c35b5a6ef31d570a9,import argparse,qa|tool
+tools/check_no_legacy_world_transform.py,.py,True,True,791,2026-01-30T06:13:56,ab6e3ac911323382159ed302e106c684a0131b44,from __future__ import annotations,qa|tool
+tools/check_topo_regress_gate.py,.py,True,True,11921,2026-01-17T12:45:59,6bb22da1d10988bdbdb593383217337402282951,import argparse,topo|qa|tool
+tools/clean_bidi.py,.py,True,True,1136,2026-01-16T09:29:41,d9b6b5f1e749adc1581dd128fa2df6952530f407,典型隐藏/双向控制字符（含 BOM、方向控制、LRM/RLM 等）,tool
+tools/clean_hidden_unicode.py,.py,True,True,1443,2026-01-16T09:29:41,8d00868a99ce255d03f37a9dbbe233077af4555b,from __future__ import annotations,tool
+tools/clean_image_evidence.py,.py,True,True,10009,2026-01-21T22:52:43,0e1a47f8e7eacdcf0d35c28f7ff504d8628356cd,from __future__ import annotations,image|tool
+tools/collect_ablation_report.py,.py,True,True,7877,2026-01-21T22:13:47,8da5c13bba178a96f4ca5d43c861c8acf20ad266,from __future__ import annotations,qa|tool
+tools/collect_evidence_report.py,.py,True,True,6683,2026-01-21T22:13:47,272a103f5d7760b271d907e2eb5e28eb20c4f941,from __future__ import annotations,qa|tool
+tools/collect_geom_regress.py,.py,True,True,6690,2026-01-21T22:13:47,e5e5eed02a574c862fdd538e29a90a3260b29508,from __future__ import annotations,geom|tool
+tools/collect_topo_regress.py,.py,True,True,10055,2026-01-17T12:45:59,7c9cec6efef594f479174bf6de680ceeed8efaed,import argparse,topo|tool
+tools/debug_projection_chain.py,.py,True,True,18178,2026-01-26T12:49:01,874d93abcf9531a148e1522f1bf7c8e39e8a7f8b,import argparse,projection|debug|tool
+tools/debug_worldgeom_frame_binding.py,.py,True,True,16547,2026-01-25T11:32:54,c6f130a1886f9d7dfb502e2434f7eb9ab877f9ce,import argparse,geom|debug|tool
+tools/diagnose_hybrid_sat_usage.py,.py,True,True,13251,2026-01-21T22:52:43,f6053fa33a01549ceb89d5455e42fe57940cd226,from __future__ import annotations,sat|tool
+tools/diagnose_missing_junctions_0007.py,.py,True,True,13692,2026-01-21T22:52:43,e53e68341bf76a54554b6f677135e04c6c509044,import argparse,tool
+tools/dop20_tile_index.py,.py,True,True,3784,2026-01-21T22:13:47,c18cef7a5909958efca4903dc3254070e0090e8e,from __future__ import annotations,sat|tool
+tools/download_dop20_wms.py,.py,True,True,11273,2026-01-21T22:52:43,cc1a6a746a4a1f5fff55330ea1fd8fe0f1a7a5a7,from __future__ import annotations,sat|download|tool
+tools/download_osm.py,.py,True,True,6933,2026-01-21T22:13:47,756c7fdde89e0959532478db69e7b308a4a5bac8,import argparse,osm|download|tool
+tools/download_osm_V2.py,.py,True,True,10907,2026-01-21T22:13:47,4fda6b7de85a93632a0614b31a11f91473eac4e9,功能：,osm|download|tool
+tools/eval_intersections_quality.py,.py,True,True,24711,2026-01-21T22:52:43,087244f026091ed48e8f76c092fba4b481432afe,from __future__ import annotations,tool
+tools/export_feature_store_vectors.py,.py,True,True,3983,2026-01-21T22:52:43,61428eaa2c8656bbbbfe7bc1d1786916f562af2d,from __future__ import annotations,tool
+tools/intersections_hybrid.py,.py,True,True,30451,2026-01-21T22:52:43,4e67e88278c569641892e5f4eb13a16db6804760,from __future__ import annotations,tool
+tools/intersections_v2_runner.py,.py,True,True,109098,2026-01-21T22:52:43,77956612ed522192e06a799aabe5acb01ca25025,from __future__ import annotations,run|tool
+tools/make_aoi_bbox.py,.py,True,True,7188,2026-01-21T22:13:47,9eb3e6bcc5fa7abbaa5af1635e3065c24a035c8d,import argparse,tool
+tools/make_mock_model_outputs.py,.py,True,True,2970,2026-01-21T22:52:43,6772e776f6ab1b585bb4fd110ba9737b690565bc,from __future__ import annotations,tool
+tools/make_qgis_package.py,.py,True,True,4704,2026-01-21T22:13:47,6ca5e950cd89067a0d43f07fec7e9f3696ae6e5f,from __future__ import annotations,tool
+tools/merge_geom_outputs.py,.py,True,True,2734,2026-01-21T22:52:43,555f8a82bd28ae1d72384bec7b040e0c21d0373d,from __future__ import annotations,geom|tool
+tools/near_final_diagnose.py,.py,True,True,22133,2026-01-24T23:30:17,1e24220506119d3475c281d7997ed7705991b7ce,from __future__ import annotations,tool
+tools/open3dis_runner.py,.py,True,True,9896,2026-01-22T17:42:44,f8f13b0a90357871d8f02acd8225450dd70dda31,from __future__ import annotations,run|tool
+tools/osm_ref_extract.py,.py,True,True,13439,2026-01-21T22:13:47,816c05abeba9190fcccab500ca2eb6bd9623cecb,from __future__ import annotations,osm|tool
+tools/precommit_check.py,.py,True,True,3609,2026-01-26T13:13:18,f20eaf3581384d711eeed54db0fee4f7ab5220ea,from __future__ import annotations,qa|tool
+tools/print_schema_example.py,.py,True,True,398,2026-01-26T12:43:19,fca8a1cf066ab7a09e78f77f4fa08eddd05bf1b9,import json,tool
+tools/projection_smoke_0_500.cmd,.cmd,True,,1514,2026-01-31T15:15:06,e6fb2c4ba22cceddbac944e82430531c9e81cb8b,@echo off,projection|qa|tool
+tools/projection_smoke_250_500.cmd,.cmd,True,,1143,2026-01-26T12:51:22,0655b6eaffc693c44cb2c05db71d1f43ff40cfa9,@echo off,projection|qa|tool
+tools/project_feature_store_to_map.py,.py,True,True,22700,2026-01-30T12:57:56,020c067c609a5da446c3e92ded2525b03f650473,from __future__ import annotations,projection|tool
+tools/run_crosswalk_drive_full.py,.py,True,True,70494,2026-01-30T12:28:45,0a62cf86505368abfe50a7aeca4b0e8e3d51eedc,from __future__ import annotations,crosswalk|run|tool
+tools/run_crosswalk_full.py,.py,True,True,50793,2026-01-23T17:22:16,86425416711469d606d6e74f80ae7a7bbc4c38fe,from __future__ import annotations,crosswalk|run|tool
+tools/run_crosswalk_golden8_full.py,.py,True,True,12544,2026-01-26T09:40:56,f7915df9b25791cab00b3c0b4f494bf1dc258094,from __future__ import annotations,crosswalk|run|tool
+tools/run_crosswalk_monitor_drive.py,.py,True,True,45211,2026-01-24T22:52:02,7d83681dd5da534c509970f2ecb27f1ae23de1fd,﻿from __future__ import annotations,crosswalk|run|tool
+tools/run_crosswalk_monitor_range.py,.py,True,True,247622,2026-01-30T14:58:30,e3df46b997e39261f828ad218e8c029ddf9b6621,from __future__ import annotations,crosswalk|run|tool
+tools/run_crosswalk_stage2_full.py,.py,True,True,11015,2026-01-25T14:23:26,d5fd6f983e74adcf99eca4426bec3a99ec2da4a2,from __future__ import annotations,crosswalk|run|tool
+tools/run_full_geom_roadseg.py,.py,True,True,26209,2026-01-21T22:13:47,1e9fbc74cb79c92ae0b1f6a7668acb31fff037b8,from __future__ import annotations,geom|run|tool
+tools/run_image_basemodel.py,.py,True,True,21041,2026-01-21T22:52:43,5f7ac743bf7d705566afacdd7b00cd3836d4d0c0,from __future__ import annotations,image|run|tool
+tools/run_image_providers.py,.py,True,True,18555,2026-01-22T11:30:09,a30e5172c927825c2484f47af93e99d06e4c1450,from __future__ import annotations,image|run|tool
+tools/run_lidar_param_sweep.py,.py,True,True,6752,2026-01-22T17:08:58,e9a0476e01579134292a52d255e9cc46d003874f,from __future__ import annotations,lidar|run|tool
+tools/run_lidar_providers.py,.py,True,True,9500,2026-01-22T15:36:41,027eb39878adbcfbc165683087ad862a528e3780,from __future__ import annotations,lidar|run|tool
+tools/run_validation_250_500.py,.py,True,True,7038,2026-01-26T13:12:42,e45bac7d2c05c29760dc75298c2abe3446899063,from __future__ import annotations,run|tool
+tools/sam2_video_propagate.py,.py,True,True,5547,2026-01-24T15:00:16,2a372dded4ee2aac4120aa1f64aa69510679f6b5,from __future__ import annotations,tool
+tools/sat_intersections_runner.py,.py,True,True,23378,2026-01-21T22:52:43,49dcc46a8501f8a174994866dd22545989b45999,from __future__ import annotations,sat|run|tool
+tools/scan_fix_bidi_unicode.py,.py,True,True,15752,2026-01-17T08:57:03,ade6098545671f775a2aac027b49362d9608bf63,功能：,tool
+tools/scan_hidden_unicode.py,.py,True,True,1590,2026-01-16T09:29:41,a339cb6bfaf04f3637afe7b39336906a60f878f5,只扫常见文本类型，避免误扫二进制,tool
+tools/scan_seg_unique_ids.py,.py,True,True,1906,2026-01-21T22:52:43,5d546696e80c94d9995e053b870ec82c77b795c5,from __future__ import annotations,tool
+tools/score_geom_postopt.py,.py,True,True,13369,2026-01-21T22:52:43,1829777587fb2db3192cd4cef11680356f2b53a2,from __future__ import annotations,geom|tool
+tools/score_geom_roadseg.py,.py,True,True,8794,2026-01-21T22:13:47,eabbd714d44c21da6463e9a31e3c4159ab51854e,from __future__ import annotations,geom|tool
+tools/setup_gdino_weights.py,.py,True,True,2600,2026-01-22T08:58:46,a92dc124ca30f665019600c5e4a3251414008d57,from __future__ import annotations,tool
+tools/setup_sam3_weights.py,.py,True,True,3652,2026-01-22T08:32:36,cb903dda004e20ecd03c472fce2b66932690a1da,from __future__ import annotations,tool
+tools/summarize_fail_types.py,.py,True,True,5663,2026-01-25T18:24:02,934616ba52a60dfceaf31e5fc545288d77b678d2,from __future__ import annotations,tool
+tools/summarize_roundtrip_subsets.py,.py,True,True,12734,2026-01-25T18:05:34,c2c752083ee914336c7b54d00882a76f745213d6,from __future__ import annotations,projection|tool
+tools/sweep_geom_postopt.py,.py,True,True,17759,2026-01-21T22:13:47,f3d97b3a4944b7266c79d6e795c71c81c41130f8,from __future__ import annotations,geom|tool
+tools/sweep_geom_roadseg.py,.py,True,True,14695,2026-01-21T22:13:47,b2222605b54c89c557c4a9a87a1789f44715c04b,from __future__ import annotations,geom|tool
+tools/sweep_hybrid_augment.py,.py,True,True,6606,2026-01-21T22:52:43,c8152cedd09ed8d6cee1d03a2ac4901850b266c6,from __future__ import annotations,tool
+tools/test_kitti360_world.py,.py,True,True,1509,2026-01-30T18:56:21,b2e856b267d62f40094c07c4368ff09c60c0551a,from __future__ import annotations,tool
+tools/update_geom_baseline.py,.py,True,True,4361,2026-01-21T22:13:47,c250f49894f311dbb2d6791ad50803313df4f5fd,from __future__ import annotations,geom|tool
+tools/validate_topo_outputs.py,.py,True,True,12980,2026-01-17T12:45:59,b2f3e62508f29577d29e533a3e34e0185d0bed7d,功能：,topo|qa|tool
+tools/vis_basemodel_frame.py,.py,True,True,8692,2026-01-21T22:52:43,27a3c3f0d5c73c480423375adf3e7d089cf8a7f5,可视化基模型输出：seg mask（class_id 单通道）+ det json bbox，并可叠加到原始车载图像上。,tool
+tools/vis_lidar_intensity_highlights.py,.py,True,True,9803,2026-01-29T22:45:42,56c6527cfda2b6481afc8b50e0902e1539a258ab,from __future__ import annotations,lidar|tool
+tools/utils/range_filter.py,.py,True,True,412,2026-01-25T16:55:57,db65b0fbde25e4c781a295010afb219a667d490d,from __future__ import annotations,tool

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+*.dll
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual env
+.venv/
+
+# IDE
+.idea/
+.vscode/
+
+# Runs / outputs (do not commit)
+runs/
+outputs/
+tmp/
+
+# Data (do not commit)
+data/
+datasets/
+*.laz
+*.las
+*.pcd
+*.ply
+*.tif
+*.tiff
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

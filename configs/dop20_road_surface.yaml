@@ -1,0 +1,48 @@
+DOP20_ROOT: "E:\\KITTI360\\KITTI-360\\_lglbw_dop20_golden8"
+DOP20_INDEX: ""
+DRIVES_FILE: "configs/golden_drives.txt"
+DRIVES: []
+BUFFER_M: 100.0
+TARGET_EPSG: 32632
+MOSAIC_RES_M: 0.25
+METHOD: "classic"
+HSV_S_MAX: 0.25
+HSV_V_MIN: 0.26
+HSV_V_MAX: 0.88
+LAB_AB_DEV_MAX: 12.0
+MORPH_OPEN_PIX: 3
+MORPH_CLOSE_PIX: 7
+MIN_AREA_M2: 120.0
+SIMPLIFY_M: 0.5
+TRAJ_STRIDE: 5
+CORRIDOR_GATE_M: 0.0
+OSM_SOURCE: "E:\\KITTI360\\KITTI-360\\_osm_download\\drivable_roads.geojson"
+OSM_HIGHWAY_ALLOWLIST:
+  - motorway
+  - trunk
+  - primary
+  - secondary
+  - tertiary
+  - residential
+  - unclassified
+  - service
+OSM_WIDTH_SCALE: 0.7
+OSM_WIDTH_TABLE:
+  motorway: 15.0
+  trunk: 13.0
+  primary: 12.0
+  secondary: 11.0
+  tertiary: 10.0
+  residential: 9.0
+  unclassified: 9.0
+  service: 8.0
+  default: 9.0
+CLOSING_ENABLE: true
+CLOSING_ONLY_IN_CORRIDOR: true
+CLOSING_CORRIDOR_PAD_M: 3.0
+CLOSING_RADIUS_M: 1.25
+FILL_HOLES_ENABLE: true
+HOLE_FILL_MAX_M2: 2000.0
+HOLE_FILL_CORRIDOR_PAD_M: 3.0
+HOLE_FILL_ONLY_INTERSECT_CORRIDOR: true
+OVERWRITE: true

@@ -1,0 +1,29 @@
+drive_id: "2013_05_28_drive_0010_sync"
+kitti_root: ""
+frame_start: 250
+frame_end: 500
+image_cam: "image_00"
+seed_frame: 290
+qa_random_seed: 20260130
+qa_sample_n: 12
+qa_force_include: [250, 290, 500]
+
+image_model_id: "gdino_sam2_v1"
+image_model_zoo: "configs/image_model_zoo.yaml"
+
+stage1:
+  gdino_text_prompt: ["crosswalk", "zebra crossing", "pedestrian crossing"]
+  gdino_box_th: 0.25
+  gdino_text_th: 0.25
+  gdino_topk: 5
+  nms_iou_th: 0.5
+  roi_bottom_crop: 0.55
+  roi_side_crop: [0.05, 0.95]
+  sam2_image_max_masks: 3
+  sam2_mask_min_area_px: 800
+
+stage2:
+  sam2_video_propagate: "both"
+  sam2_video_max_frames: "all"
+  output_mask_format: "png"
+  output_overlay_only_qa: true

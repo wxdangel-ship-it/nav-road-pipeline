@@ -1,0 +1,24 @@
+skill_id: S0_env_doctor
+name: 环境自检（doctor）
+goal: 验证 Python 环境与 Geo 库可用性，并生成最小“四件套”产物
+inputs: []
+outputs:
+  - metrics.json
+  - SkillReport.md
+  - debug_layers.gpkg
+  - RunMeta.json
+params:
+  epsg_metric: 3857
+  bbox: [0, 0, 100, 100]
+invariants:
+  - 必须生成 debug_layers.gpkg 且可在 QGIS 打开
+  - 必须生成 metrics.json 与 SkillReport.md
+eval_metrics_no_gt:
+  - geopandas_import_ok
+  - rasterio_import_ok
+  - laspy_import_ok
+failure_buckets:
+  - import_error
+  - gpkg_write_error
+entrypoints:
+  - python scripts/run_smoke.py --skill S0_env_doctor

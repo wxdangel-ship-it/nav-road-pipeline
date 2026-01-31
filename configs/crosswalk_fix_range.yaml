@@ -49,3 +49,7 @@ review_gate:
   min_frames_hit_review: 2
   rectangularity_min_review: 0.35
   heading_diff_to_perp_max_deg_review: 35
+
+backproject:
+  fixed_plane_z0: 0.0
+  dtm_path: ""

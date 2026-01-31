@@ -1,0 +1,6 @@
+# Default: keep text files in LF in repo
+* text=auto eol=lf
+
+# Windows cmd/bat should be CRLF for readability
+*.cmd text eol=crlf
+*.bat text eol=crlf

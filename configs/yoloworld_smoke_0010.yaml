@@ -1,0 +1,27 @@
+DRIVE_ID: "2013_05_28_drive_0010_sync"
+IMAGE_CAM: "image_00"
+FRAMES: [0, 100, 250, 290, 300]
+
+ROI_BOTTOM_CROP: 0.50
+ROI_SIDE_CROP: [0.05, 0.95]
+
+YOLOWORLD_CONF_TH: 0.25
+YOLOWORLD_TOPK: 50
+YOLOWORLD_DEVICE: "cpu"
+
+PROMPTS_SANITY:
+  - "person"
+  - "car"
+  - "bus"
+  - "truck"
+  - "bicycle"
+PROMPTS_CROSSWALK:
+  - "crosswalk"
+  - "zebra crossing"
+  - "pedestrian crossing"
+  - "zebra crossing on road"
+
+OUTPUT_OVERLAYS: true
+IMAGE_MODEL_ZOO: "configs/image_model_zoo.yaml"
+YOLO_MODEL_ID: "yolo_world_v1"
+OVERWRITE: true

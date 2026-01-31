@@ -1,0 +1,1 @@
+world->utm32 fit: frames=300, rms=1.378m, scale=1.0000, yaw=-0.530deg => WARN

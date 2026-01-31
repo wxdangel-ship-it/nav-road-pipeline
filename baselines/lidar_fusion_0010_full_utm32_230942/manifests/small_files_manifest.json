@@ -1,0 +1,62 @@
+[
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\banding_audit_full.json",
+    "size": 836,
+    "sha256": "b0452c4cb8d4127fb5fa872379c79414aeaa81d5e21ebcf4fb99221696134165"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\banding_summary_full.md",
+    "size": 24,
+    "sha256": "212fedb11e0865fbb23e73e7b20c045a67bb41fa403068ef5d4926d28929fda7"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\bbox_utm32.geojson",
+    "size": 773,
+    "sha256": "991ce02b61990de9300b86a311bae1c59b5f3cd11ae76d323ebadd30b38ad248"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\fused_points_utm32.meta.json",
+    "size": 1016350,
+    "sha256": "2e818af04d730325e3e52def57bdbd632d3cfe712a33d527abd0bde5739b92dd"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\fused_points_utm32_index.json",
+    "size": 1823,
+    "sha256": "d1ccc5d2510edc493726f145936ca51a32c5383d12b8953fefb7bf3eabacaf95"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\metrics.json",
+    "size": 1016350,
+    "sha256": "2e818af04d730325e3e52def57bdbd632d3cfe712a33d527abd0bde5739b92dd"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\missing_frames.csv",
+    "size": 37277,
+    "sha256": "993ef097f30ece982de469ba621371ec64aff2affeb597c634955bd406245840"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\missing_summary.json",
+    "size": 48,
+    "sha256": "5fbab711dde06a6bdbf82238068febc169bb237ea54b6aa32daf5493a50637fe"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\run_tail.log",
+    "size": 28395,
+    "sha256": "22d3b20ac0c752993cf4da9178f7cc44f062939c33cb382c1d98b1ca7f4dd13b"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\world_to_utm32_pairs.csv",
+    "size": 25806,
+    "sha256": "4bf1b94c87a085782528b139b09b3dd688248a9ba57e0c84f85605927e5f3cc6"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\world_to_utm32_report.json",
+    "size": 669,
+    "sha256": "683674f26675009a3d8db539a8ba84d8b90ccfc80c636de617f7c0c22805be54"
+  },
+  {
+    "path": "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_0010_full_utm32_230942\\evidence\\world_to_utm32_summary.md",
+    "size": 77,
+    "sha256": "d03ce65d9d47d83c9c3f7fa90bbe6bc9a5babd2e4edbe76f68874dc684da2a67"
+  }
+]

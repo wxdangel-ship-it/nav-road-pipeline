@@ -1,0 +1,600 @@
+# Legacy Index
+
+本文件由 tools/archive_legacy_entrypoints.py 自动生成。
+
+目标：让后续 Skill 化迁移有清晰的“入口地图”和粗分类。
+
+## Summary
+
+- total: 891
+- cmd: 107
+- py: 784 (entrypoints=168)
+
+## Groups
+
+### run (187)
+
+- `1/scripts/run_matrix.cmd` [cmd] — TODO: 在你实现 matrix runner 后，把这里替换为实际入口
+- `1/scripts/run_smoke.py` [py-entry] — 按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。
+- `legacy/snapshot_20260131_171303/orig/1/scripts/run_matrix.cmd` [cmd] — TODO: 在你实现 matrix runner 后，把这里替换为实际入口
+- `legacy/snapshot_20260131_171303/orig/1/scripts/run_smoke.py` [py-entry] — 按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。
+- `pipeline/__init__.py` — __all__ = []
+- `pipeline/_io.py` — from __future__ import annotations
+- `pipeline/_report.py` — from __future__ import annotations
+- `pipeline/adapters/__init__.py` — __all__ = []
+- `pipeline/adapters/kitti360_adapter.py` — 优先顺序：extract > oxts > poses
+- `pipeline/autotune.py` [py-entry] — from __future__ import annotations
+- `pipeline/build_geom.py` [py-entry] — from __future__ import annotations
+- `pipeline/build_index.py` [py-entry] — from __future__ import annotations
+- `pipeline/build_topo.py` [py-entry] — from __future__ import annotations
+- `pipeline/calib/io_kitti360_calib.py` — from __future__ import annotations
+- `pipeline/calib/kitti360_backproject.py` — from __future__ import annotations
+- `pipeline/calib/kitti360_projection.py` — from __future__ import annotations
+- `pipeline/calib/kitti360_world.py` — from __future__ import annotations
+- `pipeline/calib/proj_sanity.py` — from __future__ import annotations
+- `pipeline/centerlines_v2.py` — from __future__ import annotations
+- `pipeline/datasets/__init__.py` — from __future__ import annotations
+- `pipeline/datasets/kitti360_io.py` — from __future__ import annotations
+- `pipeline/eval_all.py` [py-entry] — from __future__ import annotations
+- `pipeline/evidence/__init__.py` — from __future__ import annotations
+- `pipeline/evidence/image_feature_provider.py` — from __future__ import annotations
+- `pipeline/evidence/image_provider_registry.py` — from __future__ import annotations
+- `pipeline/evidence/image_providers.py` — from __future__ import annotations
+- `pipeline/evidence/lidar_provider_registry.py` — from __future__ import annotations
+- `pipeline/evidence/lidar_providers.py` — from __future__ import annotations
+- `pipeline/evidence/registry.py` — from __future__ import annotations
+- `pipeline/evidence/schema.py` — from __future__ import annotations
+- `pipeline/fusion/__init__.py` — __all__ = []
+- `pipeline/fusion/track_verify.py` — from __future__ import annotations
+- `pipeline/index_cache.py` — from __future__ import annotations
+- `pipeline/intersection_shape.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/__init__.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/accum_points_world.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/build_rasters.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/build_roi_corridor.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/classify_road.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/detect_crosswalk.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/export_pointcloud.py` — inimal GeoKeyDirectoryTag with EPSG projected CS.
+- `pipeline/lidar_semantic/extract_markings.py` — from __future__ import annotations
+- `pipeline/nn/__init__.py` — Neural model utilities.
+- `pipeline/nn/model_registry.py` — from __future__ import annotations
+- `pipeline/post/fill_holes.py` — from __future__ import annotations
+- `pipeline/post/morph_close.py` — 使用buffer等价实现closing：buffer(+r)再buffer(-r)。
+- `pipeline/projection/__init__.py` — __all__ = []
+- `pipeline/projection/projector.py` — from __future__ import annotations
+- `pipeline/qa/lidar_semantic_report.py` — from __future__ import annotations
+- `pipeline/registry.py` — from __future__ import annotations
+- `pipeline/sat_intersections.py` — from __future__ import annotations
+- `pipeline/sim_metrics.py` — from __future__ import annotations
+- `pipeline/smoke.py` [py-entry] — from __future__ import annotations
+- `pipeline/surrogate_check.py` [py-entry] — from __future__ import annotations
+- `pipeline/utils/__init__.py` — __all__ = []
+- `pipeline/utils/config_resolve.py` — from __future__ import annotations
+- `pipeline/utils/postcheck.py` — from __future__ import annotations
+- `scripts/pipeline_common.py` [py-entry] — from __future__ import annotations
+- `scripts/run_ab_eval.cmd` [cmd] — @echo off
+- `scripts/run_backproject_cycle_gate_0010_frame290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_cycle_gate_0010_frame290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_backproject_debug_f290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_debug_f290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_autotune_0010_250_500.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_autotune_0010_280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_drive_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_fix_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_markings_0010.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_markings_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_golden8_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_intensity_ablation_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_intensity_ablation_0010_f280_300.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_monitor.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_monitor_drive.cmd` [cmd] — ﻿@echo off
+- `scripts/run_crosswalk_precision_filter_0010_000_300.cmd` [cmd] — @echo off
+- ... (107 more)
+
+### script (155)
+
+- `1/scripts/regression_mini.cmd` [cmd] — TODO: 在你实现 regression-mini runner 后，把这里替换为实际入口
+- `1/scripts/run_matrix.cmd` [cmd] — TODO: 在你实现 matrix runner 后，把这里替换为实际入口
+- `1/scripts/run_smoke.py` [py-entry] — 按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。
+- `1/scripts/smoke.cmd` [cmd] — 一键 smoke（分钟级）
+- `legacy/snapshot_20260131_171303/orig/1/scripts/regression_mini.cmd` [cmd] — TODO: 在你实现 regression-mini runner 后，把这里替换为实际入口
+- `legacy/snapshot_20260131_171303/orig/1/scripts/run_matrix.cmd` [cmd] — TODO: 在你实现 matrix runner 后，把这里替换为实际入口
+- `legacy/snapshot_20260131_171303/orig/1/scripts/run_smoke.py` [py-entry] — 按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。
+- `legacy/snapshot_20260131_171303/orig/1/scripts/smoke.cmd` [cmd] — 一键 smoke（分钟级）
+- `scripts/__init__.py` [py-entry] — Helper package for runnable CLI modules.
+- `scripts/auto_select_basemodel.cmd` [cmd] — @echo off
+- `scripts/autotune.cmd` [cmd] — @echo off
+- `scripts/build_geom.cmd` [cmd] — @echo off
+- `scripts/build_topo.cmd` [cmd] — @echo off
+- `scripts/centerlines_v2.cmd` [cmd] — @echo off
+- `scripts/download_dop20.cmd` [cmd] — @echo off
+- `scripts/download_osm.cmd` [cmd] — Download OSM for current experiment area (auto-discover latest WGS84 polygon).
+- `scripts/eval.cmd` [cmd] — Defaults
+- `scripts/image_features.cmd` [cmd] — @echo off
+- `scripts/index.cmd` [cmd] — Usage:
+- `scripts/intersections_hybrid.cmd` [cmd] — usage:
+- `scripts/intersections_v2.cmd` [cmd] — usage:
+- `scripts/make_aoi.cmd` [cmd] — @echo off
+- `scripts/make_baseline_all.cmd` [cmd] — @echo off
+- `scripts/make_geom_baseline.cmd` [cmd] — @echo off
+- `scripts/make_topo_baseline.cmd` [cmd] — @echo off
+- `scripts/pipeline_common.py` [py-entry] — from __future__ import annotations
+- `scripts/precommit_check.cmd` [cmd] — @echo off
+- `scripts/regress_ablation.cmd` [cmd] — @echo off
+- `scripts/regress_evidence_arms.cmd` [cmd] — @echo off
+- `scripts/regress_geom.cmd` [cmd] — @echo off
+- `scripts/regress_topo.cmd` [cmd] — @echo off
+- `scripts/run_ab_eval.cmd` [cmd] — @echo off
+- `scripts/run_backproject_cycle_gate_0010_frame290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_cycle_gate_0010_frame290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_backproject_debug_f290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_debug_f290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_autotune_0010_250_500.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_autotune_0010_280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_drive_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_fix_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_markings_0010.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_markings_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_golden8_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_intensity_ablation_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_intensity_ablation_0010_f280_300.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_monitor.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_monitor_drive.cmd` [cmd] — ﻿@echo off
+- `scripts/run_crosswalk_precision_filter_0010_000_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_precision_filter_0010_000_300.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_refine2_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_refine_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_stage2_sam2video.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_strict_250_500.cmd` [cmd] — @echo off
+- `scripts/run_dop20_merge_golden8.cmd` [cmd] — @echo off
+- `scripts/run_dop20_merge_golden8.py` [py-entry] — from __future__ import annotations
+- `scripts/run_dop20_road_surface.cmd` [cmd] — @echo off
+- `scripts/run_dop20_road_surface.py` [py-entry] — from __future__ import annotations
+- `scripts/run_dop20_tune010.cmd` [cmd] — @echo off
+- `scripts/run_dop20_tune010.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_failpack_summary.cmd` [cmd] — @echo off
+- `scripts/run_ground_pose_audit_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_ground_pose_audit_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_crosswalk_to_world_0010_f000_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_to_world_0010_f000_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_to_world_golden8_auto.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_to_world_golden8_auto.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_map_pipeline.cmd` [cmd] — @echo off
+- `scripts/run_image_providers.cmd` [cmd] — @echo off
+- ... (75 more)
+
+### tool (83)
+
+- `tools/ab_eval_image_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/ab_eval_lidar_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/ab_eval_map_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/analyze_lidar_traj_alignment.py` [py-entry] — import argparse
+- `tools/archive_legacy_entrypoints.py` [py-entry] — 功能：
+- `tools/audit_intersections_v2_missing.py` [py-entry] — from __future__ import annotations
+- `tools/audit_road_local_empty_0007.py` [py-entry] — import argparse
+- `tools/auto_select_image_basemodel.py` [py-entry] — from __future__ import annotations
+- `tools/autotune_crosswalk_stage2.py` [py-entry] — from __future__ import annotations
+- `tools/build_crosswalk_focus_index.py` [py-entry] — from __future__ import annotations
+- `tools/build_failpack_index.py` [py-entry] — from __future__ import annotations
+- `tools/build_focus_index.py` [py-entry] — from __future__ import annotations
+- `tools/build_golden8_aoi.py` [py-entry] — from __future__ import annotations
+- `tools/build_image_feature_store.py` [py-entry] — from __future__ import annotations
+- `tools/build_image_sample_index.py` [py-entry] — from __future__ import annotations
+- `tools/build_lidar_sample_index.py` [py-entry] — from __future__ import annotations
+- `tools/build_road_entities.py` [py-entry] — from __future__ import annotations
+- `tools/check_alignment_diagnostics.py` [py-entry] — import argparse
+- `tools/check_no_legacy_world_transform.py` [py-entry] — from __future__ import annotations
+- `tools/check_topo_regress_gate.py` [py-entry] — import argparse
+- `tools/clean_bidi.py` [py-entry] — 典型隐藏/双向控制字符（含 BOM、方向控制、LRM/RLM 等）
+- `tools/clean_hidden_unicode.py` [py-entry] — from __future__ import annotations
+- `tools/clean_image_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/collect_ablation_report.py` [py-entry] — from __future__ import annotations
+- `tools/collect_evidence_report.py` [py-entry] — from __future__ import annotations
+- `tools/collect_geom_regress.py` [py-entry] — from __future__ import annotations
+- `tools/collect_topo_regress.py` [py-entry] — import argparse
+- `tools/debug_projection_chain.py` [py-entry] — import argparse
+- `tools/debug_worldgeom_frame_binding.py` [py-entry] — import argparse
+- `tools/diagnose_hybrid_sat_usage.py` [py-entry] — from __future__ import annotations
+- `tools/diagnose_missing_junctions_0007.py` [py-entry] — import argparse
+- `tools/dop20_tile_index.py` [py-entry] — from __future__ import annotations
+- `tools/download_dop20_wms.py` [py-entry] — from __future__ import annotations
+- `tools/download_osm.py` [py-entry] — import argparse
+- `tools/download_osm_V2.py` [py-entry] — 功能：
+- `tools/eval_intersections_quality.py` [py-entry] — from __future__ import annotations
+- `tools/export_feature_store_vectors.py` [py-entry] — from __future__ import annotations
+- `tools/intersections_hybrid.py` [py-entry] — from __future__ import annotations
+- `tools/intersections_v2_runner.py` [py-entry] — from __future__ import annotations
+- `tools/make_aoi_bbox.py` [py-entry] — import argparse
+- `tools/make_mock_model_outputs.py` [py-entry] — from __future__ import annotations
+- `tools/make_qgis_package.py` [py-entry] — from __future__ import annotations
+- `tools/merge_geom_outputs.py` [py-entry] — from __future__ import annotations
+- `tools/near_final_diagnose.py` [py-entry] — from __future__ import annotations
+- `tools/open3dis_runner.py` [py-entry] — from __future__ import annotations
+- `tools/osm_ref_extract.py` [py-entry] — from __future__ import annotations
+- `tools/precommit_check.py` [py-entry] — from __future__ import annotations
+- `tools/print_schema_example.py` [py-entry] — import json
+- `tools/project_feature_store_to_map.py` [py-entry] — from __future__ import annotations
+- `tools/projection_smoke_0_500.cmd` [cmd] — @echo off
+- `tools/projection_smoke_250_500.cmd` [cmd] — @echo off
+- `tools/run_crosswalk_drive_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_golden8_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_monitor_drive.py` [py-entry] — ﻿from __future__ import annotations
+- `tools/run_crosswalk_monitor_range.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_stage2_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_full_geom_roadseg.py` [py-entry] — from __future__ import annotations
+- `tools/run_image_basemodel.py` [py-entry] — from __future__ import annotations
+- `tools/run_image_providers.py` [py-entry] — from __future__ import annotations
+- `tools/run_lidar_param_sweep.py` [py-entry] — from __future__ import annotations
+- `tools/run_lidar_providers.py` [py-entry] — from __future__ import annotations
+- `tools/run_validation_250_500.py` [py-entry] — from __future__ import annotations
+- `tools/sam2_video_propagate.py` [py-entry] — from __future__ import annotations
+- `tools/sat_intersections_runner.py` [py-entry] — from __future__ import annotations
+- `tools/scan_fix_bidi_unicode.py` [py-entry] — 功能：
+- `tools/scan_hidden_unicode.py` [py-entry] — 只扫常见文本类型，避免误扫二进制
+- `tools/scan_seg_unique_ids.py` [py-entry] — from __future__ import annotations
+- `tools/score_geom_postopt.py` [py-entry] — from __future__ import annotations
+- `tools/score_geom_roadseg.py` [py-entry] — from __future__ import annotations
+- `tools/setup_gdino_weights.py` [py-entry] — from __future__ import annotations
+- `tools/setup_sam3_weights.py` [py-entry] — from __future__ import annotations
+- `tools/summarize_fail_types.py` [py-entry] — from __future__ import annotations
+- `tools/summarize_roundtrip_subsets.py` [py-entry] — from __future__ import annotations
+- `tools/sweep_geom_postopt.py` [py-entry] — from __future__ import annotations
+- `tools/sweep_geom_roadseg.py` [py-entry] — from __future__ import annotations
+- `tools/sweep_hybrid_augment.py` [py-entry] — from __future__ import annotations
+- `tools/test_kitti360_world.py` [py-entry] — from __future__ import annotations
+- `tools/update_geom_baseline.py` [py-entry] — from __future__ import annotations
+- `tools/utils/range_filter.py` [py-entry] — from __future__ import annotations
+- ... (3 more)
+
+### crosswalk (56)
+
+- `pipeline/lidar_semantic/detect_crosswalk.py` — from __future__ import annotations
+- `scripts/run_crosswalk_autotune_0010_250_500.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_autotune_0010_280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_drive_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_fix_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_markings_0010.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_markings_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_from_raw_intensity_0010_f280_300_v2.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_golden8_full.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_intensity_ablation_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_intensity_ablation_0010_f280_300.py` [py-entry] — ﻿
+- `scripts/run_crosswalk_monitor.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_monitor_drive.cmd` [cmd] — ﻿@echo off
+- `scripts/run_crosswalk_precision_filter_0010_000_300.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_precision_filter_0010_000_300.py` [py-entry] — from __future__ import annotations
+- `scripts/run_crosswalk_refine2_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_refine_range.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_stage2_sam2video.cmd` [cmd] — @echo off
+- `scripts/run_crosswalk_strict_250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_crosswalk_to_world_0010_f000_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_to_world_0010_f000_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_to_world_golden8_auto.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_to_world_golden8_auto.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_stage12_crosswalk_0010_f000_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_stage12_crosswalk_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_stage12_crosswalk_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_crosswalk_proof_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_crosswalk_proof_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_crosswalk_proof_v2_align_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_crosswalk_proof_v2_align_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_map_features_crosswalk_merge.cmd` [cmd] — @echo off
+- `scripts/run_map_features_crosswalk_merge.py` [py-entry] — from __future__ import annotations
+- `scripts/run_world_crosswalk_candidates_0010_f000_500.cmd` [cmd] — @echo off
+- `scripts/run_world_crosswalk_candidates_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_world_crosswalk_candidates_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_world_crosswalk_from_stage2_0010_f000_300.cmd` [cmd] — @echo off
+- `scripts/run_world_crosswalk_from_stage2_0010_f000_300.py` [py-entry] — ﻿from __future__ import annotations
+- `tools/autotune_crosswalk_stage2.py` [py-entry] — from __future__ import annotations
+- `tools/build_crosswalk_focus_index.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_drive_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_golden8_full.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_monitor_drive.py` [py-entry] — ﻿from __future__ import annotations
+- `tools/run_crosswalk_monitor_range.py` [py-entry] — from __future__ import annotations
+- `tools/run_crosswalk_stage2_full.py` [py-entry] — from __future__ import annotations
+
+### projection (49)
+
+- `1/core/crs/__init__.py` — placeholder
+- `cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_direct.py` — import os
+- `cache/env_open3dis/Lib/site-packages/pyproj/__init__.py` — Python interface to PROJ (https://proj.org),
+- `cache/env_open3dis/Lib/site-packages/pyproj/__main__.py` [py-entry] — This is the main entry point for pyproj CLI
+- `cache/env_open3dis/Lib/site-packages/pyproj/_show_versions.py` — Utility methods to print system info for debugging
+- `cache/env_open3dis/Lib/site-packages/pyproj/aoi.py` — This module contains the structures related to areas of interest.
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/__init__.py` — This module interfaces with PROJ to produce a pythonic interface
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/_cf1x8.py` — This module contains mappings necessary to convert from
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/coordinate_operation.py` — This module is for building operations to be used when
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/coordinate_system.py` — This module is for building coordinate systems to be used when
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/crs.py` — This module interfaces with PROJ to produce a pythonic interface
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/datum.py` — This module is for building datums to be used when
+- `cache/env_open3dis/Lib/site-packages/pyproj/crs/enums.py` — This module contains enumerations used in pyproj.crs.
+- `cache/env_open3dis/Lib/site-packages/pyproj/datadir.py` — Module for managing the PROJ data directory.
+- `cache/env_open3dis/Lib/site-packages/pyproj/enums.py` — This module contains enumerations used in pyproj.
+- `cache/env_open3dis/Lib/site-packages/pyproj/exceptions.py` — Exceptions for pyproj
+- `cache/env_open3dis/Lib/site-packages/pyproj/geod.py` — The Geod class can perform forward and inverse geodetic, or
+- `cache/env_open3dis/Lib/site-packages/pyproj/network.py` — Module for managing the PROJ network settings.
+- `cache/env_open3dis/Lib/site-packages/pyproj/proj.py` — Performs cartographic transformations (converts from
+- `cache/env_open3dis/Lib/site-packages/pyproj/sync.py` — Based on the logic in the PROJ projsync CLI program
+- `cache/env_open3dis/Lib/site-packages/pyproj/transformer.py` — The transformer module is for performing cartographic transformations.
+- `cache/env_open3dis/Lib/site-packages/pyproj/utils.py` — Utility functions used within pyproj
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_clip_by_rect.py` — Tests for GEOSClipByRect based on unit tests from libgeos.
+- `legacy/snapshot_20260131_171303/orig/cache/env_open3dis/Lib/site-packages/pyproj/__main__.py` [py-entry] — This is the main entry point for pyproj CLI
+- `pipeline/calib/kitti360_backproject.py` — from __future__ import annotations
+- `pipeline/calib/kitti360_projection.py` — from __future__ import annotations
+- `pipeline/calib/proj_sanity.py` — from __future__ import annotations
+- `pipeline/projection/__init__.py` — __all__ = []
+- `pipeline/projection/projector.py` — from __future__ import annotations
+- `scripts/run_backproject_cycle_gate_0010_frame290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_cycle_gate_0010_frame290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_backproject_debug_f290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_debug_f290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_proj_patch_0010_frames_250_341_500.cmd` [cmd] — @echo off
+- `scripts/run_proj_patch_0010_frames_250_341_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_proj_regression_0010.cmd` [cmd] — @echo off
+- `scripts/run_proj_regression_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_roundtrip_report_v2.cmd` [cmd] — @echo off
+- `scripts/run_single_frame_proj_audit_0010.cmd` [cmd] — @echo off
+- `scripts/run_single_frame_proj_audit_0010.py` [py-entry] — from __future__ import annotations
+- `tools/debug_projection_chain.py` [py-entry] — import argparse
+- `tools/project_feature_store_to_map.py` [py-entry] — from __future__ import annotations
+- `tools/projection_smoke_0_500.cmd` [cmd] — @echo off
+- `tools/projection_smoke_250_500.cmd` [cmd] — @echo off
+- `tools/summarize_roundtrip_subsets.py` [py-entry] — from __future__ import annotations
+
+### lidar (48)
+
+- `cache/env_open3dis/Lib/site-packages/numpy/ma/tests/test_subclassing.py` — Tests suite for MaskedArray & subclassing.
+- `cache/env_open3dis/Lib/site-packages/numpy/polynomial/tests/test_classes.py` — Test inter-conversion of different polynomial classes.
+- `cache/env_open3dis/Lib/site-packages/numpy/tests/test_lazyloading.py` — import sys
+- `cache/env_open3dis/Lib/site-packages/shapely/algorithms/_oriented_envelope.py` — Compute the oriented envelope (minimum rotated rectangle).
+- `pipeline/evidence/lidar_provider_registry.py` — from __future__ import annotations
+- `pipeline/evidence/lidar_providers.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/__init__.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/accum_points_world.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/build_rasters.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/build_roi_corridor.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/classify_road.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/detect_crosswalk.py` — from __future__ import annotations
+- `pipeline/lidar_semantic/export_pointcloud.py` — inimal GeoKeyDirectoryTag with EPSG projected CS.
+- `pipeline/lidar_semantic/extract_markings.py` — from __future__ import annotations
+- `pipeline/qa/lidar_semantic_report.py` — from __future__ import annotations
+- `scripts/run_lidar_clip_truthbuf10_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_lidar_clip_truthbuf10_0010_f280_300.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_crosswalk_proof_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_crosswalk_proof_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_crosswalk_proof_v2_align_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_crosswalk_proof_v2_align_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_extract_best_0010_250_500.cmd` [cmd] — @echo off
+- `scripts/run_lidar_extract_best_0010_250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_extract_best_0010_full.cmd` [cmd] — @echo off
+- `scripts/run_lidar_extract_best_0010_full.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_fuse_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_lidar_fuse_0010_f280_300.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_ground_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_lidar_ground_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_intensity_debug_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_intensity_debug_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_intensity_verify_0010_f280_300.cmd` [cmd] — @echo off
+- `scripts/run_lidar_intensity_verify_0010_f280_300.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_lidar_pipeline.cmd` [cmd] — @echo off
+- `scripts/run_lidar_pipeline.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_providers.cmd` [cmd] — @echo off
+- `scripts/run_lidar_road_surface_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_road_surface_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_semantic_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_semantic_0010.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_semantic_golden8.cmd` [cmd] — @echo off
+- `scripts/run_lidar_semantic_golden8.py` [py-entry] — from __future__ import annotations
+- `tools/ab_eval_lidar_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/analyze_lidar_traj_alignment.py` [py-entry] — import argparse
+- `tools/build_lidar_sample_index.py` [py-entry] — from __future__ import annotations
+- `tools/run_lidar_param_sweep.py` [py-entry] — from __future__ import annotations
+- `tools/run_lidar_providers.py` [py-entry] — from __future__ import annotations
+- `tools/vis_lidar_intensity_highlights.py` [py-entry] — from __future__ import annotations
+
+### geom (45)
+
+- `cache/env_open3dis/Lib/site-packages/shapely/_geometry.py` — import warnings
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/__init__.py` — Geometry classes and factories.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/base.py` — Base geometry class and utilities.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/collection.py` — Multi-part collections of geometries.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/geo.py` — Geometry factories based on the geo interface.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/linestring.py` — Line strings and related utilities.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/multilinestring.py` — Collections of linestrings and related utilities.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/multipoint.py` — Collections of points and related utilities.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/multipolygon.py` — Collections of polygons and related utilities.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/point.py` — Points and related utilities.
+- `cache/env_open3dis/Lib/site-packages/shapely/geometry/polygon.py` — Polygons and their linear ring components.
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/__init__.py` — 
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_collection.py` — import numpy as np
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_coords.py` — Shapely assumes contiguous C-order float64 data for internal ops.
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_decimal.py` — from decimal import Decimal
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_emptiness.py` — import math
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_equality.py` — TODO add all_types_m and all_types_zm once tranform supports M coordinates
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_format.py` — check invalid spec formats
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_geometry_base.py` — import platform
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_hash.py` — import pytest
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_linestring.py` — From coordinate tuples
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multi.py` — import numpy as np
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multilinestring.py` — From coordinate tuples
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multipoint.py` — From coordinate tuples
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_multipolygon.py` — mpty
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_point.py` — Point
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/geometry/test_polygon.py` — Polygons and Linear Rings
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/legacy/test_invalid_geometries.py` — Test recovery from operation on invalid geometries
+- `cache/env_open3dis/Lib/site-packages/shapely/tests/test_geometry.py` — import warnings
+- `pipeline/build_geom.py` [py-entry] — from __future__ import annotations
+- `scripts/build_geom.cmd` [cmd] — @echo off
+- `scripts/make_geom_baseline.cmd` [cmd] — @echo off
+- `scripts/regress_geom.cmd` [cmd] — @echo off
+- `scripts/sweep_geom_postopt.cmd` [cmd] — @echo off
+- `scripts/sweep_geom_roadseg.cmd` [cmd] — @echo off
+- `scripts/sweep_geom_roadseg_full.cmd` [cmd] — @echo off
+- `tools/collect_geom_regress.py` [py-entry] — from __future__ import annotations
+- `tools/debug_worldgeom_frame_binding.py` [py-entry] — import argparse
+- `tools/merge_geom_outputs.py` [py-entry] — from __future__ import annotations
+- `tools/run_full_geom_roadseg.py` [py-entry] — from __future__ import annotations
+- `tools/score_geom_postopt.py` [py-entry] — from __future__ import annotations
+- `tools/score_geom_roadseg.py` [py-entry] — from __future__ import annotations
+- `tools/sweep_geom_postopt.py` [py-entry] — from __future__ import annotations
+- `tools/sweep_geom_roadseg.py` [py-entry] — from __future__ import annotations
+- `tools/update_geom_baseline.py` [py-entry] — from __future__ import annotations
+
+### image (33)
+
+- `pipeline/evidence/image_feature_provider.py` — from __future__ import annotations
+- `pipeline/evidence/image_provider_registry.py` — from __future__ import annotations
+- `pipeline/evidence/image_providers.py` — from __future__ import annotations
+- `scripts/image_features.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regress_fix_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_proj_regression_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_stage12_to_world_0010_f000_500_nofilter.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_crosswalk_to_world_0010_f000_500.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_to_world_0010_f000_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_crosswalk_to_world_golden8_auto.cmd` [cmd] — @echo off
+- `scripts/run_image_crosswalk_to_world_golden8_auto.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_map_pipeline.cmd` [cmd] — @echo off
+- `scripts/run_image_providers.cmd` [cmd] — @echo off
+- `scripts/run_image_stage12_crosswalk_0010_f000_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_stage12_crosswalk_0010_f250_500.cmd` [cmd] — @echo off
+- `scripts/run_image_stage12_crosswalk_0010_f250_500.py` [py-entry] — from __future__ import annotations
+- `scripts/run_image_stage12_ensemble_gdino_yoloworld_0010_f000_300.cmd` [cmd] — @echo off
+- `scripts/run_image_stage12_ensemble_gdino_yoloworld_0010_f000_300.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_stage12_sparse_seed_0010_f000_500.cmd` [cmd] — @echo off
+- `scripts/run_image_stage12_sparse_seed_0010_f000_500.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_image_stage12_stride5_to_world_0010_f000_500.cmd` [cmd] — @echo off
+- `scripts/run_image_stage12_stride5_to_world_0010_f000_500.py` [py-entry] — ﻿from __future__ import annotations
+- `tools/ab_eval_image_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/auto_select_image_basemodel.py` [py-entry] — from __future__ import annotations
+- `tools/build_image_feature_store.py` [py-entry] — from __future__ import annotations
+- `tools/build_image_sample_index.py` [py-entry] — from __future__ import annotations
+- `tools/clean_image_evidence.py` [py-entry] — from __future__ import annotations
+- `tools/run_image_basemodel.py` [py-entry] — from __future__ import annotations
+- `tools/run_image_providers.py` [py-entry] — from __future__ import annotations
+
+### qa (32)
+
+- `1/core/report/__init__.py` — placeholder
+- `1/core/reporting.py` — from __future__ import annotations
+- `1/scripts/run_smoke.py` [py-entry] — 按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。
+- `1/scripts/smoke.cmd` [cmd] — 一键 smoke（分钟级）
+- `cache/env_open3dis/Lib/site-packages/numpy/_pyinstaller/tests/pyinstaller-smoke.py` — A crude *bit of everything* smoke test to verify PyInstaller compatibility.
+- `cache/env_open3dis/Lib/site-packages/numpy/lib/_type_check_impl.py` — Automatically adapted for numpy Sep 19, 2005 by convertcode.py
+- `cache/env_open3dis/Lib/site-packages/numpy/lib/tests/test_type_check.py` — import numpy as np
+- `cache/env_open3dis/Lib/site-packages/numpy/random/tests/test_smoke.py` — import pickle
+- `legacy/snapshot_20260131_171303/orig/1/scripts/run_smoke.py` [py-entry] — 按约定加载 skills/<skill_id>/run.py 并执行 main(run_dir=...)。
+- `legacy/snapshot_20260131_171303/orig/1/scripts/smoke.cmd` [cmd] — 一键 smoke（分钟级）
+- `pipeline/_report.py` — from __future__ import annotations
+- `pipeline/qa/lidar_semantic_report.py` — from __future__ import annotations
+- `pipeline/smoke.py` [py-entry] — from __future__ import annotations
+- `pipeline/surrogate_check.py` [py-entry] — from __future__ import annotations
+- `pipeline/utils/postcheck.py` — from __future__ import annotations
+- `scripts/precommit_check.cmd` [cmd] — @echo off
+- `scripts/run_failpack_summary.cmd` [cmd] — @echo off
+- `scripts/run_open3dis_smoke.cmd` [cmd] — @echo off
+- `scripts/run_roundtrip_report_v2.cmd` [cmd] — @echo off
+- `scripts/run_yoloworld_smoke_0010_qa.cmd` [cmd] — @echo off
+- `scripts/run_yoloworld_smoke_0010_qa.py` [py-entry] — from __future__ import annotations
+- `scripts/smoke.cmd` [cmd] — @echo off
+- `scripts/surrogate_check.cmd` [cmd] — @echo off
+- `tools/check_alignment_diagnostics.py` [py-entry] — import argparse
+- `tools/check_no_legacy_world_transform.py` [py-entry] — from __future__ import annotations
+- `tools/check_topo_regress_gate.py` [py-entry] — import argparse
+- `tools/collect_ablation_report.py` [py-entry] — from __future__ import annotations
+- `tools/collect_evidence_report.py` [py-entry] — from __future__ import annotations
+- `tools/precommit_check.py` [py-entry] — from __future__ import annotations
+- `tools/projection_smoke_0_500.cmd` [cmd] — @echo off
+- `tools/projection_smoke_250_500.cmd` [cmd] — @echo off
+- `tools/validate_topo_outputs.py` [py-entry] — 功能：
+
+### sat (15)
+
+- `pipeline/sat_intersections.py` — from __future__ import annotations
+- `scripts/download_dop20.cmd` [cmd] — @echo off
+- `scripts/run_dop20_merge_golden8.cmd` [cmd] — @echo off
+- `scripts/run_dop20_merge_golden8.py` [py-entry] — from __future__ import annotations
+- `scripts/run_dop20_road_surface.cmd` [cmd] — @echo off
+- `scripts/run_dop20_road_surface.py` [py-entry] — from __future__ import annotations
+- `scripts/run_dop20_tune010.cmd` [cmd] — @echo off
+- `scripts/run_dop20_tune010.py` [py-entry] — ﻿from __future__ import annotations
+- `scripts/run_sat_pipeline.cmd` [cmd] — @echo off
+- `scripts/run_sat_pipeline.py` [py-entry] — from __future__ import annotations
+- `scripts/sat_intersections.cmd` [cmd] — usage:
+- `tools/diagnose_hybrid_sat_usage.py` [py-entry] — from __future__ import annotations
+- `tools/dop20_tile_index.py` [py-entry] — from __future__ import annotations
+- `tools/download_dop20_wms.py` [py-entry] — from __future__ import annotations
+- `tools/sat_intersections_runner.py` [py-entry] — from __future__ import annotations
+
+### debug (8)
+
+- `1/core/debug/__init__.py` — placeholder
+- `1/core/debug_layers.py` — 写一个最小可视化 gpkg，用于验证：GeoPandas + 写入驱动是否正常。
+- `scripts/run_backproject_debug_f290.cmd` [cmd] — @echo off
+- `scripts/run_backproject_debug_f290.py` [py-entry] — from __future__ import annotations
+- `scripts/run_lidar_intensity_debug_0010.cmd` [cmd] — @echo off
+- `scripts/run_lidar_intensity_debug_0010.py` [py-entry] — from __future__ import annotations
+- `tools/debug_projection_chain.py` [py-entry] — import argparse
+- `tools/debug_worldgeom_frame_binding.py` [py-entry] — import argparse
+
+### topo (7)
+
+- `pipeline/build_topo.py` [py-entry] — from __future__ import annotations
+- `scripts/build_topo.cmd` [cmd] — @echo off
+- `scripts/make_topo_baseline.cmd` [cmd] — @echo off
+- `scripts/regress_topo.cmd` [cmd] — @echo off
+- `tools/check_topo_regress_gate.py` [py-entry] — import argparse
+- `tools/collect_topo_regress.py` [py-entry] — import argparse
+- `tools/validate_topo_outputs.py` [py-entry] — 功能：
+
+### download (5)
+
+- `scripts/download_dop20.cmd` [cmd] — @echo off
+- `scripts/download_osm.cmd` [cmd] — Download OSM for current experiment area (auto-discover latest WGS84 polygon).
+- `tools/download_dop20_wms.py` [py-entry] — from __future__ import annotations
+- `tools/download_osm.py` [py-entry] — import argparse
+- `tools/download_osm_V2.py` [py-entry] — 功能：
+
+### osm (4)
+
+- `scripts/download_osm.cmd` [cmd] — Download OSM for current experiment area (auto-discover latest WGS84 polygon).
+- `tools/download_osm.py` [py-entry] — import argparse
+- `tools/download_osm_V2.py` [py-entry] — 功能：
+- `tools/osm_ref_extract.py` [py-entry] — from __future__ import annotations

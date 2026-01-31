@@ -1,0 +1,20 @@
+c7c1147 docs+scripts: runbook, golden8 runner, validation tooling
+f0e48fe feat: modular evidence/projection/fusion architecture
+fb27bb9 chore: precommit checks + verification record
+c5f5745 fix: stabilize fixed-heading support selection
+3a98992 chore: add autotune v3 runner for 280-300
+8aaffcc chore: add fail type summary and failpack index
+535a64b chore: add roundtrip subset summary and failpack
+ba1eeaa fix: enforce strict frame range and projection checks
+277e9a4 fix: stage2 autotune v2 with scoring and QA sampling
+aec96f2 fix: lidar fit uses accum fallback + robust roundtrip iou metrics
+9e69d03 fix: prefer lidar fit when support points exist
+f170b4d fix: boost lidar support sampling and trace coverage
+e0a4a0a fix: robust ground filter (local/plane) to restore lidar support
+0c7128b chore: trace add source_frame_id and x_ego
+33814a5 fix: correct frame assignment for image evidence and forward fallback
+71222bf feat: add lidar support accumulation for crosswalk quick run
+12a4432 feat: add crosswalk stage2 autotune driver
+c0390a6 fix: correct crosswalk rect metrics
+ab3dcdc fix: enforce image_00 fullpose in crosswalk tools
+1fc1240 fix: pass fullpose lidar mode into crosswalk projection

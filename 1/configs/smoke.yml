@@ -1,0 +1,3 @@
+smoke:
+  tiles: ["demo_tile"]
+  windows: [{"name": "demo_window", "bbox": [0,0,100,100]}]
