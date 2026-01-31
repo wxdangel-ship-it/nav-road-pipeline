@@ -1,0 +1,9 @@
+jobs:
+  - path: "configs/jobs/lidar_fusion/0010_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0000_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0003_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0004_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0005_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0006_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0007_full.yaml"
+  - path: "configs/jobs/lidar_fusion/TODO_0009_full.yaml"

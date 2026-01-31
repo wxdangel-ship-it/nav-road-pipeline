@@ -1,0 +1,22 @@
+kitti_root: "%KITTI_ROOT%"
+drive_id: "2013_05_28_drive_0010_sync"
+frame_start: 0
+frame_end: 300
+stride: 1
+output_mode: "utm32"
+output_format: "laz"
+require_laz: true
+use_r_rect_with_cam0_to_world: true
+require_cam0_to_world: true
+allow_poses_fallback: false
+enable_chunking: false
+max_parts: 8
+target_laz_mb_per_part: 1200
+banding_max_min_nonzero_dy_m: 0.01
+
+transform:
+  mode: auto_fit
+  file: ""
+  sample_max_frames: 300
+  gate_pass_m: 1.0
+  gate_warn_m: 1.5

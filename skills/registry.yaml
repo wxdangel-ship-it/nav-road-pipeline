@@ -1,7 +1,7 @@
 version: 1
 skills:
   - skill_id: lidar_fusion_full_utm32
-    version: 0.1.0
+    version: 0.2.1
     status: active
     owner: nav-road-pipeline
     tags: [kitti360, lidar, fusion, utm32, epsg32632, laz, baseline]
@@ -9,11 +9,11 @@ skills:
     desc: >
       KITTI-360 LiDAR 逐帧融合并输出 UTM32 (EPSG:32632) 的 LAZ（支持分块输出）。
       强制 R_rect_00（cam0_to_world 为 rectified cam0->world），强度 float->uint16 *65535，
-      内置条带（量化塌陷）门禁与 bbox_check。
+      内置条带（量化塌陷）门禁与 bbox_check。支持 job YAML 与 batch jobs。
 
     entrypoint:
       kind: python_module
-      command: "python -m scripts.run_lidar_fusion_0010_full"
+      command: "python -m scripts.run_skill_lidar_fusion_full_utm32"
 
     inputs:
       KITTI_ROOT: {type: path, required: true, example: "E:\\KITTI360\\KITTI-360"}
