@@ -1,0 +1,60 @@
+version: 1
+skills:
+  - skill_id: lidar_fusion_full_utm32
+    version: 0.1.0
+    status: active
+    owner: nav-road-pipeline
+    tags: [kitti360, lidar, fusion, utm32, epsg32632, laz, baseline]
+
+    desc: >
+      KITTI-360 LiDAR 逐帧融合并输出 UTM32 (EPSG:32632) 的 LAZ（支持分块输出）。
+      强制 R_rect_00（cam0_to_world 为 rectified cam0->world），强度 float->uint16 *65535，
+      内置条带（量化塌陷）门禁与 bbox_check。
+
+    entrypoint:
+      kind: python_module
+      command: "python -m scripts.run_lidar_fusion_0010_full"
+
+    inputs:
+      KITTI_ROOT: {type: path, required: true, example: "E:\\KITTI360\\KITTI-360"}
+      DRIVE_ID:   {type: str,  required: true, example: "2013_05_28_drive_0010_sync"}
+      FRAME_START:{type: int,  required: true, example: 0}
+      FRAME_END:  {type: int,  required: true, example: 3835}
+      STRIDE:     {type: int,  required: false, default: 1}
+      OUTPUT_MODE:{type: str,  required: false, default: "utm32"}
+      OUTPUT_FORMAT:{type: str, required: false, default: "laz"}
+      REQUIRE_LAZ:{type: bool, required: false, default: true}
+      USE_R_RECT_WITH_CAM0_TO_WORLD:{type: bool, required: false, default: true}
+      REQUIRE_CAM0_TO_WORLD:{type: bool, required: false, default: true}
+      ALLOW_POSES_FALLBACK:{type: bool, required: false, default: false}
+      ENABLE_CHUNKING:{type: bool, required: false, default: true}
+      MAX_PARTS:   {type: int, required: false, default: 8}
+      TARGET_LAZ_MB_PER_PART:{type: int, required: false, default: 1200}
+
+    outputs:
+      run_dir: {type: path, example: "runs/lidar_fusion_<drive>_<range>_<ts>/"}
+      products:
+        - "outputs/fused_points_utm32_part_*.laz (or fused_points_utm32.laz)"
+        - "outputs/fused_points_utm32_index.json"
+        - "outputs/fused_points_utm32.meta.json"
+        - "report/metrics.json"
+        - "outputs/missing_frames.csv"
+        - "outputs/missing_summary.json"
+        - "outputs/bbox_utm32.geojson"
+        - "report/banding_audit*.json"
+      notes:
+        - "大体积 LAZ 不入库；baseline 只冻结小证据文件与 laz_parts_manifest（hash_head）。"
+
+    gates:
+      - name: intensity_ok
+        rule: "intensity_max>0 && intensity_nonzero_ratio>0.5"
+      - name: bbox_check_ok
+        rule: "bbox_check==ok && epsg==32632"
+      - name: banding_check_ok
+        rule: "banding.min_nonzero_dy<=0.01"
+      - name: transform_gate
+        rule: "fit.gate_status in [PASS,WARN] (WARN 需人工质检通过才可冻结产线)"
+
+    baseline:
+      active_pointer: "baselines/ACTIVE_LIDAR_FUSION_BASELINE.txt"
+      frozen_dir_pattern: "baselines/lidar_fusion_0010_full_utm32_*"
