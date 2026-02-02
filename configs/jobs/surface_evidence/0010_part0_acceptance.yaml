@@ -1,0 +1,21 @@
+drive_id: "2013_05_28_drive_0010_sync"
+frame_start: 0
+frame_end: 767
+
+fusion_source: "explicit"  # baseline_active | run_dir | explicit
+fusion_run_dir: ""
+explicit_laz: "..\\..\\KITTI360\\KITTI-360\\lidar_fusion_golden8_utm32_193340\\lidar_fusion_2013_05_28_drive_0010_sync_0_3835_20260201_192348\\outputs\\fused_points_utm32_part_0000000000_0000000767.laz"
+explicit_bbox_geojson: "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_golden8_utm32_193340\\evidence\\0010_sync\\bbox_utm32.geojson"
+explicit_transform_json: "E:\\Work\\nav-road-pipeline\\baselines\\lidar_fusion_golden8_utm32_193340\\evidence\\0010_sync\\world_to_utm32_report.json"
+
+kitti_root: "E:\\KITTI360\\KITTI-360"
+
+output:
+  point_cloud: true
+  dem: true
+  vector: true
+  bev_markings: true
+
+crosswalk_gpkg: "E:\\Work\\nav-road-pipeline\\crosswalk_truth_utm32.gpkg"
+roi_buf_m: 30.0
+roi_patch_size_m: 80.0

@@ -1,7 +1,7 @@
 version: 1
 skills:
   - skill_id: lidar_fusion_full_utm32
-    version: 0.2.1
+    version: 0.2.3
     status: active
     owner: nav-road-pipeline
     tags: [kitti360, lidar, fusion, utm32, epsg32632, laz, baseline]
@@ -30,6 +30,14 @@ skills:
       ENABLE_CHUNKING:{type: bool, required: false, default: true}
       MAX_PARTS:   {type: int, required: false, default: 8}
       TARGET_LAZ_MB_PER_PART:{type: int, required: false, default: 1200}
+      PARTITION_MODE:{type: str, required: false, default: "frame_range"}
+      PART_SPLIT_STRATEGY:{type: str, required: false, default: "by_target_mb_est"}
+      PART_LENGTH_M:{type: float, required: false, default: 250.0}
+      TRJ_NN_BACKEND:{type: str, required: false, default: "scipy_kdtree"}
+      TRJ_GRID_CELL_M:{type: float, required: false, default: 20.0}
+      TRJ_GRID_NEIGHBOR:{type: int, required: false, default: 1}
+      BOUNDARY_REFINE:{type: bool, required: false, default: true}
+      BOUNDARY_REFINE_BAND_M:{type: float, required: false, default: 30.0}
 
     outputs:
       run_dir: {type: path, example: "runs/lidar_fusion_<drive>_<range>_<ts>/"}
@@ -58,3 +66,63 @@ skills:
     baseline:
       active_pointer: "baselines/ACTIVE_LIDAR_FUSION_BASELINE.txt"
       frozen_dir_pattern: "baselines/lidar_fusion_0010_full_utm32_*"
+
+  - skill_id: surface_evidence_utm32
+    version: 0.1.0
+    status: active
+    owner: nav-road-pipeline
+    tags: [kitti360, lidar, surface, dem, bev, markings, crosswalk, utm32, epsg32632, laz, geotiff, gpkg, baseline]
+
+    desc: >
+      Surface evidence from fused LiDAR UTM32 outputs: road surface points, DEM/quality rasters,
+      surface polygons, and BEV markings (top-hat). Consumes fusion outputs only; never runs fusion.
+    entrypoint:
+      kind: python_module
+      command: "python -m scripts.run_skill_surface_evidence_utm32"
+
+    inputs:
+      FUSION_SOURCE: {type: str, required: true, example: "baseline_active|run_dir|explicit"}
+      FUSION_RUN_DIR: {type: path, required: false, example: "runs/lidar_fusion_..."}
+      EXPLICIT_LAZ: {type: path, required: false, example: "runs/.../outputs/fused_points_utm32_part_*.laz"}
+      KITTI_ROOT: {type: path, required: true, example: "E:\\KITTI360\\KITTI-360"}
+      DRIVE_ID: {type: str, required: true, example: "2013_05_28_drive_0010_sync"}
+      FRAME_START: {type: int, required: true, example: 0}
+      FRAME_END: {type: int, required: true, example: 300}
+      OUTPUT_POINT_CLOUD: {type: bool, required: false, default: true}
+      OUTPUT_DEM: {type: bool, required: false, default: true}
+      OUTPUT_VECTOR: {type: bool, required: false, default: true}
+      OUTPUT_BEV_MARKINGS: {type: bool, required: false, default: true}
+      CROSSWALK_GPKG: {type: path, required: false, example: "E:\\Work\\nav-road-pipeline\\crosswalk_truth_utm32.gpkg"}
+
+    outputs:
+      run_dir: {type: path, example: "runs/surface_evidence_<drive>_<range>_<ts>/"}
+      products:
+        - "outputs/road_surface_points_utm32.laz"
+        - "outputs/road_surface_points_utm32.meta.json"
+        - "outputs/surface_dem_utm32.tif"
+        - "outputs/surface_dem_quality_utm32.tif"
+        - "outputs/road_surface_polygon_utm32.gpkg"
+        - "outputs/road_surface_polygon_preview.geojson"
+        - "outputs/bev_markings_utm32_r010m_tiles/*.tif"
+        - "outputs/bev_markings_tiles_index_r010m.geojson"
+        - "outputs/large_files_manifest.json"
+        - "report/metrics.json"
+        - "report/gates.json"
+        - "report/params.json"
+      notes:
+        - "Consumes fusion outputs only (baseline/run_dir/explicit)."
+        - "Large outputs are not committed; manifest records hash_head + size."
+
+    gates:
+      - name: epsg_ok
+        rule: "epsg==32632 && bbox_check==ok"
+      - name: points_ok
+        rule: "points_road_surface>0 && ratio_road_surface>=0.02"
+      - name: dem_ok
+        rule: "dem_valid_ratio>=0.30"
+      - name: bev_ok
+        rule: "tiles_count>0 && empty_tile_ratio<0.9"
+
+    baseline:
+      active_pointer: "baselines/ACTIVE_SURFACE_EVIDENCE_BASELINE.txt"
+      frozen_dir_pattern: "baselines/surface_evidence_0010_f000_300_*"

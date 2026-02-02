@@ -52,6 +52,15 @@ class FusionResult:
     points_written_total: int = 0
     per_frame_points_sample: List[Dict[str, object]] = field(default_factory=list)
     banding_check: Dict[str, object] = field(default_factory=dict)
+    partition_mode: str = "frame_range"
+    split_strategy: str = ""
+    boundary_frames: List[str] = field(default_factory=list)
+    boundary_s: List[float] = field(default_factory=list)
+    part_info: List[Dict[str, object]] = field(default_factory=list)
+    nn_backend: str = ""
+    boundary_refine_stats: Dict[str, int] = field(default_factory=dict)
+    crs_write_ok: Optional[bool] = None
+    crs_write_error: Optional[str] = None
 
 
 def load_kitti360_calib(data_root: Path, cam_id: str = "image_00") -> Dict[str, np.ndarray]:
@@ -477,6 +486,14 @@ def fuse_frames_to_las(
     target_laz_mb_per_part: float = 1200.0,
     max_parts: int = 8,
     per_frame_sample_stride: int = 50,
+    partition_mode: str = "frame_range",
+    part_split_strategy: str = "by_target_mb_est",
+    part_length_m: float = 250.0,
+    trj_nn_backend: str = "scipy_kdtree",
+    trj_grid_cell_m: float = 20.0,
+    trj_grid_neighbor: int = 1,
+    boundary_refine: bool = True,
+    boundary_refine_band_m: float = 30.0,
 ) -> FusionResult:
     frame_ids = _frame_ids(frame_start, frame_end, stride)
     missing_map: Dict[str, str] = {}
@@ -494,6 +511,10 @@ def fuse_frames_to_las(
         raise ValueError(f"unsupported output_format:{fmt}")
     if coord == "utm32" and world_to_utm32_transform is None:
         raise ValueError("utm32_transform_required")
+
+    partition_mode = str(partition_mode or "frame_range").lower()
+    part_split_strategy = str(part_split_strategy or "by_target_mb_est").lower()
+    trj_nn_backend = str(trj_nn_backend or "scipy_kdtree").lower()
 
     cam0_to_world_path = _find_pose_file(data_root, drive_id, ["cam0_to_world.txt"])
     poses_path = _find_pose_file(data_root, drive_id, ["poses.txt"])
@@ -596,6 +617,142 @@ def fuse_frames_to_las(
         except Exception as exc:
             missing_map.setdefault(fid, f"frame_failed:{exc}")
             return None
+
+    def _traj_pose(fid: str) -> np.ndarray:
+        if pose_source == "cam0_to_world":
+            if cam0_to_world_map is None or fid not in cam0_to_world_map:
+                raise KeyError("missing_pose_frame")
+            return cam0_to_world_map[fid]
+        if poses_map is None or t_cam0_to_pose is None:
+            raise RuntimeError("poses_fallback_not_ready")
+        if fid not in poses_map:
+            raise KeyError("missing_pose_frame")
+        return poses_map[fid] @ t_cam0_to_pose
+
+    def _compute_traj_s() -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        if coord != "utm32":
+            raise RuntimeError("spatial_cut_requires_utm32")
+        if world_to_utm32_transform is None:
+            raise RuntimeError("utm32_transform_required")
+        traj_xy = []
+        valid_fids: List[str] = []
+        for fid in frame_ids:
+            try:
+                mat = _traj_pose(fid)
+            except Exception:
+                warnings.append(f"traj_missing_pose:{fid}")
+                continue
+            pos_w = mat[:3, 3].astype(np.float64)
+            pos_u = _apply_world_to_utm32_transform(pos_w.reshape(1, 3), world_to_utm32_transform)[0]
+            traj_xy.append(pos_u[:2])
+            valid_fids.append(fid)
+        if not traj_xy:
+            raise RuntimeError("traj_empty")
+        traj_xy_arr = np.asarray(traj_xy, dtype=np.float64)
+        s = np.zeros((traj_xy_arr.shape[0],), dtype=np.float64)
+        for i in range(1, traj_xy_arr.shape[0]):
+            d = traj_xy_arr[i] - traj_xy_arr[i - 1]
+            s[i] = s[i - 1] + float(np.hypot(d[0], d[1]))
+        return traj_xy_arr, s, valid_fids
+
+    def _split_boundaries(
+        s: np.ndarray,
+        fids: List[str],
+    ) -> Tuple[List[int], List[str], List[float]]:
+        boundaries: List[int] = []
+        if part_split_strategy == "by_distance":
+            step = float(part_length_m)
+            if step <= 0:
+                return boundaries, [], []
+            targets = np.arange(step, float(s[-1]) + 1e-6, step)
+            for t in targets:
+                idx = int(np.searchsorted(s, t))
+                if idx <= 0 or idx >= len(s):
+                    continue
+                if boundaries and idx <= boundaries[-1]:
+                    continue
+                boundaries.append(idx)
+        elif part_split_strategy == "by_target_mb_est":
+            acc = 0.0
+            target_bytes = float(target_laz_mb_per_part) * 1024.0 * 1024.0
+            for idx, fid in enumerate(fids):
+                bin_path = _resolve_velodyne_path(velodyne_dir, fid)
+                if bin_path is None or not bin_path.exists():
+                    continue
+                acc += float(bin_path.stat().st_size)
+                if acc >= target_bytes:
+                    if idx > 0 and (not boundaries or idx > boundaries[-1]):
+                        boundaries.append(idx)
+                    acc = 0.0
+        else:
+            raise RuntimeError(f"unknown_part_split_strategy:{part_split_strategy}")
+
+        boundary_frames = [fids[i] for i in boundaries]
+        boundary_s = [float(s[i]) for i in boundaries]
+        return boundaries, boundary_frames, boundary_s
+
+    def _boundary_planes(traj_xy: np.ndarray, boundaries: List[int]) -> Tuple[np.ndarray, np.ndarray]:
+        if not boundaries:
+            return np.empty((0, 2), dtype=np.float64), np.empty((0, 2), dtype=np.float64)
+        pts = []
+        vecs = []
+        for idx in boundaries:
+            if idx <= 0:
+                v = traj_xy[1] - traj_xy[0]
+            elif idx >= traj_xy.shape[0] - 1:
+                v = traj_xy[-1] - traj_xy[-2]
+            else:
+                v = traj_xy[idx + 1] - traj_xy[idx - 1]
+            n = np.hypot(v[0], v[1])
+            if n <= 0:
+                v = np.array([1.0, 0.0], dtype=np.float64)
+            else:
+                v = v / n
+            pts.append(traj_xy[idx])
+            vecs.append(v)
+        return np.asarray(pts, dtype=np.float64), np.asarray(vecs, dtype=np.float64)
+
+    def _build_traj_nn(traj_xy: np.ndarray):
+        if trj_nn_backend == "scipy_kdtree":
+            try:
+                from scipy.spatial import cKDTree  # type: ignore
+
+                return "scipy_kdtree", cKDTree(traj_xy)
+            except Exception:
+                LOG.warning("scipy_kdtree unavailable, fallback to grid")
+        # grid fallback
+        cell = float(trj_grid_cell_m)
+        if cell <= 0:
+            cell = 20.0
+        grid: Dict[Tuple[int, int], List[int]] = {}
+        for i, pt in enumerate(traj_xy):
+            gx = int(math.floor(pt[0] / cell))
+            gy = int(math.floor(pt[1] / cell))
+            grid.setdefault((gx, gy), []).append(i)
+        return "grid", (grid, cell, int(trj_grid_neighbor))
+
+    def _query_traj_nn(traj_xy: np.ndarray, nn_obj, pts_xy: np.ndarray) -> np.ndarray:
+        backend = nn_obj[0]
+        if backend == "scipy_kdtree":
+            tree = nn_obj[1]
+            _, idx = tree.query(pts_xy, k=1)
+            return idx.astype(np.int64)
+        grid, cell, nb = nn_obj[1]
+        idxs = np.zeros((pts_xy.shape[0],), dtype=np.int64)
+        for i, p in enumerate(pts_xy):
+            gx = int(math.floor(p[0] / cell))
+            gy = int(math.floor(p[1] / cell))
+            cand: List[int] = []
+            for dx in range(-nb, nb + 1):
+                for dy in range(-nb, nb + 1):
+                    cand.extend(grid.get((gx + dx, gy + dy), []))
+            if not cand:
+                idxs[i] = 0
+                continue
+            pts = traj_xy[cand]
+            d2 = (pts[:, 0] - p[0]) ** 2 + (pts[:, 1] - p[1]) ** 2
+            idxs[i] = int(cand[int(np.argmin(d2))])
+        return idxs
 
     def _run(coord_mode: str) -> FusionResult:
         bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None
@@ -706,6 +863,13 @@ def fuse_frames_to_las(
                 points_written_total=0,
                 per_frame_points_sample=per_frame_points,
                 banding_check={},
+                partition_mode=partition_mode,
+                split_strategy="",
+                boundary_frames=[],
+                boundary_s=[],
+                part_info=[],
+                nn_backend="",
+                boundary_refine_stats={},
             )
 
         bounds_tuple = _bbox_tuple(bounds)
@@ -738,6 +902,13 @@ def fuse_frames_to_las(
                 points_written_total=0,
                 per_frame_points_sample=per_frame_points,
                 banding_check={},
+                partition_mode=partition_mode,
+                split_strategy="",
+                boundary_frames=[],
+                boundary_s=[],
+                part_info=[],
+                nn_backend="",
+                boundary_refine_stats={},
             )
 
         output_path = _swap_coord_suffix(out_path, coord_mode)
@@ -787,6 +958,13 @@ def fuse_frames_to_las(
                 points_written_total=written_points,
                 per_frame_points_sample=per_frame_points,
                 banding_check={},
+                partition_mode=partition_mode,
+                split_strategy="",
+                boundary_frames=[],
+                boundary_s=[],
+                part_info=[],
+                nn_backend="",
+                boundary_refine_stats={},
             )
 
         try:
@@ -809,11 +987,22 @@ def fuse_frames_to_las(
             header.scales = _safe_scales(bounds_tuple)
         header.offsets = (bounds_tuple[0], bounds_tuple[1], bounds_tuple[2])
         allow_epsg = coord_mode == "utm32" and bool(bbox_check.get("ok"))
-        try:
+        crs_write_ok: Optional[bool] = None
+        crs_write_error: Optional[str] = None
+        if coord_mode == "utm32":
             if allow_epsg:
-                header.add_crs(32632)
-        except Exception as exc:
-            warnings.append(f"las_crs_failed:{exc}")
+                try:
+                    from pyproj import CRS
+
+                    header.add_crs(CRS.from_epsg(32632))
+                    crs_write_ok = True
+                except Exception as exc:
+                    crs_write_ok = False
+                    crs_write_error = str(exc)
+                    warnings.append(f"las_crs_failed:{exc}")
+            else:
+                crs_write_ok = False
+                crs_write_error = "bbox_check_failed"
 
         do_compress = fmt == "laz"
         if do_compress:
@@ -854,15 +1043,129 @@ def fuse_frames_to_las(
             return count
 
         output_paths: List[str] = []
+        part_info: List[Dict[str, object]] = []
+        boundary_frames: List[str] = []
+        boundary_s: List[float] = []
+        split_strategy = ""
+        nn_backend_used = ""
+        refine_stats = {"checked": 0, "flipped": 0}
         chunking = enable_chunking
         if chunking and fmt == "laz":
             total_frames = len(frame_ids)
             total_points_f = max(1, int(total_points))
             parts_est = int(math.ceil((total_points_f * 16) / (target_laz_mb_per_part * 1024 * 1024)))
             parts = min(max(1, parts_est), max_parts)
-            if parts <= 1:
+            if partition_mode == "spatial_cut":
+                traj_xy, s_vals, fid_list = _compute_traj_s()
+                boundaries, boundary_frames, boundary_s = _split_boundaries(s_vals, fid_list)
+                parts = len(boundaries) + 1
+                if parts <= 1:
+                    chunking = False
+                else:
+                    split_strategy = part_split_strategy
+                    boundary_pts, boundary_vecs = _boundary_planes(traj_xy, boundaries)
+                    nn_backend_used, nn_obj = _build_traj_nn(traj_xy)
+
+                    writers = []
+                    part_paths = []
+                    for i in range(parts):
+                        s_start = 0.0 if i == 0 else boundary_s[i - 1]
+                        s_end = boundary_s[i] if i < len(boundary_s) else float(s_vals[-1])
+                        part_name = f"{output_path.stem}_part_s{int(s_start):06d}_s{int(s_end):06d}{output_path.suffix}"
+                        part_path = output_path.with_name(part_name)
+                        try:
+                            writer = laspy.open(part_path, mode="w", header=header, do_compress=do_compress)
+                        except Exception as exc:
+                            raise RuntimeError(f"laz_write_failed:{exc}") from exc
+                        writers.append(writer)
+                        part_paths.append(part_path)
+                        part_info.append(
+                            {
+                                "part_id": i,
+                                "s_start": float(s_start),
+                                "s_end": float(s_end),
+                                "nominal_frame_start": fid_list[0] if i == 0 else fid_list[boundaries[i - 1]],
+                                "nominal_frame_end": fid_list[boundaries[i] - 1] if i < len(boundaries) else fid_list[-1],
+                                "point_count": 0,
+                            }
+                        )
+                    for fid in fid_list:
+                        loaded = _load_points(fid, coord_mode, track_stats=False, stats=stats)
+                        if loaded is None:
+                            continue
+                        pts, inten = loaded
+                        if pts.size == 0:
+                            continue
+                        mapped, _ = intensity_float_to_uint16(inten)
+                        pts_xy = pts[:, :2].astype(np.float64)
+                        idx_near = _query_traj_nn(traj_xy, (nn_backend_used, nn_obj), pts_xy)
+                        s_approx = s_vals[idx_near]
+                        part_ids = np.searchsorted(np.array(boundary_s, dtype=np.float64), s_approx, side="right")
+
+                        if boundary_refine and boundary_pts.size > 0:
+                            for b in range(boundary_pts.shape[0]):
+                                # points currently in part b (before boundary)
+                                mask_b = part_ids == b
+                                if np.any(mask_b):
+                                    p = pts_xy[mask_b]
+                                    bp = boundary_pts[b]
+                                    bv = boundary_vecs[b]
+                                    dist = np.hypot(p[:, 0] - bp[0], p[:, 1] - bp[1])
+                                    near = dist < float(boundary_refine_band_m)
+                                    if np.any(near):
+                                        refine_stats["checked"] += int(np.sum(near))
+                                        p2 = p[near]
+                                        dot = (p2[:, 0] - bp[0]) * bv[0] + (p2[:, 1] - bp[1]) * bv[1]
+                                        flip = dot >= 0
+                                        if np.any(flip):
+                                            idxs = np.where(mask_b)[0][near][flip]
+                                            part_ids[idxs] = part_ids[idxs] + 1
+                                            refine_stats["flipped"] += int(np.sum(flip))
+                                # points currently in part b+1 (after boundary)
+                                mask_f = part_ids == (b + 1)
+                                if np.any(mask_f):
+                                    p = pts_xy[mask_f]
+                                    bp = boundary_pts[b]
+                                    bv = boundary_vecs[b]
+                                    dist = np.hypot(p[:, 0] - bp[0], p[:, 1] - bp[1])
+                                    near = dist < float(boundary_refine_band_m)
+                                    if np.any(near):
+                                        refine_stats["checked"] += int(np.sum(near))
+                                        p2 = p[near]
+                                        dot = (p2[:, 0] - bp[0]) * bv[0] + (p2[:, 1] - bp[1]) * bv[1]
+                                        flip = dot < 0
+                                        if np.any(flip):
+                                            idxs = np.where(mask_f)[0][near][flip]
+                                            part_ids[idxs] = part_ids[idxs] - 1
+                                            refine_stats["flipped"] += int(np.sum(flip))
+
+                        part_ids = np.clip(part_ids, 0, parts - 1)
+                        for pid in np.unique(part_ids):
+                            mask = part_ids == pid
+                            if not np.any(mask):
+                                continue
+                            sub_pts = pts[mask]
+                            sub_int = mapped[mask]
+                            record = laspy.ScaleAwarePointRecord.zeros(sub_pts.shape[0], header=header)
+                            scale = np.array(header.scales, dtype=np.float64)
+                            offset = np.array(header.offsets, dtype=np.float64)
+                            coords = sub_pts.astype(np.float64)
+                            xyz_int = np.round((coords - offset) / scale).astype(np.int64)
+                            record.X = xyz_int[:, 0].astype(np.int32)
+                            record.Y = xyz_int[:, 1].astype(np.int32)
+                            record.Z = xyz_int[:, 2].astype(np.int32)
+                            record.intensity = sub_int
+                            writers[int(pid)].write_points(record)
+                            written_points += int(sub_pts.shape[0])
+                            part_info[int(pid)]["point_count"] += int(sub_pts.shape[0])
+
+                    for writer in writers:
+                        writer.close()
+                    output_paths = [str(p) for p in part_paths]
+            elif parts <= 1:
                 chunking = False
             else:
+                split_strategy = "frame_range"
                 per_part = int(math.ceil(total_frames / parts))
                 part_ranges: List[Tuple[int, int]] = []
                 for i in range(parts):
@@ -881,8 +1184,17 @@ def fuse_frames_to_las(
                     except Exception as exc:
                         raise RuntimeError(f"laz_write_failed:{exc}") from exc
                     with writer:
-                        written_points += _write_records(writer, frame_ids[start_idx : end_idx + 1])
+                        count_part = _write_records(writer, frame_ids[start_idx : end_idx + 1])
+                    written_points += int(count_part)
                     output_paths.append(str(part_path))
+                    part_info.append(
+                        {
+                            "part_id": len(part_info),
+                            "frame_start": frame_ids[start_idx],
+                            "frame_end": frame_ids[end_idx],
+                            "point_count": int(count_part),
+                        }
+                    )
         if not chunking:
             try:
                 writer = laspy.open(output_path, mode="w", header=header, do_compress=do_compress)
@@ -893,6 +1205,7 @@ def fuse_frames_to_las(
             with writer:
                 written_points += _write_records(writer, frame_ids)
             output_paths.append(str(output_path))
+            part_info.append({"part_id": 0, "point_count": int(written_points)})
 
         banding_check: Dict[str, object] = {}
         if coord_mode == "utm32" and output_paths:
@@ -936,6 +1249,15 @@ def fuse_frames_to_las(
             points_written_total=written_points,
             per_frame_points_sample=per_frame_points,
             banding_check=banding_check,
+            partition_mode=partition_mode,
+            split_strategy=split_strategy,
+            boundary_frames=boundary_frames,
+            boundary_s=boundary_s,
+            part_info=part_info,
+            nn_backend=nn_backend_used,
+            boundary_refine_stats=refine_stats,
+            crs_write_ok=crs_write_ok,
+            crs_write_error=crs_write_error,
         )
 
     def _cleanup_tmp(result: FusionResult) -> FusionResult:

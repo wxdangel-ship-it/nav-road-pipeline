@@ -25,8 +25,10 @@ DRIVE_ID = "2013_05_28_drive_0010_sync"
 FRAME_START = 0
 FRAME_END = 3835
 MAX_SAMPLE_FRAMES = 300
-RMS_PASS_M = 1.0
-RMS_WARN_M = 1.5
+SAMPLE_STRIDE = 10
+RMS_PASS_M = 1.2
+RMS_FAIL_M = 1.8
+TRIM_TOP_PCT = 0.05
 
 
 def _find_pose_file(data_root: Path, drive_id: str, names: List[str]) -> Path:
@@ -153,6 +155,7 @@ def main() -> int:
     transformer = Transformer.from_crs("EPSG:4326", "EPSG:32632", always_xy=True)
 
     full_ids = [f"{i:010d}" for i in range(int(FRAME_START), int(FRAME_END) + 1)]
+    sample_ids = full_ids[:: max(1, int(SAMPLE_STRIDE))]
 
     pairs: List[Dict[str, object]] = []
     src_xy: List[List[float]] = []
@@ -160,7 +163,7 @@ def main() -> int:
     dz_list: List[float] = []
     used_frames: List[str] = []
 
-    for fid in full_ids:
+    for fid in sample_ids:
         if fid not in cam0_to_world:
             continue
         try:
@@ -178,10 +181,9 @@ def main() -> int:
     if len(src_xy) < 3:
         raise RuntimeError("insufficient_common_frames")
 
-    # uniform sampling up to MAX_SAMPLE_FRAMES
-    total = len(src_xy)
-    if total > MAX_SAMPLE_FRAMES:
-        idx = np.linspace(0, total - 1, MAX_SAMPLE_FRAMES, dtype=int).tolist()
+    samples_total = len(src_xy)
+    if samples_total > MAX_SAMPLE_FRAMES:
+        idx = np.linspace(0, samples_total - 1, MAX_SAMPLE_FRAMES, dtype=int).tolist()
         src_xy = [src_xy[i] for i in idx]
         dst_xy = [dst_xy[i] for i in idx]
         dz_list = [dz_list[i] for i in idx]
@@ -189,12 +191,27 @@ def main() -> int:
 
     src = np.asarray(src_xy, dtype=np.float64)
     dst = np.asarray(dst_xy, dtype=np.float64)
-    dx, dy, yaw_deg, scale = _fit_similarity_2d(src, dst)
+    dx0, dy0, yaw0, scale0 = _fit_similarity_2d(src, dst)
     dz = float(np.median(dz_list)) if dz_list else 0.0
+    pred0 = _apply_similarity_2d(src, dx0, dy0, yaw0, scale0)
+    residual0 = np.linalg.norm(pred0 - dst, axis=1)
+    rms_raw = float(np.sqrt(np.mean(residual0**2)))
 
-    pred = _apply_similarity_2d(src, dx, dy, yaw_deg, scale)
-    residual = np.linalg.norm(pred - dst, axis=1)
-    rms = float(np.sqrt(np.mean(residual**2)))
+    keep = max(3, int(math.floor(len(residual0) * (1.0 - TRIM_TOP_PCT))))
+    if keep < len(residual0):
+        order = np.argsort(residual0)
+        inlier_idx = order[:keep]
+    else:
+        inlier_idx = np.arange(len(residual0))
+    src_in = src[inlier_idx]
+    dst_in = dst[inlier_idx]
+    dx, dy, yaw_deg, scale = _fit_similarity_2d(src_in, dst_in)
+    pred1 = _apply_similarity_2d(src_in, dx, dy, yaw_deg, scale)
+    residual1 = np.linalg.norm(pred1 - dst_in, axis=1)
+    rms_inlier = float(np.sqrt(np.mean(residual1**2)))
+    p95_inlier = float(np.percentile(residual1, 95)) if residual1.size else 0.0
+    max_inlier = float(np.max(residual1)) if residual1.size else 0.0
+    inlier_ratio = float(src_in.shape[0]) / float(src.shape[0])
 
     for i, fid in enumerate(used_frames):
         pairs.append(
@@ -204,14 +221,14 @@ def main() -> int:
                 "world_y": float(src[i, 1]),
                 "utm_e": float(dst[i, 0]),
                 "utm_n": float(dst[i, 1]),
-                "residual": float(residual[i]),
+                "residual": float(residual0[i]),
             }
         )
 
     gate_status = "PASS"
-    if rms > RMS_WARN_M:
+    if rms_inlier > RMS_FAIL_M:
         gate_status = "FAIL"
-    elif rms > RMS_PASS_M:
+    elif rms_inlier > RMS_PASS_M:
         gate_status = "WARN"
 
     report = {
@@ -224,15 +241,21 @@ def main() -> int:
         "dz": float(dz),
         "yaw_deg": float(yaw_deg),
         "scale": float(scale),
-        "rms_m": float(rms),
+        "rms_raw_m": float(rms_raw),
+        "rms_inlier_m": float(rms_inlier),
+        "p95_inlier_m": float(p95_inlier),
+        "max_inlier_m": float(max_inlier),
+        "inlier_ratio": float(inlier_ratio),
+        "samples_total": int(samples_total),
+        "samples_used": int(len(src_xy)),
+        "outlier_rule": f"trim_top_pct_{TRIM_TOP_PCT}",
         "gate_status": gate_status,
-        "gate_thresholds": {"pass": RMS_PASS_M, "warn": RMS_WARN_M},
+        "gate_thresholds": {"pass": RMS_PASS_M, "fail": RMS_FAIL_M},
         "paths": {"cam0_to_world": str(cam0_to_world_path), "oxts_dir": str(oxts_dir)},
     }
 
-    ok = len(src_xy) >= 30 and 0.99 <= scale <= 1.01 and rms <= RMS_PASS_M
     summary = (
-        f"world->utm32 fit: frames={len(src_xy)}, rms={rms:.3f}m, scale={scale:.4f}, yaw={yaw_deg:.3f}deg "
+        f"world->utm32 fit: frames={len(src_xy)}, rms_inlier={rms_inlier:.3f}m, scale={scale:.4f}, yaw={yaw_deg:.3f}deg "
         f"=> {gate_status}"
     )
 

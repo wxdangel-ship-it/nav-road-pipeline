@@ -1,0 +1,224 @@
+jobs:
+  - job_id: surface_evidence_0000_full
+    drive_id: 2013_05_28_drive_0000_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 11517
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0003_full
+    drive_id: 2013_05_28_drive_0003_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 1030
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0004_full
+    drive_id: 2013_05_28_drive_0004_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 11586
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0005_full
+    drive_id: 2013_05_28_drive_0005_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 6742
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0006_full
+    drive_id: 2013_05_28_drive_0006_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 9698
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0007_full
+    drive_id: 2013_05_28_drive_0007_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 3395
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0009_full
+    drive_id: 2013_05_28_drive_0009_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 14055
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
+
+  - job_id: surface_evidence_0010_full
+    drive_id: 2013_05_28_drive_0010_sync
+    fusion_source: baseline_active
+    frame_start: 0
+    frame_end: 3835
+    kitti_root: "E:\\KITTI360\\KITTI-360"
+    output_toggles:
+      point_cloud: true
+      dem: true
+      vector: true
+      bev_markings: true
+    dem:
+      res_m: 0.20
+    bev:
+      tiles:
+        enabled: true
+        res_m: 0.05
+        tile_size_px: 2048
+        overlap_px: 0
+        keep_if_mask_area_m2_ge: 100.0
+      top_hat:
+        win_large_m: 6.0
+        win_small_m: 0.30
+        clip_max_u16: 12000
+    preview:
+      roi_gray_preview: true
+      preview_style: legacy_gray
