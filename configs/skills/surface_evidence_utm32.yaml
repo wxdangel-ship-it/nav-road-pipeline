@@ -1,0 +1,40 @@
+version: 1
+
+preset:
+  grid_res_m: 0.20
+  dz_ground_max_m: 0.30
+  cell_min_ground_pts: 6
+  cell_max_roughness_m: 0.12
+  cell_max_slope: 0.45
+  hole_area_max_m2: 10.0
+  island_area_min_m2: 10.0
+  use_traj_xy_prior: true
+  traj_buffer_m: 30.0
+  seed_buffer_m: 8.0
+  ref_grid_res_m: 1.0
+  ref_local_radius_m: 6.0
+  ref_q_low: 0.10
+  ref_min_pts: 12
+  ref_smooth_win_m: 10.0
+  layer_reject_below_traj_m: 3.5
+  layer_reject_above_traj_m: 2.0
+  close_radius_m: 0.6
+  close_iter: 1
+  max_keep_components: 5
+
+dem:
+  dem_res_m: 0.20
+
+bev:
+  res_m_tiles: 0.05
+  res_m_roi: 0.05
+  win_large_m: 6.0
+  win_small_m: 0.30
+  tophat_clip_max: 12000
+  tile_size_px: 2048
+  tile_overlap_px: 0
+  tile_keep_mask_area_m2: 50.0
+
+runtime:
+  bbox_pad_m: 2.0
+  chunk_points: 1000000

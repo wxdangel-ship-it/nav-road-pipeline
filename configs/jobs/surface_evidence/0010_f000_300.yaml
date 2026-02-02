@@ -1,0 +1,20 @@
+drive_id: "2013_05_28_drive_0010_sync"
+frame_start: 0
+frame_end: 300
+
+fusion_source: "run_dir"  # baseline_active | run_dir | explicit
+fusion_run_dir: "E:\\Work\\nav-road-pipeline\\runs\\lidar_fusion_2013_05_28_drive_0010_sync_0_300_20260201_004854"
+explicit_laz: ""
+explicit_bbox_geojson: ""
+
+kitti_root: "%KITTI_ROOT%"
+
+output:
+  point_cloud: true
+  dem: true
+  vector: true
+  bev_markings: true
+
+crosswalk_gpkg: "E:\\Work\\nav-road-pipeline\\crosswalk_truth_utm32.gpkg"
+roi_buf_m: 30.0
+roi_patch_size_m: 80.0
